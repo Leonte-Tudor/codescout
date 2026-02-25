@@ -5,9 +5,9 @@
 
 ## Current State
 
-- 32 source files, 9 modules, **84 tests passing**
-- **18 tools working** (was 4): file (3), workflow (3), memory (4), git (3), config (2), semantic (3)
-- 9 tools stubbed: symbol (7, need LSP), AST (2, need tree-sitter)
+- 32 source files, 9 modules, **97 tests passing**
+- **21 tools working** (was 4): file (6), workflow (3), memory (4), git (3), config (2), semantic (3)
+- 6 tools stubbed: symbol (7, need LSP), AST (2, need tree-sitter)
 - MCP server working over stdio (rmcp)
 - Core libraries: chunker, embedding index, memory store, git blame/log/diff, config, language detection
 
@@ -134,14 +134,14 @@ Wire semantic search to the embedding index. Requires embedder for query embeddi
 Add file manipulation tools expected by coding agents.
 
 **Tasks:**
-- [ ] `create_text_file`: write content to path, create parent dirs via `util::fs::write_utf8()`
-- [ ] `find_file`: glob-based search via `globset` + `walkdir`
-- [ ] `replace_content`: regex or literal find-and-replace in a file
-- [ ] Register all 3 in `server.rs`
-- [ ] Add tests: write/read roundtrip, glob matching, regex replacement
+- [x] `create_text_file`: write content to path, create parent dirs via `util::fs::write_utf8()`
+- [x] `find_file`: glob-based search via `globset` + `ignore::WalkBuilder`
+- [x] `replace_content`: regex or literal find-and-replace in a file
+- [x] Register all 3 in `server.rs`
+- [x] Add tests: write/read roundtrip, glob matching, regex replacement
 
 **Files:** `src/tools/file.rs`, `src/server.rs`
-**Acceptance:** all 3 tools work, total working tools: 18-21
+**Acceptance:** all 3 tools work, total working tools: 21/27
 
 ### ⟹ CHECKPOINT: Usable MCP Server
 

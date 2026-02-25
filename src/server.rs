@@ -18,7 +18,7 @@ use crate::agent::Agent;
 use crate::tools::{
     ast::{ExtractDocstrings, ListFunctions},
     config::{ActivateProject, GetCurrentConfig},
-    file::{ListDir, ReadFile, SearchForPattern},
+    file::{CreateTextFile, FindFile, ListDir, ReadFile, ReplaceContent, SearchForPattern},
     git::{GitBlame, GitDiff, GitLog},
     memory::{DeleteMemory, ListMemories, ReadMemory, WriteMemory},
     semantic::{IndexProject, IndexStatus, SemanticSearch},
@@ -44,6 +44,9 @@ impl CodeExplorerServer {
             Arc::new(ReadFile),
             Arc::new(ListDir),
             Arc::new(SearchForPattern),
+            Arc::new(CreateTextFile),
+            Arc::new(FindFile),
+            Arc::new(ReplaceContent),
             // Workflow tools (ExecuteShellCommand implemented; others stub)
             Arc::new(ExecuteShellCommand),
             Arc::new(Onboarding),
