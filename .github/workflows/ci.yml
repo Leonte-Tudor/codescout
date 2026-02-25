@@ -31,10 +31,12 @@ jobs:
       - run: cargo clippy -- -D warnings
 
   test:
-    name: Test (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }} / ${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         include:
           - name: default
             flags: ""
@@ -47,7 +49,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.name }}
+          key: ${{ matrix.os }}-${{ matrix.name }}
       - run: cargo test ${{ matrix.flags }}
 
   msrv:
