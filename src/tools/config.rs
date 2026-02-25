@@ -1,7 +1,7 @@
 //! Configuration and project management tools.
 
-use anyhow::anyhow;
 use serde_json::{json, Value};
+use std::path::PathBuf;
 use super::{Tool, ToolContext};
 
 pub struct ActivateProject;
@@ -23,8 +23,21 @@ impl Tool for ActivateProject {
             }
         })
     }
-    async fn call(&self, _input: Value, _ctx: &ToolContext) -> anyhow::Result<Value> {
-        Err(anyhow!("activate_project: not yet wired to Agent::activate"))
+    async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
+        let path = input["path"].as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing 'path' parameter"))?;
+        let root = PathBuf::from(path);
+        if !root.is_dir() {
+            anyhow::bail!("path '{}' is not a directory", path);
+        }
+        ctx.agent.activate(root).await?;
+        let config = ctx.agent.with_project(|p| {
+            Ok(json!({
+                "project_root": p.root.display().to_string(),
+                "config": serde_json::to_value(&p.config)?,
+            }))
+        }).await?;
+        Ok(json!({ "status": "ok", "activated": config }))
     }
 }
 
@@ -35,7 +48,68 @@ impl Tool for GetCurrentConfig {
     fn input_schema(&self) -> Value {
         json!({ "type": "object", "properties": {} })
     }
-    async fn call(&self, _input: Value, _ctx: &ToolContext) -> anyhow::Result<Value> {
-        Err(anyhow!("get_current_config: not yet wired to Agent"))
+    async fn call(&self, _input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
+        ctx.agent.with_project(|p| {
+            Ok(json!({
+                "project_root": p.root.display().to_string(),
+                "config": serde_json::to_value(&p.config)?,
+            }))
+        }).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::Agent;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn activate_and_get_config() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".code-explorer")).unwrap();
+        let ctx = ToolContext { agent: Agent::new(None).await.unwrap() };
+
+        // No project initially
+        assert!(GetCurrentConfig.call(json!({}), &ctx).await.is_err());
+
+        // Activate
+        let result = ActivateProject.call(json!({
+            "path": dir.path().to_str().unwrap()
+        }), &ctx).await.unwrap();
+        assert_eq!(result["status"], "ok");
+
+        // Now config works
+        let config = GetCurrentConfig.call(json!({}), &ctx).await.unwrap();
+        assert!(config["project_root"].as_str().unwrap().len() > 0);
+        assert!(config["config"]["project"]["name"].is_string());
+    }
+
+    #[tokio::test]
+    async fn activate_nonexistent_path_errors() {
+        let ctx = ToolContext { agent: Agent::new(None).await.unwrap() };
+        let result = ActivateProject.call(json!({
+            "path": "/nonexistent/path/xyz"
+        }), &ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn activate_replaces_previous_project() {
+        let dir1 = tempdir().unwrap();
+        let dir2 = tempdir().unwrap();
+        std::fs::create_dir_all(dir1.path().join(".code-explorer")).unwrap();
+        std::fs::create_dir_all(dir2.path().join(".code-explorer")).unwrap();
+
+        let ctx = ToolContext { agent: Agent::new(Some(dir1.path().to_path_buf())).await.unwrap() };
+
+        // Activate dir2
+        ActivateProject.call(json!({
+            "path": dir2.path().to_str().unwrap()
+        }), &ctx).await.unwrap();
+
+        let config = GetCurrentConfig.call(json!({}), &ctx).await.unwrap();
+        let root = config["project_root"].as_str().unwrap();
+        assert!(root.contains(dir2.path().file_name().unwrap().to_str().unwrap()));
     }
 }

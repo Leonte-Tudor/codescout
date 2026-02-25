@@ -13,13 +13,83 @@ impl Tool for Onboarding {
     fn name(&self) -> &str { "onboarding" }
     fn description(&self) -> &str {
         "Perform initial project discovery: detect languages, list top-level structure, \
-         summarize key files. Stores the result as a memory entry."
+         create config. Requires an active project."
     }
     fn input_schema(&self) -> Value {
         json!({ "type": "object", "properties": {} })
     }
-    async fn call(&self, _input: Value, _ctx: &ToolContext) -> anyhow::Result<Value> {
-        Err(anyhow!("onboarding: not yet implemented"))
+    async fn call(&self, _input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
+        let root = ctx.agent.require_project_root().await?;
+
+        // Detect languages by walking files
+        let mut languages = std::collections::BTreeSet::new();
+        let walker = ignore::WalkBuilder::new(&root)
+            .hidden(true)
+            .git_ignore(true)
+            .build();
+        for entry in walker.flatten() {
+            if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                if let Some(lang) = crate::ast::detect_language(entry.path()) {
+                    languages.insert(lang.to_string());
+                }
+            }
+        }
+
+        // List top-level entries
+        let mut top_level = vec![];
+        if let Ok(entries) = std::fs::read_dir(&root) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let suffix = if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) { "/" } else { "" };
+                top_level.push(format!("{}{}", name, suffix));
+            }
+        }
+        top_level.sort();
+
+        // Create .code-explorer/project.toml if it doesn't exist
+        let config_dir = root.join(".code-explorer");
+        let config_path = config_dir.join("project.toml");
+        let created_config = if !config_path.exists() {
+            std::fs::create_dir_all(&config_dir)?;
+            let name = root.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unnamed")
+                .to_string();
+            let langs: Vec<String> = languages.iter().cloned().collect();
+            let config = crate::config::project::ProjectConfig {
+                project: crate::config::project::ProjectSection {
+                    name,
+                    languages: langs,
+                    encoding: "utf-8".into(),
+                    tool_timeout_secs: 60,
+                },
+                embeddings: Default::default(),
+                ignored_paths: Default::default(),
+            };
+            let toml_str = toml::to_string_pretty(&config)?;
+            std::fs::write(&config_path, &toml_str)?;
+            true
+        } else {
+            false
+        };
+
+        // Store onboarding result in memory
+        ctx.agent.with_project(|p| {
+            let summary = format!(
+                "Languages: {}\nTop-level: {}\nConfig created: {}",
+                languages.iter().cloned().collect::<Vec<_>>().join(", "),
+                top_level.join(", "),
+                created_config
+            );
+            p.memory.write("onboarding", &summary)?;
+            Ok(())
+        }).await?;
+
+        Ok(json!({
+            "languages": languages.iter().cloned().collect::<Vec<_>>(),
+            "top_level": top_level,
+            "config_created": created_config,
+        }))
     }
 }
 
@@ -32,8 +102,16 @@ impl Tool for CheckOnboardingPerformed {
     fn input_schema(&self) -> Value {
         json!({ "type": "object", "properties": {} })
     }
-    async fn call(&self, _input: Value, _ctx: &ToolContext) -> anyhow::Result<Value> {
-        Err(anyhow!("check_onboarding_performed: not yet wired to MemoryStore"))
+    async fn call(&self, _input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
+        ctx.agent.with_project(|p| {
+            let has_config = p.root.join(".code-explorer").join("project.toml").exists();
+            let has_memory = p.memory.read("onboarding")?.is_some();
+            Ok(json!({
+                "onboarded": has_config && has_memory,
+                "has_config": has_config,
+                "has_onboarding_memory": has_memory,
+            }))
+        }).await
     }
 }
 
@@ -67,5 +145,68 @@ impl Tool for ExecuteShellCommand {
             "stderr": String::from_utf8_lossy(&output.stderr),
             "exit_code": output.status.code()
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::Agent;
+    use tempfile::tempdir;
+
+    async fn project_ctx() -> (tempfile::TempDir, ToolContext) {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".code-explorer")).unwrap();
+        // Create some source files for language detection
+        std::fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(dir.path().join("lib.py"), "def hello(): pass").unwrap();
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        (dir, ToolContext { agent })
+    }
+
+    #[tokio::test]
+    async fn onboarding_detects_languages() {
+        let (_dir, ctx) = project_ctx().await;
+        let result = Onboarding.call(json!({}), &ctx).await.unwrap();
+        let langs: Vec<&str> = result["languages"].as_array().unwrap()
+            .iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(langs.contains(&"rust"));
+        assert!(langs.contains(&"python"));
+    }
+
+    #[tokio::test]
+    async fn onboarding_creates_config() {
+        let (dir, ctx) = project_ctx().await;
+        // Remove the config if it exists
+        let _ = std::fs::remove_file(dir.path().join(".code-explorer/project.toml"));
+
+        let result = Onboarding.call(json!({}), &ctx).await.unwrap();
+        assert_eq!(result["config_created"], true);
+        assert!(dir.path().join(".code-explorer/project.toml").exists());
+    }
+
+    #[tokio::test]
+    async fn check_onboarding_before_and_after() {
+        let (dir, ctx) = project_ctx().await;
+        let _ = std::fs::remove_file(dir.path().join(".code-explorer/project.toml"));
+
+        // Before onboarding
+        let result = CheckOnboardingPerformed.call(json!({}), &ctx).await.unwrap();
+        assert_eq!(result["onboarded"], false);
+
+        // Run onboarding
+        Onboarding.call(json!({}), &ctx).await.unwrap();
+
+        // After onboarding
+        let result = CheckOnboardingPerformed.call(json!({}), &ctx).await.unwrap();
+        assert_eq!(result["onboarded"], true);
+        assert_eq!(result["has_config"], true);
+        assert_eq!(result["has_onboarding_memory"], true);
+    }
+
+    #[tokio::test]
+    async fn onboarding_errors_without_project() {
+        let ctx = ToolContext { agent: Agent::new(None).await.unwrap() };
+        assert!(Onboarding.call(json!({}), &ctx).await.is_err());
     }
 }
