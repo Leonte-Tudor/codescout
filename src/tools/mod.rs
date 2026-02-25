@@ -8,6 +8,7 @@ pub mod config;
 pub mod file;
 pub mod git;
 pub mod memory;
+pub mod output;
 pub mod semantic;
 pub mod symbol;
 pub mod workflow;
