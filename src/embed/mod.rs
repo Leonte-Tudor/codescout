@@ -18,7 +18,8 @@ pub mod schema;
 #[cfg(feature = "remote-embed")]
 pub mod remote;
 
-// pub mod local; // TODO: enable with "local-embed" feature
+#[cfg(feature = "local-embed")]
+pub mod local;
 
 use anyhow::Result;
 
@@ -73,11 +74,18 @@ pub async fn create_embedder(model: &str) -> Result<Box<dyn Embedder>> {
         )?));
     }
 
+    #[cfg(feature = "local-embed")]
+    if let Some(model_id) = model.strip_prefix("local:") {
+        return Ok(Box::new(local::LocalEmbedder::new(model_id)?));
+    }
+
     if model.starts_with("local:") {
         anyhow::bail!(
-            "Local embedding requires the 'local-embed' feature. \
-             Rebuild with: cargo build --features local-embed\n\
-             Alternatively use an Ollama model: ollama:mxbai-embed-large"
+            "Local embedding requires the 'local-embed' feature.\n\
+             Rebuild with: cargo build --features local-embed\n\n\
+             Recommended (code-specific, CPU/WSL2):\n\
+             • local:JinaEmbeddingsV2BaseCode   (768d, ~300MB)\n\
+             • local:BGESmallENV15Q             (384d, quantized, ~20MB, fast)"
         );
     }
 
@@ -97,6 +105,7 @@ mod tests {
         assert!(err.to_string().contains("Unknown model prefix"));
     }
 
+    #[cfg(not(feature = "local-embed"))]
     #[test]
     fn local_prefix_returns_helpful_error() {
         let rt = tokio::runtime::Runtime::new().unwrap();

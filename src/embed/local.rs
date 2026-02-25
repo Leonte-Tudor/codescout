@@ -1,0 +1,87 @@
+//! Local CPU embedding via fastembed-rs (ONNX Runtime).
+//!
+//! Model strings use fastembed's `EmbeddingModel` variant names directly,
+//! e.g. `local:JinaEmbeddingsV2BaseCode` or `local:BGESmallENV15Q`.
+//! Models are downloaded on first use to `~/.cache/huggingface/hub/`.
+
+use anyhow::Result;
+use std::sync::Arc;
+
+use crate::embed::Embedding;
+
+pub struct LocalEmbedder {
+    model: Arc<fastembed::TextEmbedding>,
+    dims: usize,
+}
+
+impl LocalEmbedder {
+    pub fn new(model_name: &str) -> Result<Self> {
+        let embedding_model = parse_model(model_name)?;
+        let model =
+            fastembed::TextEmbedding::try_new(fastembed::InitOptions::new(embedding_model))?;
+        // Derive actual dims by embedding a probe string.
+        let probe = model.embed(vec!["probe".to_string()], None)?;
+        let dims = probe.first().map(|v| v.len()).unwrap_or(0);
+        Ok(Self {
+            model: Arc::new(model),
+            dims,
+        })
+    }
+}
+
+fn parse_model(name: &str) -> Result<fastembed::EmbeddingModel> {
+    match name {
+        "JinaEmbeddingsV2BaseCode" => Ok(fastembed::EmbeddingModel::JinaEmbeddingsV2BaseCode),
+        "BGESmallENV15Q" => Ok(fastembed::EmbeddingModel::BGESmallENV15Q),
+        "AllMiniLML6V2Q" => Ok(fastembed::EmbeddingModel::AllMiniLML6V2Q),
+        // Non-quantized variants for users who want full f32 precision
+        "BGESmallENV15" => Ok(fastembed::EmbeddingModel::BGESmallENV15),
+        "AllMiniLML6V2" => Ok(fastembed::EmbeddingModel::AllMiniLML6V2),
+        other => anyhow::bail!(
+            "Unknown local model '{other}'. Supported variants:\n\
+             • local:JinaEmbeddingsV2BaseCode   (768d, code-specific, ~300MB, recommended)\n\
+             • local:BGESmallENV15Q             (384d, quantized, ~20MB, fast CPU)\n\
+             • local:AllMiniLML6V2Q             (384d, quantized, ~22MB, lightest)\n\
+             • local:BGESmallENV15              (384d, full precision)\n\
+             • local:AllMiniLML6V2              (384d, full precision)"
+        ),
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::embed::Embedder for LocalEmbedder {
+    fn dimensions(&self) -> usize {
+        self.dims
+    }
+
+    async fn embed(&self, texts: &[&str]) -> Result<Vec<Embedding>> {
+        let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
+        let model = Arc::clone(&self.model);
+        tokio::task::spawn_blocking(move || {
+            model.embed(owned, None).map_err(|e| anyhow::anyhow!("{e}"))
+        })
+        .await?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_model_unknown_name_returns_error() {
+        let err = parse_model("NotARealModel").unwrap_err().to_string();
+        assert!(err.contains("NotARealModel"));
+        assert!(
+            err.contains("JinaEmbeddingsV2BaseCode"),
+            "error should list supported models"
+        );
+    }
+
+    #[test]
+    fn parse_model_known_names_return_ok() {
+        assert!(parse_model("JinaEmbeddingsV2BaseCode").is_ok());
+        assert!(parse_model("BGESmallENV15Q").is_ok());
+        assert!(parse_model("AllMiniLML6V2Q").is_ok());
+    }
+}

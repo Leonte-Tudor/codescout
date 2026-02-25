@@ -65,6 +65,8 @@ tree-sitter = "0.25"
 
 # HTTP client (remote embeddings — OpenAI-compatible APIs, Ollama, etc.)
 reqwest = { version = "0.12", features = ["json"], optional = true }
+# Local CPU embeddings via ONNX Runtime (fastembed model hub)
+fastembed = { version = "4", optional = true }
 tree-sitter-rust = "0.24.0"
 tree-sitter-python = "0.25.0"
 tree-sitter-go = "0.25.0"
@@ -76,8 +78,11 @@ tree-sitter-kotlin-ng = "1.1.0"
 default = ["remote-embed"]
 # Remote embedding via OpenAI-compatible HTTP API (Ollama, OpenAI, etc.)
 remote-embed = ["dep:reqwest"]
+# Local CPU embedding via fastembed-rs (ONNX Runtime + HuggingFace model hub).
+# First use downloads the chosen model (~20-300MB) to ~/.cache/huggingface/hub/.
+local-embed = ["dep:fastembed"]
 # Local embedding via candle (HuggingFace Rust ML — adds significant compile time)
-# local-embed = ["dep:candle-core", "dep:candle-transformers", "dep:candle-nn", "dep:hf-hub", "dep:tokenizers"]
+# candle-embed = ["dep:candle-core", "dep:candle-transformers", "dep:candle-nn", "dep:hf-hub", "dep:tokenizers"]
 
 [profile.release]
 opt-level = 3
