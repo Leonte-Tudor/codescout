@@ -5,9 +5,15 @@ use std::path::{Path, PathBuf};
 use anyhow::anyhow;
 use serde_json::{json, Value};
 
+use super::output::OutputGuard;
 use super::{Tool, ToolContext};
 use crate::ast;
 use crate::lsp::SymbolInfo;
+
+/// Returns true if the path string contains glob metacharacters.
+fn is_glob(path: &str) -> bool {
+    path.contains('*') || path.contains('?') || path.contains('[')
+}
 
 /// Resolve a relative path against the project root.
 async fn resolve_path(ctx: &ToolContext, relative_path: &str) -> anyhow::Result<PathBuf> {
@@ -17,6 +23,50 @@ async fn resolve_path(ctx: &ToolContext, relative_path: &str) -> anyhow::Result<
         anyhow::bail!("path not found: {}", full.display());
     }
     Ok(full)
+}
+
+/// Resolve a path that may be a glob pattern, returning all matching files.
+/// If the path is a literal file/directory, returns it as a single-element vec.
+/// If it contains glob metacharacters (* ? [), expands against the project root.
+async fn resolve_glob(ctx: &ToolContext, path_or_glob: &str) -> anyhow::Result<Vec<PathBuf>> {
+    let root = ctx.agent.require_project_root().await?;
+
+    if !is_glob(path_or_glob) {
+        let full = root.join(path_or_glob);
+        if !full.exists() {
+            anyhow::bail!("path not found: {}", full.display());
+        }
+        return Ok(vec![full]);
+    }
+
+    // Glob expansion
+    let glob = globset::GlobBuilder::new(path_or_glob)
+        .literal_separator(false)
+        .build()
+        .map_err(|e| anyhow!("invalid glob pattern '{}': {}", path_or_glob, e))?;
+    let matcher = glob.compile_matcher();
+
+    let mut matches = vec![];
+    let walker = ignore::WalkBuilder::new(&root)
+        .hidden(true)
+        .git_ignore(true)
+        .build();
+    for entry in walker.flatten() {
+        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        if let Ok(rel) = entry.path().strip_prefix(&root) {
+            if matcher.is_match(rel) {
+                matches.push(entry.path().to_path_buf());
+            }
+        }
+    }
+
+    if matches.is_empty() {
+        anyhow::bail!("no files matched glob pattern: {}", path_or_glob);
+    }
+    matches.sort();
+    Ok(matches)
 }
 
 /// Extract a path parameter from input, accepting both "relative_path" and "path".
@@ -103,48 +153,43 @@ impl Tool for GetSymbolsOverview {
         json!({
             "type": "object",
             "properties": {
-                "relative_path": { "type": "string", "description": "File or directory path relative to project root" },
-                "depth": { "type": "integer", "default": 1, "description": "Depth of children to include (0=none, 1=direct children)" }
+                "relative_path": { "type": "string", "description": "File or directory path relative to project root. Supports glob patterns (e.g. 'src/**/*.rs')" },
+                "depth": { "type": "integer", "default": 1, "description": "Depth of children to include (0=none, 1=direct children)" },
+                "detail_level": { "type": "string", "description": "Output detail: omit or 'exploring' for compact (default), 'full' for complete with bodies" },
+                "offset": { "type": "integer", "description": "Skip this many files (focused mode pagination)" },
+                "limit": { "type": "integer", "description": "Max files per page (focused mode, default 50)" }
             }
         })
     }
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
         let rel_path = get_path_param(&input, false)?.unwrap_or(".");
         let depth = input["depth"].as_u64().unwrap_or(1) as usize;
+        let guard = OutputGuard::from_input(&input);
 
-        let full_path = resolve_path(ctx, rel_path).await?;
-
-        if full_path.is_file() {
-            let (client, lang) = get_lsp_client(ctx, &full_path).await?;
-            let symbols = client.document_symbols(&full_path, &lang).await?;
-            let source = std::fs::read_to_string(&full_path).ok();
-            let json_symbols: Vec<Value> = symbols
-                .iter()
-                .map(|s| symbol_to_json(s, false, source.as_deref(), depth))
-                .collect();
-            Ok(json!({ "file": rel_path, "symbols": json_symbols }))
-        } else if full_path.is_dir() {
-            // Aggregate symbols from all files in directory
+        // If the path contains glob metacharacters, expand and aggregate
+        if is_glob(rel_path) {
+            let files = resolve_glob(ctx, rel_path).await?;
+            let (files, file_overflow) =
+                guard.cap_files(files, "Narrow with a more specific glob or file path");
+            let root = ctx.agent.require_project_root().await?;
+            let include_body = guard.should_include_body();
             let mut result = vec![];
-            let walker = ignore::WalkBuilder::new(&full_path)
-                .max_depth(Some(1))
-                .build();
-            for entry in walker.flatten() {
-                if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-                    continue;
-                }
-                let path = entry.path();
-                let Some(lang) = ast::detect_language(path) else {
+            for file_path in &files {
+                let Some(lang) = ast::detect_language(file_path) else {
                     continue;
                 };
-                let root = ctx.agent.require_project_root().await?;
                 let language_id = crate::lsp::servers::lsp_language_id(lang);
                 if let Ok(client) = ctx.lsp.get_or_start(lang, &root).await {
-                    if let Ok(symbols) = client.document_symbols(path, language_id).await {
-                        let rel = path.strip_prefix(&root).unwrap_or(path);
+                    if let Ok(symbols) = client.document_symbols(file_path, language_id).await {
+                        let rel = file_path.strip_prefix(&root).unwrap_or(file_path);
+                        let source = if include_body {
+                            std::fs::read_to_string(file_path).ok()
+                        } else {
+                            None
+                        };
                         let json_symbols: Vec<Value> = symbols
                             .iter()
-                            .map(|s| symbol_to_json(s, false, None, depth.saturating_sub(1)))
+                            .map(|s| symbol_to_json(s, include_body, source.as_deref(), depth))
                             .collect();
                         result.push(json!({
                             "file": rel.display().to_string(),
@@ -153,7 +198,85 @@ impl Tool for GetSymbolsOverview {
                     }
                 }
             }
-            Ok(json!({ "directory": rel_path, "files": result }))
+            let mut result_json = json!({ "pattern": rel_path, "files": result });
+            if let Some(ov) = file_overflow {
+                result_json["overflow"] = OutputGuard::overflow_json(&ov);
+            }
+            return Ok(result_json);
+        }
+
+        let full_path = resolve_path(ctx, rel_path).await?;
+
+        if full_path.is_file() {
+            let (client, lang) = get_lsp_client(ctx, &full_path).await?;
+            let symbols = client.document_symbols(&full_path, &lang).await?;
+            let include_body = guard.should_include_body();
+            let source = if include_body {
+                std::fs::read_to_string(&full_path).ok()
+            } else {
+                None
+            };
+            let json_symbols: Vec<Value> = symbols
+                .iter()
+                .map(|s| symbol_to_json(s, include_body, source.as_deref(), depth))
+                .collect();
+            Ok(json!({ "file": rel_path, "symbols": json_symbols }))
+        } else if full_path.is_dir() {
+            // Collect file paths from directory
+            let mut dir_files = vec![];
+            let walker = ignore::WalkBuilder::new(&full_path)
+                .max_depth(Some(1))
+                .build();
+            for entry in walker.flatten() {
+                if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                    continue;
+                }
+                dir_files.push(entry.path().to_path_buf());
+            }
+
+            let (dir_files, file_overflow) =
+                guard.cap_files(dir_files, "Narrow with a more specific glob or file path");
+            let include_body = guard.should_include_body();
+            let root = ctx.agent.require_project_root().await?;
+
+            // Aggregate symbols from capped file list
+            let mut result = vec![];
+            for path in &dir_files {
+                let Some(lang) = ast::detect_language(path) else {
+                    continue;
+                };
+                let language_id = crate::lsp::servers::lsp_language_id(lang);
+                if let Ok(client) = ctx.lsp.get_or_start(lang, &root).await {
+                    if let Ok(symbols) = client.document_symbols(path, language_id).await {
+                        let rel = path.strip_prefix(&root).unwrap_or(path);
+                        let source = if include_body {
+                            std::fs::read_to_string(path).ok()
+                        } else {
+                            None
+                        };
+                        let json_symbols: Vec<Value> = symbols
+                            .iter()
+                            .map(|s| {
+                                symbol_to_json(
+                                    s,
+                                    include_body,
+                                    source.as_deref(),
+                                    depth.saturating_sub(1),
+                                )
+                            })
+                            .collect();
+                        result.push(json!({
+                            "file": rel.display().to_string(),
+                            "symbols": json_symbols,
+                        }));
+                    }
+                }
+            }
+            let mut result_json = json!({ "directory": rel_path, "files": result });
+            if let Some(ov) = file_overflow {
+                result_json["overflow"] = OutputGuard::overflow_json(&ov);
+            }
+            Ok(result_json)
         } else {
             Err(anyhow!(
                 "path is neither file nor directory: {}",
@@ -181,7 +304,7 @@ impl Tool for FindSymbol {
             "required": ["pattern"],
             "properties": {
                 "pattern": { "type": "string", "description": "Symbol name or substring to search for" },
-                "relative_path": { "type": "string", "description": "Restrict search to this file" },
+                "relative_path": { "type": "string", "description": "Restrict search to this file or glob pattern (e.g. 'src/**/*.rs')" },
                 "include_body": { "type": "boolean", "default": false },
                 "depth": { "type": "integer", "default": 0, "description": "Depth of children to include" }
             }
@@ -196,9 +319,13 @@ impl Tool for FindSymbol {
 
         let root = ctx.agent.require_project_root().await?;
 
-        // If a file path is given, search within that file only
+        // If a file path (or glob) is given, search within those files only
         let files: Vec<PathBuf> = if let Some(rel) = get_path_param(&input, false)? {
-            vec![root.join(rel)]
+            if is_glob(rel) {
+                resolve_glob(ctx, rel).await?
+            } else {
+                vec![root.join(rel)]
+            }
         } else {
             // Walk project for supported files
             let mut files = vec![];
@@ -840,6 +967,27 @@ impl Point {
         assert!(symbols.iter().any(|s| s["name"].as_str() == Some("add")));
 
         ctx.lsp.shutdown_all().await;
+    }
+
+    #[tokio::test]
+    async fn get_symbols_overview_accepts_detail_level() {
+        let ctx = ToolContext {
+            agent: Agent::new(None).await.unwrap(),
+            lsp: lsp(),
+        };
+        // Should error because no project, but NOT because of unknown param
+        let err = GetSymbolsOverview
+            .call(
+                json!({ "relative_path": "x", "detail_level": "full" }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("project"),
+            "should fail on project, not param: {}",
+            err
+        );
     }
 
     #[tokio::test]
