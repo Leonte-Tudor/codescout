@@ -75,24 +75,26 @@ impl Embedder for RemoteEmbedder {
     }
 
     async fn embed(&self, texts: &[&str]) -> Result<Vec<Embedding>> {
-        let mut req = self
-            .client
-            .post(&self.endpoint)
-            .header("Content-Type", "application/json")
-            .json(&EmbedRequest {
-                model: &self.model,
-                input: texts,
-            });
-
-        if let Some(key) = &self.api_key {
-            req = req.bearer_auth(key);
+        // Send in small batches to avoid HTTP 400 from servers with payload limits (e.g. Ollama).
+        const BATCH_SIZE: usize = 8;
+        let mut all = Vec::with_capacity(texts.len());
+        for batch in texts.chunks(BATCH_SIZE) {
+            let mut req = self
+                .client
+                .post(&self.endpoint)
+                .header("Content-Type", "application/json")
+                .json(&EmbedRequest {
+                    model: &self.model,
+                    input: batch,
+                });
+            if let Some(key) = &self.api_key {
+                req = req.bearer_auth(key);
+            }
+            let resp: EmbedResponse = req.send().await?.error_for_status()?.json().await?;
+            let mut data = resp.data;
+            data.sort_by_key(|d| d.index);
+            all.extend(data.into_iter().map(|d| d.embedding));
         }
-
-        let resp: EmbedResponse = req.send().await?.error_for_status()?.json().await?;
-
-        // Sort by index to match input order
-        let mut data = resp.data;
-        data.sort_by_key(|d| d.index);
-        Ok(data.into_iter().map(|d| d.embedding).collect())
+        Ok(all)
     }
 }
