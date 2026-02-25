@@ -21,7 +21,13 @@ impl LocalEmbedder {
             fastembed::TextEmbedding::try_new(fastembed::InitOptions::new(embedding_model))?;
         // Derive actual dims by embedding a probe string.
         let probe = model.embed(vec!["probe".to_string()], None)?;
-        let dims = probe.first().map(|v| v.len()).unwrap_or(0);
+        let dims = probe
+            .first()
+            .map(|v| v.len())
+            .filter(|&d| d > 0)
+            .ok_or_else(|| {
+                anyhow::anyhow!("fastembed probe returned empty embedding — model may be corrupt")
+            })?;
         Ok(Self {
             model: Arc::new(model),
             dims,
@@ -83,5 +89,7 @@ mod tests {
         assert!(parse_model("JinaEmbeddingsV2BaseCode").is_ok());
         assert!(parse_model("BGESmallENV15Q").is_ok());
         assert!(parse_model("AllMiniLML6V2Q").is_ok());
+        assert!(parse_model("BGESmallENV15").is_ok());
+        assert!(parse_model("AllMiniLML6V2").is_ok());
     }
 }

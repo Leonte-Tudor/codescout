@@ -7,7 +7,7 @@
 //!   chunker → Embedder trait → sqlite-vec index
 //!
 //! Two Embedder backends:
-//!   - LocalEmbedder  (candle/ort, feature "local-embed") — fully offline
+//!   - LocalEmbedder  (fastembed/ONNX, feature "local-embed") — fully offline, CPU/WSL2-friendly
 //!   - RemoteEmbedder (reqwest, feature "remote-embed")   — OpenAI-compatible API
 
 pub mod ast_chunker;
