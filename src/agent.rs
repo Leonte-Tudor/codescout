@@ -57,4 +57,18 @@ impl Agent {
             .map(|p| p.root.clone())
             .ok_or_else(|| anyhow::anyhow!("No active project. Use activate_project first."))
     }
+
+    /// Run a closure with a read-lock on the active project.
+    /// Returns an error if no project is active.
+    pub async fn with_project<F, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&ActiveProject) -> Result<T>,
+    {
+        let inner = self.inner.read().await;
+        let project = inner
+            .active_project
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No active project. Use activate_project first."))?;
+        f(project)
+    }
 }

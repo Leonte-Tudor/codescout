@@ -1,6 +1,5 @@
 //! Memory tools: persistent per-project knowledge store.
 
-use anyhow::anyhow;
 use serde_json::{json, Value};
 use super::{Tool, ToolContext};
 
@@ -26,8 +25,15 @@ impl Tool for WriteMemory {
             }
         })
     }
-    async fn call(&self, _input: Value, _ctx: &ToolContext) -> anyhow::Result<Value> {
-        Err(anyhow!("write_memory: not yet wired to MemoryStore"))
+    async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
+        let topic = input["topic"].as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing 'topic' parameter"))?;
+        let content = input["content"].as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing 'content' parameter"))?;
+        ctx.agent.with_project(|p| {
+            p.memory.write(topic, content)?;
+            Ok(json!({ "status": "ok", "topic": topic }))
+        }).await
     }
 }
 
@@ -42,8 +48,15 @@ impl Tool for ReadMemory {
             "properties": { "topic": { "type": "string" } }
         })
     }
-    async fn call(&self, _input: Value, _ctx: &ToolContext) -> anyhow::Result<Value> {
-        Err(anyhow!("read_memory: not yet wired to MemoryStore"))
+    async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
+        let topic = input["topic"].as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing 'topic' parameter"))?;
+        ctx.agent.with_project(|p| {
+            match p.memory.read(topic)? {
+                Some(content) => Ok(json!({ "topic": topic, "content": content })),
+                None => Ok(json!({ "topic": topic, "content": null, "message": "not found" })),
+            }
+        }).await
     }
 }
 
@@ -54,8 +67,11 @@ impl Tool for ListMemories {
     fn input_schema(&self) -> Value {
         json!({ "type": "object", "properties": {} })
     }
-    async fn call(&self, _input: Value, _ctx: &ToolContext) -> anyhow::Result<Value> {
-        Err(anyhow!("list_memories: not yet wired to MemoryStore"))
+    async fn call(&self, _input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
+        ctx.agent.with_project(|p| {
+            let topics = p.memory.list()?;
+            Ok(json!({ "topics": topics }))
+        }).await
     }
 }
 
@@ -70,7 +86,94 @@ impl Tool for DeleteMemory {
             "properties": { "topic": { "type": "string" } }
         })
     }
-    async fn call(&self, _input: Value, _ctx: &ToolContext) -> anyhow::Result<Value> {
-        Err(anyhow!("delete_memory: not yet wired to MemoryStore"))
+    async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
+        let topic = input["topic"].as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing 'topic' parameter"))?;
+        ctx.agent.with_project(|p| {
+            p.memory.delete(topic)?;
+            Ok(json!({ "status": "ok", "topic": topic }))
+        }).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::Agent;
+    use tempfile::tempdir;
+
+    async fn test_ctx_with_project() -> (tempfile::TempDir, ToolContext) {
+        let dir = tempdir().unwrap();
+        // Create .code-explorer dir so MemoryStore::open works
+        std::fs::create_dir_all(dir.path().join(".code-explorer")).unwrap();
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        (dir, ToolContext { agent })
+    }
+
+    async fn test_ctx_no_project() -> ToolContext {
+        ToolContext { agent: Agent::new(None).await.unwrap() }
+    }
+
+    #[tokio::test]
+    async fn write_and_read_roundtrip() {
+        let (_dir, ctx) = test_ctx_with_project().await;
+        let result = WriteMemory.call(json!({
+            "topic": "test-topic",
+            "content": "hello memory"
+        }), &ctx).await.unwrap();
+        assert_eq!(result["status"], "ok");
+
+        let result = ReadMemory.call(json!({ "topic": "test-topic" }), &ctx).await.unwrap();
+        assert_eq!(result["content"], "hello memory");
+    }
+
+    #[tokio::test]
+    async fn read_missing_returns_null() {
+        let (_dir, ctx) = test_ctx_with_project().await;
+        let result = ReadMemory.call(json!({ "topic": "nonexistent" }), &ctx).await.unwrap();
+        assert!(result["content"].is_null());
+    }
+
+    #[tokio::test]
+    async fn list_after_writes() {
+        let (_dir, ctx) = test_ctx_with_project().await;
+        WriteMemory.call(json!({ "topic": "b-topic", "content": "b" }), &ctx).await.unwrap();
+        WriteMemory.call(json!({ "topic": "a-topic", "content": "a" }), &ctx).await.unwrap();
+
+        let result = ListMemories.call(json!({}), &ctx).await.unwrap();
+        let topics: Vec<&str> = result["topics"].as_array().unwrap()
+            .iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(topics, vec!["a-topic", "b-topic"]);
+    }
+
+    #[tokio::test]
+    async fn delete_removes_entry() {
+        let (_dir, ctx) = test_ctx_with_project().await;
+        WriteMemory.call(json!({ "topic": "to-delete", "content": "bye" }), &ctx).await.unwrap();
+        DeleteMemory.call(json!({ "topic": "to-delete" }), &ctx).await.unwrap();
+
+        let result = ReadMemory.call(json!({ "topic": "to-delete" }), &ctx).await.unwrap();
+        assert!(result["content"].is_null());
+    }
+
+    #[tokio::test]
+    async fn tools_error_without_active_project() {
+        let ctx = test_ctx_no_project().await;
+        assert!(WriteMemory.call(json!({ "topic": "x", "content": "y" }), &ctx).await.is_err());
+        assert!(ReadMemory.call(json!({ "topic": "x" }), &ctx).await.is_err());
+        assert!(ListMemories.call(json!({}), &ctx).await.is_err());
+        assert!(DeleteMemory.call(json!({ "topic": "x" }), &ctx).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn nested_topic_works() {
+        let (_dir, ctx) = test_ctx_with_project().await;
+        WriteMemory.call(json!({
+            "topic": "debugging/async-patterns",
+            "content": "avoid blocking the runtime"
+        }), &ctx).await.unwrap();
+
+        let result = ReadMemory.call(json!({ "topic": "debugging/async-patterns" }), &ctx).await.unwrap();
+        assert_eq!(result["content"], "avoid blocking the runtime");
     }
 }
