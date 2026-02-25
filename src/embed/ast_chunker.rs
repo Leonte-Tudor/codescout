@@ -176,9 +176,12 @@ fn is_markdown(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Maps language name to tree-sitter grammar.
+/// Maps language name to tree-sitter grammar (case-insensitive).
+///
+/// JavaScript and JSX reuse the TypeScript/TSX grammars respectively —
+/// TypeScript is a superset of JavaScript so the parse trees are compatible.
 fn get_ts_language(lang: &str) -> Option<tree_sitter::Language> {
-    match lang {
+    match lang.to_ascii_lowercase().as_str() {
         "rust" => Some(tree_sitter_rust::LANGUAGE.into()),
         "python" => Some(tree_sitter_python::LANGUAGE.into()),
         "go" => Some(tree_sitter_go::LANGUAGE.into()),
@@ -210,7 +213,7 @@ pub(crate) fn extract_ast_nodes(
     let mut cursor = root.walk();
 
     for child in root.children(&mut cursor) {
-        let dominated = if let Some(spec) = spec {
+        let is_extractable = if let Some(spec) = spec {
             spec.node_types.contains(&child.kind())
         } else {
             child.is_named()
@@ -221,7 +224,7 @@ pub(crate) fn extract_ast_nodes(
                     >= 2
                 && has_named_child(child)
         };
-        if dominated {
+        if is_extractable {
             nodes.push(AstNode {
                 start_line: child.start_position().row,
                 end_line: child.end_position().row,
@@ -252,13 +255,15 @@ fn nodes_to_chunks(
     for node in nodes {
         let expanded_start = expand_doc_comment_start(&lines, node.start_line, doc_prefixes);
 
-        // Gap chunk
+        // Gap chunk: text between previous node and this one's (expanded) start.
         if expanded_start > prev_end {
             let gap_content = lines[prev_end..expanded_start].join("\n");
             if !gap_content.trim().is_empty() {
                 if gap_content.len() > chunk_size {
                     let sub = super::chunker::split(&gap_content, chunk_size, chunk_overlap);
                     for mut sc in sub {
+                        // chunker::split returns 1-indexed lines relative to gap_content.
+                        // prev_end is 0-indexed, so adding gives correct 1-indexed file lines.
                         sc.start_line += prev_end;
                         sc.end_line += prev_end;
                         chunks.push(sc);
@@ -483,10 +488,12 @@ pub fn expand_doc_comment_start(
         return 0;
     }
 
-    // Phase 1: skip blank lines immediately above the node.
+    // Phase 1: skip blank lines immediately above the node (max 2).
     let mut cursor = node_start_line;
-    while cursor > 0 && lines[cursor - 1].trim().is_empty() {
+    let mut blank_count = 0;
+    while cursor > 0 && lines[cursor - 1].trim().is_empty() && blank_count < 2 {
         cursor -= 1;
+        blank_count += 1;
     }
 
     // If we only found blank lines all the way to the top, no doc comment.
@@ -853,5 +860,72 @@ mod tests {
             !chunks.is_empty(),
             "should fall back to line-based for comment-only files"
         );
+    }
+
+    // ---------- Additional language coverage ----------
+
+    #[test]
+    fn ast_split_go_function_with_doc() {
+        let source = "package main\n\nimport \"fmt\"\n\n// Greet prints a greeting.\nfunc Greet(name string) {\n\tfmt.Println(\"Hello\", name)\n}\n\n// Add returns the sum.\nfunc Add(a, b int) int {\n\treturn a + b\n}\n";
+        let chunks = split_file(source, "go", Path::new("main.go"), 4000, 200);
+        assert!(
+            chunks.len() >= 2,
+            "Go should split into 2+ chunks, got {}",
+            chunks.len()
+        );
+        let greet = chunks
+            .iter()
+            .find(|c| c.content.contains("func Greet"))
+            .expect("Greet chunk");
+        assert!(
+            greet.content.contains("// Greet prints"),
+            "Go func should include doc comment"
+        );
+        let add = chunks
+            .iter()
+            .find(|c| c.content.contains("func Add"))
+            .expect("Add chunk");
+        assert!(
+            !greet.content.contains("func Add"),
+            "Greet chunk should not contain Add"
+        );
+        assert!(
+            add.content.contains("// Add returns"),
+            "Add should include doc comment"
+        );
+    }
+
+    #[test]
+    fn ast_split_typescript_with_jsdoc() {
+        let source = "import { foo } from 'bar';\n\n/**\n * Adds two numbers.\n * @param a first\n * @param b second\n */\nfunction add(a: number, b: number): number {\n    return a + b;\n}\n\nfunction sub(a: number, b: number): number {\n    return a - b;\n}\n";
+        let chunks = split_file(source, "typescript", Path::new("math.ts"), 4000, 200);
+        assert!(chunks.len() >= 2, "TS should split, got {}", chunks.len());
+        let add_chunk = chunks
+            .iter()
+            .find(|c| c.content.contains("function add"))
+            .expect("add chunk");
+        assert!(
+            add_chunk.content.contains("Adds two numbers"),
+            "TS func should include JSDoc"
+        );
+    }
+
+    #[test]
+    fn ast_split_trailing_gap_captured() {
+        let source = "fn foo() {\n    1\n}\n\n// trailing comment\nconst X: i32 = 42;\n";
+        let chunks = split_file(source, "rust", Path::new("test.rs"), 4000, 200);
+        let has_trailing = chunks
+            .iter()
+            .any(|c| c.content.contains("trailing comment"));
+        assert!(has_trailing, "trailing gap text should be captured");
+    }
+
+    #[test]
+    fn expand_doc_does_not_bridge_many_blank_lines() {
+        // 4 blank lines between doc comment and node — should NOT expand
+        let source = "/// Orphaned doc.\n\n\n\n\nfn foo() {}\n";
+        let lines: Vec<&str> = source.lines().collect();
+        let expanded = expand_doc_comment_start(&lines, 5, &["///"]);
+        assert_eq!(expanded, 5, "should not bridge 4 blank lines");
     }
 }
