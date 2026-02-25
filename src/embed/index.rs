@@ -230,9 +230,11 @@ pub async fn build_index(project_root: &Path, force: bool) -> Result<()> {
 
     let config = ProjectConfig::load_or_default(project_root)?;
     let conn = open_db(project_root)?;
+    if !force {
+        check_model_mismatch(&conn, &config.embeddings.model)?;
+    }
     let embedder: Arc<dyn crate::embed::Embedder> =
         Arc::from(create_embedder(&config.embeddings.model).await?);
-    check_model_mismatch(&conn, &config.embeddings.model)?;
 
     // ── Phase 1: Walk, hash, chunk ────────────────────────────────────────────
     struct FileWork {
@@ -358,9 +360,8 @@ pub async fn build_index(project_root: &Path, force: bool) -> Result<()> {
         upsert_file_hash(&conn, &result.rel, &result.hash)?;
         tracing::debug!("indexed {} ({} chunks)", result.rel, result.chunks.len());
     }
-    conn.execute_batch("COMMIT")?;
-
     set_meta(&conn, "embed_model", &config.embeddings.model)?;
+    conn.execute_batch("COMMIT")?;
     tracing::info!(
         "Index complete: {} files indexed, {} unchanged",
         indexed,
