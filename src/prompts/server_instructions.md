@@ -64,6 +64,7 @@ Follow the hint to refine your query.
 - `insert_before_symbol(name_path, file, code)` / `insert_after_symbol(...)` — insert code
 - `rename_symbol(name_path, file, new_name)` — rename across codebase (LSP)
 - `replace_content(path, old, new)` — find-and-replace text
+- `edit_lines(path, start_line, delete_count, [new_text])` — line-based splice edit. Preferred over `replace_content` when you know the line numbers.
 - `create_text_file(path, content)` — create or overwrite a file
 
 ### Git
@@ -89,3 +90,4 @@ Follow the hint to refine your query.
 4. **Use exploring mode first.** Only switch to `detail_level: "full"` after you've identified what you need.
 5. **Respect overflow hints.** When a tool says "narrow with a file path or glob", do it — don't re-run the same broad query.
 6. **Use `list_functions` for quick overviews** when you just need signatures, not full symbol trees.
+7. **For edits to code files, prefer symbol tools** (`replace_symbol_body`, `insert_before_symbol`) over `edit_lines` or `replace_content`. Use `edit_lines` for non-code files or intra-symbol edits where you already know the line numbers.

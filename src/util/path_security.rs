@@ -238,6 +238,7 @@ pub fn check_tool_access(tool_name: &str, config: &PathSecurityConfig) -> Result
         }
         "create_text_file"
         | "replace_content"
+        | "edit_lines"
         | "replace_symbol_body"
         | "insert_before_symbol"
         | "insert_after_symbol"
@@ -553,6 +554,7 @@ mod tests {
         for tool in &[
             "create_text_file",
             "replace_content",
+            "edit_lines",
             "replace_symbol_body",
             "insert_before_symbol",
             "insert_after_symbol",

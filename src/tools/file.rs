@@ -1555,6 +1555,7 @@ mod tests {
 
         assert_eq!(result["lines_deleted"], 2);
         assert_eq!(result["lines_inserted"], 3);
+        assert_eq!(result["new_total_lines"], 5);
         let content = std::fs::read_to_string(&file).unwrap();
         assert_eq!(content, "a\nX\nY\nZ\nd\n");
     }
@@ -1629,6 +1630,7 @@ mod tests {
 
         assert_eq!(result["lines_deleted"], 2);
         assert_eq!(result["lines_inserted"], 0);
+        assert_eq!(result["new_total_lines"], 2);
         let content = std::fs::read_to_string(&file).unwrap();
         assert_eq!(content, "a\nd\n");
     }
