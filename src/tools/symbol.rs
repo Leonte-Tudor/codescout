@@ -19,6 +19,19 @@ async fn resolve_path(ctx: &ToolContext, relative_path: &str) -> anyhow::Result<
     Ok(full)
 }
 
+/// Extract a path parameter from input, accepting both "relative_path" and "path".
+/// LLMs sometimes use "path" instead of "relative_path" since file tools use "path".
+fn get_path_param(input: &Value, required: bool) -> anyhow::Result<Option<&str>> {
+    match input["relative_path"]
+        .as_str()
+        .or_else(|| input["path"].as_str())
+    {
+        Some(p) => Ok(Some(p)),
+        None if required => Err(anyhow!("missing 'relative_path' (or 'path') parameter")),
+        None => Ok(None),
+    }
+}
+
 /// Detect language from path and get an LSP client, or error if unavailable.
 ///
 /// Returns `(client, lsp_language_id)` where `lsp_language_id` is the identifier
@@ -96,7 +109,7 @@ impl Tool for GetSymbolsOverview {
         })
     }
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
-        let rel_path = input["relative_path"].as_str().unwrap_or(".");
+        let rel_path = get_path_param(&input, false)?.unwrap_or(".");
         let depth = input["depth"].as_u64().unwrap_or(1) as usize;
 
         let full_path = resolve_path(ctx, rel_path).await?;
@@ -184,7 +197,7 @@ impl Tool for FindSymbol {
         let root = ctx.agent.require_project_root().await?;
 
         // If a file path is given, search within that file only
-        let files: Vec<PathBuf> = if let Some(rel) = input["relative_path"].as_str() {
+        let files: Vec<PathBuf> = if let Some(rel) = get_path_param(&input, false)? {
             vec![root.join(rel)]
         } else {
             // Walk project for supported files
@@ -278,9 +291,7 @@ impl Tool for FindReferencingSymbols {
         let name_path = input["name_path"]
             .as_str()
             .ok_or_else(|| anyhow!("missing 'name_path'"))?;
-        let rel_path = input["relative_path"]
-            .as_str()
-            .ok_or_else(|| anyhow!("missing 'relative_path'"))?;
+        let rel_path = get_path_param(&input, true)?.unwrap();
 
         let full_path = resolve_path(ctx, rel_path).await?;
         let (client, lang) = get_lsp_client(ctx, &full_path).await?;
@@ -354,9 +365,7 @@ impl Tool for ReplaceSymbolBody {
         let name_path = input["name_path"]
             .as_str()
             .ok_or_else(|| anyhow!("missing 'name_path'"))?;
-        let rel_path = input["relative_path"]
-            .as_str()
-            .ok_or_else(|| anyhow!("missing 'relative_path'"))?;
+        let rel_path = get_path_param(&input, true)?.unwrap();
         let new_body = input["new_body"]
             .as_str()
             .ok_or_else(|| anyhow!("missing 'new_body'"))?;
@@ -411,9 +420,7 @@ impl Tool for InsertBeforeSymbol {
         let name_path = input["name_path"]
             .as_str()
             .ok_or_else(|| anyhow!("missing 'name_path'"))?;
-        let rel_path = input["relative_path"]
-            .as_str()
-            .ok_or_else(|| anyhow!("missing 'relative_path'"))?;
+        let rel_path = get_path_param(&input, true)?.unwrap();
         let code = input["code"]
             .as_str()
             .ok_or_else(|| anyhow!("missing 'code'"))?;
@@ -464,9 +471,7 @@ impl Tool for InsertAfterSymbol {
         let name_path = input["name_path"]
             .as_str()
             .ok_or_else(|| anyhow!("missing 'name_path'"))?;
-        let rel_path = input["relative_path"]
-            .as_str()
-            .ok_or_else(|| anyhow!("missing 'relative_path'"))?;
+        let rel_path = get_path_param(&input, true)?.unwrap();
         let code = input["code"]
             .as_str()
             .ok_or_else(|| anyhow!("missing 'code'"))?;
@@ -519,9 +524,7 @@ impl Tool for RenameSymbol {
         let name_path = input["name_path"]
             .as_str()
             .ok_or_else(|| anyhow!("missing 'name_path'"))?;
-        let rel_path = input["relative_path"]
-            .as_str()
-            .ok_or_else(|| anyhow!("missing 'relative_path'"))?;
+        let rel_path = get_path_param(&input, true)?.unwrap();
         let new_name = input["new_name"]
             .as_str()
             .ok_or_else(|| anyhow!("missing 'new_name'"))?;
