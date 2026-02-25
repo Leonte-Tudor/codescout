@@ -105,12 +105,14 @@ impl Tool for ListDir {
 
         let path = input["path"].as_str().unwrap_or(".");
         let recursive = input["recursive"].as_bool().unwrap_or(false);
-        let depth = if recursive { usize::MAX } else { 1 };
+        let max_depth = if recursive { None } else { Some(1) };
         let guard = OutputGuard::from_input(&input);
 
-        let walker = walkdir::WalkDir::new(path)
-            .max_depth(depth)
-            .into_iter()
+        let walker = ignore::WalkBuilder::new(path)
+            .max_depth(max_depth)
+            .hidden(true)
+            .git_ignore(true)
+            .build()
             .flatten()
             .filter(|e| e.depth() > 0);
 
@@ -124,7 +126,11 @@ impl Tool for ListDir {
 
         let mut entries = Vec::new();
         for entry in walker {
-            let suffix = if entry.file_type().is_dir() { "/" } else { "" };
+            let suffix = if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                "/"
+            } else {
+                ""
+            };
             entries.push(format!("{}{}", entry.path().display(), suffix));
             if let Some(c) = cap {
                 if entries.len() >= c {
@@ -955,5 +961,62 @@ mod tests {
             .call(json!({ "path": "/tmp/x", "old": "a" }), &ctx)
             .await
             .is_err());
+    }
+
+    // ── ListDir .git exclusion ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_dir_recursive_excludes_git() {
+        let ctx = test_ctx().await;
+        let dir = tempdir().unwrap();
+
+        // Create a fake .git/ directory with typical contents
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir(&git_dir).unwrap();
+        std::fs::create_dir(git_dir.join("objects")).unwrap();
+        std::fs::write(git_dir.join("objects").join("abc123"), "blob").unwrap();
+        std::fs::create_dir(git_dir.join("hooks")).unwrap();
+        std::fs::write(git_dir.join("hooks").join("pre-commit"), "#!/bin/sh").unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main").unwrap();
+
+        // Create real project files
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir(&src_dir).unwrap();
+        std::fs::write(src_dir.join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+
+        let result = ListDir
+            .call(
+                json!({ "path": dir.path().to_str().unwrap(), "recursive": true }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let entries: Vec<&str> = result["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+
+        // Should contain real project files
+        assert!(
+            entries.iter().any(|e| e.ends_with("main.rs")),
+            "should contain main.rs, got: {:?}",
+            entries
+        );
+        assert!(
+            entries.iter().any(|e| e.ends_with("Cargo.toml")),
+            "should contain Cargo.toml, got: {:?}",
+            entries
+        );
+
+        // Should NOT contain any .git/ entries
+        assert!(
+            !entries.iter().any(|e| e.contains(".git")),
+            ".git/ entries should be excluded, got: {:?}",
+            entries
+        );
     }
 }
