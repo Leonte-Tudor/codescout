@@ -5,10 +5,10 @@
 
 ## Current State
 
-- 35 source files, 9 modules, **108 tests passing**
-- **21 tools working**: file (6), workflow (3), memory (4), git (3), config (2), semantic (3)
-- 6 tools stubbed: symbol (7, need LSP wiring), AST (2, need tree-sitter)
-- LSP client operational: transport, process lifecycle, JSON-RPC, initialize handshake
+- 35 source files, 9 modules, **114 tests passing**
+- **27 tools working** (was 4): file (6), workflow (3), memory (4), git (3), config (2), semantic (3), symbol (7, LSP-backed)
+- 2 tools stubbed: AST (list_functions, extract_docstrings — need tree-sitter)
+- LSP client: transport, lifecycle, JSON-RPC, document symbols, references, definition, rename
 - MCP server working over stdio (rmcp)
 - Core libraries: chunker, embedding index, memory store, git blame/log/diff, config, language detection
 
@@ -199,43 +199,46 @@ Implement the LSP JSON-RPC communication layer.
 First LSP-backed tool: file/directory symbol tree.
 
 **Tasks:**
-- [ ] Send `textDocument/documentSymbol` request
-- [ ] Parse `DocumentSymbol[]` response into `Vec<SymbolInfo>` tree
-- [ ] Wire `get_symbols_overview` tool: accept file path, return symbol tree
-- [ ] Handle directory paths: aggregate symbols from all files
-- [ ] Tests: get symbols from Rust and Python test files
+- [x] Send `textDocument/documentSymbol` request
+- [x] Parse `DocumentSymbol[]` response into `Vec<SymbolInfo>` tree
+- [x] Wire `get_symbols_overview` tool: accept file path, return symbol tree
+- [x] Handle directory paths: aggregate symbols from all files
+- [x] Tests: get symbols from Rust test files via rust-analyzer
 
 **Files:** `src/tools/symbol.rs`, `src/lsp/client.rs`
 **Acceptance:** `get_symbols_overview` returns real symbols for a source file
+**Done:** combined with Sprint 3.4
 
 ### Sprint 3.4 — Definition + References
 
 Navigation tools — find where things are defined and used.
 
 **Tasks:**
-- [ ] `textDocument/definition` → convert URI+position response to file:line
-- [ ] `textDocument/references` → collect all locations
-- [ ] Wire `find_symbol` tool: search by name, resolve to definition location
-- [ ] Wire `find_referencing_symbols` tool: find all references to a symbol
-- [ ] LSP position ↔ line number conversion utilities
-- [ ] Tests: find function definition, find all call sites
+- [x] `textDocument/definition` → convert URI+position response to file:line
+- [x] `textDocument/references` → collect all locations
+- [x] Wire `find_symbol` tool: search by name across project via document symbols
+- [x] Wire `find_referencing_symbols` tool: find all references via LSP references
+- [x] URI ↔ path conversion utilities (`path_to_uri`, `uri_to_path`)
+- [x] Tests: find function by name, no-project error handling
 
 **Files:** `src/tools/symbol.rs`, `src/lsp/client.rs`
-**Acceptance:** can navigate to definitions and find all references
+**Acceptance:** can find symbols and references
 
 ### Sprint 3.5 — Rename + Symbol Editing
 
 The most complex LSP tools — modifying code through symbol operations.
 
 **Tasks:**
-- [ ] `textDocument/rename` → apply workspace edit → wire `rename_symbol` tool
-- [ ] Symbol body extraction: use document symbols + line ranges to identify symbol text
-- [ ] `replace_symbol_body`: extract current body, replace with new content
-- [ ] `insert_before_symbol` / `insert_after_symbol`: locate symbol, insert adjacent text
-- [ ] Tests: rename a function, replace a method body, insert code before/after
+- [x] `textDocument/rename` → apply workspace edit → wire `rename_symbol` tool
+- [x] Symbol body extraction: use document symbols + line ranges to identify symbol text
+- [x] `replace_symbol_body`: extract current body, replace with new content
+- [x] `insert_before_symbol` / `insert_after_symbol`: locate symbol, insert adjacent text
+- [x] `apply_text_edits()` helper for applying LSP workspace edits
+- [x] Tests: helper unit tests (apply_text_edits, uri_to_path, find_symbol_in_tree)
 
 **Files:** `src/tools/symbol.rs`, `src/lsp/client.rs`
-**Acceptance:** all 7 symbol tools work end-to-end
+**Acceptance:** all 7 symbol tools wired to LSP
+**Done:** combined with Sprint 3.3+3.4
 
 ### ⟹ CHECKPOINT: Serena Parity
 

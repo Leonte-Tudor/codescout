@@ -28,6 +28,39 @@ fn path_to_uri(path: &Path) -> Result<lsp_types::Uri> {
         .map_err(|e| anyhow::anyhow!("invalid URI '{}': {}", uri_str, e))
 }
 
+/// Convert hierarchical `DocumentSymbol[]` into our `SymbolInfo` tree.
+fn convert_document_symbols(
+    symbols: &[lsp_types::DocumentSymbol],
+    file: &PathBuf,
+    parent_path: &str,
+) -> Vec<super::SymbolInfo> {
+    symbols
+        .iter()
+        .map(|ds| {
+            let name_path = if parent_path.is_empty() {
+                ds.name.clone()
+            } else {
+                format!("{}/{}", parent_path, ds.name)
+            };
+            let children = ds
+                .children
+                .as_ref()
+                .map(|c| convert_document_symbols(c, file, &name_path))
+                .unwrap_or_default();
+            super::SymbolInfo {
+                name: ds.name.clone(),
+                name_path: name_path.clone(),
+                kind: ds.kind.into(),
+                file: file.clone(),
+                start_line: ds.range.start.line,
+                end_line: ds.range.end.line,
+                start_col: ds.range.start.character,
+                children,
+            }
+        })
+        .collect()
+}
+
 /// Configuration for launching a language server.
 #[derive(Debug, Clone)]
 pub struct LspServerConfig {
@@ -291,7 +324,9 @@ impl LspClient {
         self.alive.store(false, Ordering::SeqCst);
 
         // Wait for reader task to finish (with timeout)
-        if let Some(handle) = self.reader_handle.lock().unwrap().take() {
+        // Extract handle before awaiting to avoid holding MutexGuard across await
+        let handle = self.reader_handle.lock().unwrap().take();
+        if let Some(handle) = handle {
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
         }
 
@@ -316,6 +351,165 @@ impl LspClient {
             })?,
         )
         .await
+    }
+
+    /// Request document symbols for a file.
+    ///
+    /// Returns the hierarchical `DocumentSymbol[]` response parsed into our
+    /// `SymbolInfo` tree. Sends `didOpen` first if the file hasn't been opened.
+    pub async fn document_symbols(&self, path: &Path, language_id: &str) -> Result<Vec<super::SymbolInfo>> {
+        // Ensure the file is open in the server
+        self.did_open(path, language_id).await?;
+
+        let uri = path_to_uri(path)?;
+        let params = lsp_types::DocumentSymbolParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = self
+            .request("textDocument/documentSymbol", serde_json::to_value(params)?)
+            .await?;
+
+        // LSP returns either DocumentSymbol[] (hierarchical) or SymbolInformation[] (flat)
+        // We prefer hierarchical and convert both to SymbolInfo
+        if result.is_null() {
+            return Ok(vec![]);
+        }
+
+        let file_path = path.to_path_buf();
+
+        // Try hierarchical first
+        if let Ok(symbols) = serde_json::from_value::<Vec<lsp_types::DocumentSymbol>>(result.clone()) {
+            return Ok(convert_document_symbols(&symbols, &file_path, ""));
+        }
+
+        // Fall back to flat SymbolInformation[]
+        if let Ok(infos) = serde_json::from_value::<Vec<lsp_types::SymbolInformation>>(result) {
+            return Ok(infos
+                .iter()
+                .map(|si| super::SymbolInfo {
+                    name: si.name.clone(),
+                    name_path: si.name.clone(),
+                    kind: si.kind.into(),
+                    file: file_path.clone(),
+                    start_line: si.location.range.start.line,
+                    end_line: si.location.range.end.line,
+                    start_col: si.location.range.start.character,
+                    children: vec![],
+                })
+                .collect());
+        }
+
+        Ok(vec![])
+    }
+
+    /// Request references for a symbol at a given position.
+    pub async fn references(
+        &self,
+        path: &Path,
+        line: u32,
+        col: u32,
+        language_id: &str,
+    ) -> Result<Vec<lsp_types::Location>> {
+        self.did_open(path, language_id).await?;
+        let uri = path_to_uri(path)?;
+        let params = lsp_types::ReferenceParams {
+            text_document_position: lsp_types::TextDocumentPositionParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri },
+                position: lsp_types::Position { line, character: col },
+            },
+            context: lsp_types::ReferenceContext {
+                include_declaration: true,
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = self
+            .request("textDocument/references", serde_json::to_value(params)?)
+            .await?;
+
+        if result.is_null() {
+            return Ok(vec![]);
+        }
+
+        Ok(serde_json::from_value(result)?)
+    }
+
+    /// Request definition location for a symbol at a given position.
+    pub async fn goto_definition(
+        &self,
+        path: &Path,
+        line: u32,
+        col: u32,
+        language_id: &str,
+    ) -> Result<Vec<lsp_types::Location>> {
+        self.did_open(path, language_id).await?;
+        let uri = path_to_uri(path)?;
+        let params = lsp_types::GotoDefinitionParams {
+            text_document_position_params: lsp_types::TextDocumentPositionParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri },
+                position: lsp_types::Position { line, character: col },
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = self
+            .request("textDocument/definition", serde_json::to_value(params)?)
+            .await?;
+
+        if result.is_null() {
+            return Ok(vec![]);
+        }
+
+        // Can return Location | Location[] | LocationLink[]
+        if let Ok(loc) = serde_json::from_value::<lsp_types::Location>(result.clone()) {
+            return Ok(vec![loc]);
+        }
+        if let Ok(locs) = serde_json::from_value::<Vec<lsp_types::Location>>(result.clone()) {
+            return Ok(locs);
+        }
+        if let Ok(links) = serde_json::from_value::<Vec<lsp_types::LocationLink>>(result) {
+            return Ok(links
+                .into_iter()
+                .map(|l| lsp_types::Location {
+                    uri: l.target_uri,
+                    range: l.target_selection_range,
+                })
+                .collect());
+        }
+
+        Ok(vec![])
+    }
+
+    /// Request a rename across the workspace.
+    pub async fn rename(
+        &self,
+        path: &Path,
+        line: u32,
+        col: u32,
+        new_name: &str,
+        language_id: &str,
+    ) -> Result<lsp_types::WorkspaceEdit> {
+        self.did_open(path, language_id).await?;
+        let uri = path_to_uri(path)?;
+        let params = lsp_types::RenameParams {
+            text_document_position: lsp_types::TextDocumentPositionParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri },
+                position: lsp_types::Position { line, character: col },
+            },
+            new_name: new_name.to_string(),
+            work_done_progress_params: Default::default(),
+        };
+
+        let result = self
+            .request("textDocument/rename", serde_json::to_value(params)?)
+            .await?;
+
+        Ok(serde_json::from_value(result)?)
     }
 
     /// Send textDocument/didClose notification for a file.
