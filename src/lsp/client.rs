@@ -363,8 +363,8 @@ impl LspClient {
             return Ok(vec![]);
         }
 
-        let infos: Vec<lsp_types::SymbolInformation> = serde_json::from_value(result)
-            .context("failed to parse workspace/symbol response")?;
+        let infos: Vec<lsp_types::SymbolInformation> =
+            serde_json::from_value(result).context("failed to parse workspace/symbol response")?;
 
         Ok(infos
             .into_iter()

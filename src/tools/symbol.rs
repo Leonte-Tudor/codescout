@@ -98,6 +98,23 @@ async fn get_lsp_client(
     Ok((client, language_id.to_string()))
 }
 
+/// Recursively collect symbols whose name contains the given pattern (case-insensitive).
+fn collect_matching(
+    symbols: &[SymbolInfo],
+    pattern: &str,
+    include_body: bool,
+    source: Option<&str>,
+    depth: usize,
+    out: &mut Vec<Value>,
+) {
+    for sym in symbols {
+        if sym.name.to_lowercase().contains(pattern) {
+            out.push(symbol_to_json(sym, include_body, source, depth));
+        }
+        collect_matching(&sym.children, pattern, include_body, source, depth, out);
+    }
+}
+
 /// Convert a `SymbolInfo` tree to JSON with optional body inclusion.
 fn symbol_to_json(
     sym: &SymbolInfo,
@@ -341,22 +358,6 @@ impl Tool for FindSymbol {
                 OutputMode::Focused => None,
             };
 
-            fn collect_matching(
-                symbols: &[SymbolInfo],
-                pattern: &str,
-                include_body: bool,
-                source: Option<&str>,
-                depth: usize,
-                out: &mut Vec<Value>,
-            ) {
-                for sym in symbols {
-                    if sym.name.to_lowercase().contains(pattern) {
-                        out.push(symbol_to_json(sym, include_body, source, depth));
-                    }
-                    collect_matching(&sym.children, pattern, include_body, source, depth, out);
-                }
-            }
-
             for file_path in &files {
                 if let Some(cap) = early_cap {
                     if matches.len() >= cap {
@@ -431,6 +432,44 @@ impl Tool for FindSymbol {
                             None
                         };
                         matches.push(symbol_to_json(&sym, include_body, source.as_deref(), depth));
+                    }
+                }
+            }
+
+            // Tree-sitter fallback: if workspace/symbol returned nothing (LSP
+            // not running, still indexing, or doesn't support workspace/symbol),
+            // walk source files and extract symbols with tree-sitter.
+            if matches.is_empty() {
+                let walker = ignore::WalkBuilder::new(&root)
+                    .hidden(true)
+                    .git_ignore(true)
+                    .build();
+                for entry in walker.flatten() {
+                    if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                        continue;
+                    }
+                    let path = entry.path();
+                    if ast::detect_language(path).is_none() {
+                        continue;
+                    }
+                    if let Ok(symbols) = crate::ast::extract_symbols(path) {
+                        let source = if include_body {
+                            std::fs::read_to_string(path).ok()
+                        } else {
+                            None
+                        };
+                        collect_matching(
+                            &symbols,
+                            &pattern_lower,
+                            include_body,
+                            source.as_deref(),
+                            depth,
+                            &mut matches,
+                        );
+                    }
+                    // Early cap to avoid scanning entire huge projects
+                    if matches.len() > guard.max_results {
+                        break;
                     }
                 }
             }
@@ -1042,7 +1081,10 @@ impl Point {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
 
-        assert!(found, "should find 'Point' project-wide via workspace/symbol within 5s");
+        assert!(
+            found,
+            "should find 'Point' project-wide via workspace/symbol within 5s"
+        );
 
         ctx.lsp.shutdown_all().await;
     }
@@ -1137,6 +1179,54 @@ impl Point {
     fn uri_to_path_strips_prefix() {
         let p = uri_to_path("file:///home/user/code.rs").unwrap();
         assert_eq!(p, PathBuf::from("/home/user/code.rs"));
+    }
+
+    #[tokio::test]
+    async fn find_symbol_project_wide_treesitter_fallback() {
+        // No rust-analyzer needed — this test verifies the tree-sitter fallback
+        // that kicks in when workspace/symbol returns empty.
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".code-explorer")).unwrap();
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub fn unique_benchmark_fn() -> i32 { 42 }\n\npub struct UniqueTestStruct { x: i32 }\n",
+        )
+        .unwrap();
+
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        let ctx = ToolContext { agent, lsp: lsp() };
+
+        // Project-wide search (no relative_path) — LSP will fail/return empty,
+        // so tree-sitter fallback should find the symbol.
+        let result = FindSymbol
+            .call(json!({ "pattern": "unique_benchmark_fn" }), &ctx)
+            .await
+            .unwrap();
+
+        let symbols = result["symbols"].as_array().unwrap();
+        assert!(
+            !symbols.is_empty(),
+            "should find symbol via tree-sitter fallback: {:?}",
+            result
+        );
+        assert!(symbols
+            .iter()
+            .any(|s| s["name"].as_str().unwrap() == "unique_benchmark_fn"));
+
+        // Also check struct is findable
+        let result2 = FindSymbol
+            .call(json!({ "pattern": "UniqueTestStruct" }), &ctx)
+            .await
+            .unwrap();
+        let symbols2 = result2["symbols"].as_array().unwrap();
+        assert!(
+            symbols2
+                .iter()
+                .any(|s| s["name"].as_str().unwrap() == "UniqueTestStruct"),
+            "should find struct via tree-sitter fallback: {:?}",
+            result2
+        );
     }
 
     #[test]
