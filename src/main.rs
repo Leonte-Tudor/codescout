@@ -2,17 +2,6 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-mod agent;
-mod ast;
-mod config;
-mod embed;
-mod git;
-mod lsp;
-mod memory;
-mod server;
-mod tools;
-mod util;
-
 #[derive(Parser)]
 #[command(
     name = "code-explorer",
@@ -76,14 +65,14 @@ async fn main() -> Result<()> {
                 "Starting code-explorer MCP server (transport={})",
                 transport
             );
-            server::run(project, &transport, &host, port).await?;
+            code_explorer::server::run(project, &transport, &host, port).await?;
         }
         Commands::Index { project, force } => {
             let root = project
                 .or_else(|| std::env::current_dir().ok())
                 .unwrap_or_else(|| std::path::PathBuf::from("."));
             tracing::info!("Indexing project at {}", root.display());
-            embed::index::build_index(&root, force).await?;
+            code_explorer::embed::index::build_index(&root, force).await?;
         }
     }
 

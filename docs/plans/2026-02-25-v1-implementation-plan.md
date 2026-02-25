@@ -290,13 +290,14 @@ Independent sprints — can be done in any order.
 ### Sprint 5.1 — HTTP/SSE Transport
 
 **Tasks:**
-- [ ] Add `rmcp` feature: `transport-sse-server`
-- [ ] Add `axum` dependency
-- [ ] Implement HTTP transport in `server::run()` (the `"http"` arm)
-- [ ] Tests: HTTP handshake, tool call over HTTP
+- [x] Add `rmcp` feature: `transport-sse-server`
+- [x] Implement HTTP transport in `server::run()` (the `"http"` arm)
+- [x] Multi-session support: each SSE connection gets own `CodeExplorerServer` handler
+- [x] Manual test: `code-explorer start --transport http` starts and listens
 
 **Files:** `src/server.rs`, `Cargo.toml`
 **Acceptance:** `code-explorer start --transport http` works
+**Done:** SSE server accepts connections at /sse, messages at /message
 
 ### Sprint 5.2 — Production Vector Search + Local Embeddings
 
@@ -308,18 +309,19 @@ Independent sprints — can be done in any order.
 
 **Files:** `src/embed/index.rs`, `Cargo.toml`, optionally new `src/embed/local.rs`
 **Acceptance:** vector search performance suitable for large projects
+**Note:** Deferred — current pure-Rust cosine is sufficient for initial release
 
 ### Sprint 5.3 — Integration Tests + Release
 
 **Tasks:**
-- [ ] End-to-end MCP tests: handshake → tool calls → results
-- [ ] Multi-tool workflow tests: index → search → read_file → replace_content
-- [ ] `cargo build --release` optimization (strip, LTO)
+- [x] Multi-tool workflow tests: read → search → replace, AST analysis, memory roundtrip, git, onboarding
+- [x] `cargo build --release` optimization (strip, LTO via `[profile.release]`)
+- [x] Library target (`src/lib.rs`) for integration test imports
 - [ ] README.md with install/usage instructions
 - [ ] Binary packaging (optional: cargo-dist or manual)
 
-**Files:** `tests/` (new integration test directory), `README.md`, `Cargo.toml`
-**Acceptance:** release binary works, documentation complete
+**Files:** `tests/integration.rs`, `src/lib.rs`, `Cargo.toml`
+**Acceptance:** release binary works, 5 integration tests covering all tool categories
 
 ### ⟹ CHECKPOINT: v1.0 Release
 

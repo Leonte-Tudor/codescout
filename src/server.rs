@@ -42,7 +42,11 @@ pub struct CodeExplorerServer {
 
 impl CodeExplorerServer {
     pub fn new(agent: Agent) -> Self {
-        let lsp = Arc::new(LspManager::new());
+        Self::from_parts(agent, Arc::new(LspManager::new()))
+    }
+
+    /// Create a server with an existing LspManager (used for HTTP multi-session).
+    pub fn from_parts(agent: Agent, lsp: Arc<LspManager>) -> Self {
         let tools: Vec<Arc<dyn Tool>> = vec![
             // File tools (fully implemented)
             Arc::new(ReadFile),
@@ -165,11 +169,12 @@ impl ServerHandler for CodeExplorerServer {
 /// Entry point: start the MCP server with the chosen transport.
 pub async fn run(project: Option<PathBuf>, transport: &str, host: &str, port: u16) -> Result<()> {
     let agent = Agent::new(project).await?;
-    let server = CodeExplorerServer::new(agent);
+    let lsp = Arc::new(LspManager::new());
 
     match transport {
         "stdio" => {
             tracing::info!("code-explorer MCP server ready (stdio)");
+            let server = CodeExplorerServer::from_parts(agent, lsp);
             let service = server
                 .serve(rmcp::transport::stdio())
                 .await
@@ -181,10 +186,33 @@ pub async fn run(project: Option<PathBuf>, transport: &str, host: &str, port: u1
             Ok(())
         }
         "http" => {
-            // HTTP/SSE transport requires the transport-sse-server feature + axum.
-            // Add to Cargo.toml: rmcp = { features = [..., "transport-sse-server"] }
-            let _ = (host, port);
-            anyhow::bail!("HTTP transport not yet implemented. Use --transport stdio")
+            let addr: std::net::SocketAddr = format!("{}:{}", host, port).parse()?;
+            tracing::info!("code-explorer MCP server ready (HTTP/SSE at {})", addr);
+            tracing::info!("  SSE endpoint: http://{}/sse", addr);
+            tracing::info!("  Message endpoint: http://{}/message", addr);
+
+            let mut sse_server = rmcp::transport::sse_server::SseServer::serve(addr)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to start SSE server: {}", e))?;
+
+            // Accept connections — each SSE session gets its own handler
+            while let Some(transport) = sse_server.next_transport().await {
+                let agent = agent.clone();
+                let lsp = lsp.clone();
+                tokio::spawn(async move {
+                    let handler = CodeExplorerServer::from_parts(agent, lsp);
+                    match handler.serve(transport).await {
+                        Ok(service) => {
+                            if let Err(e) = service.waiting().await {
+                                tracing::debug!("SSE session ended: {}", e);
+                            }
+                        }
+                        Err(e) => tracing::warn!("SSE session failed to start: {}", e),
+                    }
+                });
+            }
+
+            Ok(())
         }
         other => anyhow::bail!("Unknown transport '{}'. Use 'stdio' or 'http'.", other),
     }
