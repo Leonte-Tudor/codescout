@@ -33,15 +33,42 @@ impl Tool for ReadFile {
     }
 
     async fn call(&self, input: Value, _ctx: &ToolContext) -> Result<Value> {
+        use super::output::{OutputGuard, OutputMode, OverflowInfo};
+
         let path = input["path"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing path"))?;
         let text = std::fs::read_to_string(path)?;
-        let content = match (input["start_line"].as_u64(), input["end_line"].as_u64()) {
-            (Some(start), Some(end)) => extract_lines(&text, start as usize, end as usize),
-            _ => text,
-        };
-        Ok(json!({ "content": content }))
+
+        // If explicit line range given, use it directly (no capping)
+        if let (Some(start), Some(end)) = (input["start_line"].as_u64(), input["end_line"].as_u64())
+        {
+            let content = extract_lines(&text, start as usize, end as usize);
+            return Ok(json!({ "content": content }));
+        }
+
+        // No line range: cap in exploring mode
+        let guard = OutputGuard::from_input(&input);
+        let total_lines = text.lines().count();
+        let max_lines = guard.max_results; // 200 by default
+
+        if guard.mode == OutputMode::Exploring && total_lines > max_lines {
+            let content = extract_lines(&text, 1, max_lines);
+            let overflow = OverflowInfo {
+                shown: max_lines,
+                total: total_lines,
+                hint: format!(
+                    "File has {} lines. Use start_line/end_line to read specific ranges",
+                    total_lines
+                ),
+                next_offset: None,
+            };
+            let mut result = json!({ "content": content, "total_lines": total_lines });
+            result["overflow"] = OutputGuard::overflow_json(&overflow);
+            Ok(result)
+        } else {
+            Ok(json!({ "content": text, "total_lines": total_lines }))
+        }
     }
 }
 
@@ -423,6 +450,45 @@ mod tests {
         let ctx = test_ctx().await;
         let result = ReadFile.call(json!({}), &ctx).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_file_caps_large_file_in_exploring_mode() {
+        let ctx = test_ctx().await;
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("big.txt");
+        let content: String = (1..=300).map(|i| format!("line {}\n", i)).collect();
+        std::fs::write(&file, &content).unwrap();
+
+        // Default (exploring) mode: should cap at 200 lines
+        let result = ReadFile
+            .call(json!({ "path": file.to_str().unwrap() }), &ctx)
+            .await
+            .unwrap();
+
+        let returned = result["content"].as_str().unwrap();
+        assert_eq!(returned.lines().count(), 200);
+        assert!(returned.starts_with("line 1\n"));
+        assert_eq!(result["total_lines"], 300);
+        assert!(result["overflow"].is_object());
+        assert_eq!(result["overflow"]["shown"], 200);
+        assert_eq!(result["overflow"]["total"], 300);
+    }
+
+    #[tokio::test]
+    async fn read_file_small_file_no_overflow() {
+        let ctx = test_ctx().await;
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("small.txt");
+        std::fs::write(&file, "line 1\nline 2\nline 3\n").unwrap();
+
+        let result = ReadFile
+            .call(json!({ "path": file.to_str().unwrap() }), &ctx)
+            .await
+            .unwrap();
+
+        assert!(result.get("overflow").is_none());
+        assert_eq!(result["total_lines"], 3);
     }
 
     // ── ListDir ───────────────────────────────────────────────────────────────
