@@ -294,6 +294,25 @@ pub async fn build_index(project_root: &Path, force: bool) -> Result<()> {
     Ok(())
 }
 
+/// Statistics about the embedding index.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct IndexStats {
+    pub file_count: usize,
+    pub chunk_count: usize,
+    pub embedding_count: usize,
+}
+
+/// Query index statistics from the database.
+pub fn index_stats(conn: &Connection) -> Result<IndexStats> {
+    let file_count: usize = conn
+        .query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?;
+    let chunk_count: usize = conn
+        .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
+    let embedding_count: usize = conn
+        .query_row("SELECT COUNT(*) FROM chunk_embeddings", [], |r| r.get(0))?;
+    Ok(IndexStats { file_count, chunk_count, embedding_count })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
