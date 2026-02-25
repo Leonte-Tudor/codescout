@@ -68,7 +68,10 @@ impl Default for PathSecurityConfig {
 // ---------------------------------------------------------------------------
 
 fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME").ok().map(PathBuf::from)
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+        .map(PathBuf::from)
 }
 
 /// Expand a leading `~` to `$HOME`.
@@ -614,6 +617,17 @@ mod tests {
                 tool
             );
         }
+    }
+
+    #[test]
+    fn home_dir_returns_some_on_all_platforms() {
+        // home_dir() must return Some on every platform we support.
+        // On Linux/macOS it reads $HOME, on Windows $USERPROFILE.
+        let home = home_dir();
+        assert!(
+            home.is_some(),
+            "home_dir() returned None — deny-list will be empty (security bug)"
+        );
     }
 
     #[test]
