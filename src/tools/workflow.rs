@@ -122,11 +122,32 @@ impl Tool for CheckOnboardingPerformed {
         ctx.agent
             .with_project(|p| {
                 let has_config = p.root.join(".code-explorer").join("project.toml").exists();
-                let has_memory = p.memory.read("onboarding")?.is_some();
+                let memories = p.memory.list()?;
+                let has_onboarding_memory = memories.iter().any(|m| m == "onboarding");
+                let onboarded = has_config && has_onboarding_memory;
+
+                let message = if onboarded {
+                    if memories.is_empty() {
+                        "Onboarding was performed but no memories were created. Consider running `onboarding` again.".to_string()
+                    } else {
+                        format!(
+                            "Onboarding already performed. Available memories: {}. \
+                             Use `read_memory(topic)` to read relevant ones as needed for your current task. \
+                             Do not read all memories at once — only read those relevant to what you're working on.",
+                            memories.join(", ")
+                        )
+                    }
+                } else {
+                    "Onboarding not performed yet. Call the `onboarding` tool to discover the project \
+                     and create memories that will help you work effectively.".to_string()
+                };
+
                 Ok(json!({
-                    "onboarded": has_config && has_memory,
+                    "onboarded": onboarded,
                     "has_config": has_config,
-                    "has_onboarding_memory": has_memory,
+                    "has_onboarding_memory": has_onboarding_memory,
+                    "memories": memories,
+                    "message": message,
                 }))
             })
             .await
@@ -257,5 +278,32 @@ mod tests {
             lsp: lsp(),
         };
         assert!(Onboarding.call(json!({}), &ctx).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn check_onboarding_returns_guidance_message() {
+        let (_dir, ctx) = project_ctx().await;
+
+        // Before onboarding
+        let result = CheckOnboardingPerformed
+            .call(json!({}), &ctx)
+            .await
+            .unwrap();
+        assert!(result["message"]
+            .as_str()
+            .unwrap()
+            .contains("not performed yet"));
+
+        // Run onboarding
+        Onboarding.call(json!({}), &ctx).await.unwrap();
+
+        // After onboarding
+        let result = CheckOnboardingPerformed
+            .call(json!({}), &ctx)
+            .await
+            .unwrap();
+        let msg = result["message"].as_str().unwrap();
+        assert!(msg.contains("already performed"));
+        assert!(result["memories"].as_array().unwrap().len() > 0);
     }
 }
