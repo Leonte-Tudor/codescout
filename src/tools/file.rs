@@ -291,12 +291,17 @@ impl Tool for ReplaceContent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use crate::agent::Agent;
+    use crate::lsp::LspManager;
     use serde_json::json;
     use tempfile::tempdir;
 
     async fn test_ctx() -> ToolContext {
-        ToolContext { agent: Agent::new(None).await.unwrap() }
+        ToolContext {
+            agent: Agent::new(None).await.unwrap(),
+            lsp: Arc::new(LspManager::new()),
+        }
     }
 
     // ── ReadFile ──────────────────────────────────────────────────────────────

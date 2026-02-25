@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::lsp::LspManager;
+
 use anyhow::Result;
 use rmcp::{
     model::{
@@ -34,11 +36,13 @@ use crate::tools::{
 #[derive(Clone)]
 pub struct CodeExplorerServer {
     agent: Agent,
+    lsp: Arc<LspManager>,
     tools: Vec<Arc<dyn Tool>>,
 }
 
 impl CodeExplorerServer {
     pub fn new(agent: Agent) -> Self {
+        let lsp = Arc::new(LspManager::new());
         let tools: Vec<Arc<dyn Tool>> = vec![
             // File tools (fully implemented)
             Arc::new(ReadFile),
@@ -79,7 +83,7 @@ impl CodeExplorerServer {
             Arc::new(ActivateProject),
             Arc::new(GetCurrentConfig),
         ];
-        Self { agent, tools }
+        Self { agent, lsp, tools }
     }
 
     fn find_tool(&self, name: &str) -> Option<&Arc<dyn Tool>> {
@@ -143,7 +147,7 @@ impl ServerHandler for CodeExplorerServer {
             .map(Value::Object)
             .unwrap_or(Value::Object(Default::default()));
 
-        let ctx = ToolContext { agent: self.agent.clone() };
+        let ctx = ToolContext { agent: self.agent.clone(), lsp: self.lsp.clone() };
         match tool.call(input, &ctx).await {
             Ok(output) => {
                 let text = serde_json::to_string_pretty(&output)

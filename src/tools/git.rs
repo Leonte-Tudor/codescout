@@ -119,7 +119,9 @@ impl Tool for GitDiff {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use crate::agent::Agent;
+    use crate::lsp::LspManager;
     use tempfile::tempdir;
 
     /// Create a temp git repo with one commit and return the context.
@@ -141,7 +143,7 @@ mod tests {
         // Create .code-explorer dir for agent
         std::fs::create_dir_all(dir.path().join(".code-explorer")).unwrap();
         let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
-        (dir, ToolContext { agent })
+        (dir, ToolContext { agent, lsp: Arc::new(LspManager::new()) })
     }
 
     #[tokio::test]
@@ -218,7 +220,7 @@ mod tests {
 
     #[tokio::test]
     async fn tools_error_without_project() {
-        let ctx = ToolContext { agent: Agent::new(None).await.unwrap() };
+        let ctx = ToolContext { agent: Agent::new(None).await.unwrap(), lsp: Arc::new(LspManager::new()) };
         assert!(GitBlame.call(json!({ "path": "x" }), &ctx).await.is_err());
         assert!(GitLog.call(json!({}), &ctx).await.is_err());
         assert!(GitDiff.call(json!({}), &ctx).await.is_err());

@@ -151,8 +151,12 @@ impl Tool for ExecuteShellCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use crate::agent::Agent;
+    use crate::lsp::LspManager;
     use tempfile::tempdir;
+
+    fn lsp() -> Arc<LspManager> { Arc::new(LspManager::new()) }
 
     async fn project_ctx() -> (tempfile::TempDir, ToolContext) {
         let dir = tempdir().unwrap();
@@ -161,7 +165,7 @@ mod tests {
         std::fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
         std::fs::write(dir.path().join("lib.py"), "def hello(): pass").unwrap();
         let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
-        (dir, ToolContext { agent })
+        (dir, ToolContext { agent, lsp: lsp() })
     }
 
     #[tokio::test]
@@ -206,7 +210,7 @@ mod tests {
 
     #[tokio::test]
     async fn onboarding_errors_without_project() {
-        let ctx = ToolContext { agent: Agent::new(None).await.unwrap() };
+        let ctx = ToolContext { agent: Agent::new(None).await.unwrap(), lsp: lsp() };
         assert!(Onboarding.call(json!({}), &ctx).await.is_err());
     }
 }

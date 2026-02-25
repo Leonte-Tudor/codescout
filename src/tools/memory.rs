@@ -99,19 +99,23 @@ impl Tool for DeleteMemory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use crate::agent::Agent;
+    use crate::lsp::LspManager;
     use tempfile::tempdir;
+
+    fn lsp() -> Arc<LspManager> { Arc::new(LspManager::new()) }
 
     async fn test_ctx_with_project() -> (tempfile::TempDir, ToolContext) {
         let dir = tempdir().unwrap();
         // Create .code-explorer dir so MemoryStore::open works
         std::fs::create_dir_all(dir.path().join(".code-explorer")).unwrap();
         let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
-        (dir, ToolContext { agent })
+        (dir, ToolContext { agent, lsp: lsp() })
     }
 
     async fn test_ctx_no_project() -> ToolContext {
-        ToolContext { agent: Agent::new(None).await.unwrap() }
+        ToolContext { agent: Agent::new(None).await.unwrap(), lsp: lsp() }
     }
 
     #[tokio::test]

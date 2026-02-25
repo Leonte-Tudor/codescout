@@ -61,14 +61,18 @@ impl Tool for GetCurrentConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use crate::agent::Agent;
+    use crate::lsp::LspManager;
     use tempfile::tempdir;
+
+    fn lsp() -> Arc<LspManager> { Arc::new(LspManager::new()) }
 
     #[tokio::test]
     async fn activate_and_get_config() {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".code-explorer")).unwrap();
-        let ctx = ToolContext { agent: Agent::new(None).await.unwrap() };
+        let ctx = ToolContext { agent: Agent::new(None).await.unwrap(), lsp: lsp() };
 
         // No project initially
         assert!(GetCurrentConfig.call(json!({}), &ctx).await.is_err());
@@ -87,7 +91,7 @@ mod tests {
 
     #[tokio::test]
     async fn activate_nonexistent_path_errors() {
-        let ctx = ToolContext { agent: Agent::new(None).await.unwrap() };
+        let ctx = ToolContext { agent: Agent::new(None).await.unwrap(), lsp: lsp() };
         let result = ActivateProject.call(json!({
             "path": "/nonexistent/path/xyz"
         }), &ctx).await;
@@ -101,7 +105,7 @@ mod tests {
         std::fs::create_dir_all(dir1.path().join(".code-explorer")).unwrap();
         std::fs::create_dir_all(dir2.path().join(".code-explorer")).unwrap();
 
-        let ctx = ToolContext { agent: Agent::new(Some(dir1.path().to_path_buf())).await.unwrap() };
+        let ctx = ToolContext { agent: Agent::new(Some(dir1.path().to_path_buf())).await.unwrap(), lsp: lsp() };
 
         // Activate dir2
         ActivateProject.call(json!({

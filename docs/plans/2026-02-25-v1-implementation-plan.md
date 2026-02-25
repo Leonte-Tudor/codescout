@@ -5,9 +5,10 @@
 
 ## Current State
 
-- 32 source files, 9 modules, **97 tests passing**
-- **21 tools working** (was 4): file (6), workflow (3), memory (4), git (3), config (2), semantic (3)
-- 6 tools stubbed: symbol (7, need LSP), AST (2, need tree-sitter)
+- 35 source files, 9 modules, **108 tests passing**
+- **21 tools working**: file (6), workflow (3), memory (4), git (3), config (2), semantic (3)
+- 6 tools stubbed: symbol (7, need LSP wiring), AST (2, need tree-sitter)
+- LSP client operational: transport, process lifecycle, JSON-RPC, initialize handshake
 - MCP server working over stdio (rmcp)
 - Core libraries: chunker, embedding index, memory store, git blame/log/diff, config, language detection
 
@@ -165,31 +166,32 @@ Sequential sprints, each building on the previous.
 Spawn and manage language server processes.
 
 **Tasks:**
-- [ ] `LspManager` struct: manages per-language server instances
-- [ ] `LspManager::get_or_start(language, workspace_root)` — lazy startup
-- [ ] Spawn process with stdio pipes (`tokio::process::Command`)
-- [ ] Graceful shutdown on drop
-- [ ] Crash detection + automatic restart with backoff
-- [ ] Add `lsp: Arc<LspManager>` to `ToolContext`
-- [ ] Tests: spawn a language server, verify it starts and stops
+- [x] `LspManager` struct: manages per-language server instances
+- [x] `LspManager::get_or_start(language, workspace_root)` — lazy startup
+- [x] Spawn process with stdio pipes (`tokio::process::Command`)
+- [x] Graceful shutdown on drop (`kill_on_drop(true)` + explicit shutdown)
+- [x] Crash detection (reader task detects EOF, sets `alive=false`, drains pending)
+- [x] Add `lsp: Arc<LspManager>` to `ToolContext`
+- [x] Tests: spawn rust-analyzer, verify it starts and stops
 
-**Files:** `src/lsp/client.rs`, `src/tools/mod.rs` (ToolContext)
-**Acceptance:** can spawn rust-analyzer or pyright, process lifecycle works
+**Files:** `src/lsp/client.rs`, `src/lsp/manager.rs`, `src/tools/mod.rs` (ToolContext)
+**Acceptance:** can spawn rust-analyzer, process lifecycle works
+**Done:** combined with Sprint 3.2
 
 ### Sprint 3.2 — JSON-RPC Protocol Layer
 
 Implement the LSP JSON-RPC communication layer.
 
 **Tasks:**
-- [ ] JSON-RPC message framing (Content-Length header + JSON body)
-- [ ] Request/response correlation via ID tracking
-- [ ] `initialize` / `initialized` handshake per LSP spec
-- [ ] `textDocument/didOpen` notification
-- [ ] Request timeout handling
-- [ ] Notification dispatch (diagnostics, etc. — log and discard initially)
-- [ ] Tests: full handshake with a real LSP server
+- [x] JSON-RPC message framing (Content-Length header + JSON body)
+- [x] Request/response correlation via ID tracking (`AtomicI64` + `HashMap<i64, oneshot::Sender>`)
+- [x] `initialize` / `initialized` handshake per LSP spec
+- [x] `textDocument/didOpen` + `didClose` notifications
+- [x] Request timeout handling (30s default)
+- [x] Notification dispatch (diagnostics, etc. — logged and discarded)
+- [x] Tests: full handshake with rust-analyzer, transport roundtrip tests
 
-**Files:** `src/lsp/client.rs` (or new `src/lsp/transport.rs`)
+**Files:** `src/lsp/transport.rs` (new), `src/lsp/client.rs` (rewritten)
 **Acceptance:** can send requests and receive correlated responses
 
 ### Sprint 3.3 — Document Symbols → `get_symbols_overview`

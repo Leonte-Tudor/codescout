@@ -132,15 +132,17 @@ impl Tool for IndexStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use crate::agent::Agent;
     use crate::embed::index;
+    use crate::lsp::LspManager;
     use tempfile::tempdir;
 
     async fn project_ctx() -> (tempfile::TempDir, ToolContext) {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".code-explorer")).unwrap();
         let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
-        (dir, ToolContext { agent })
+        (dir, ToolContext { agent, lsp: Arc::new(LspManager::new()) })
     }
 
     #[tokio::test]
@@ -177,7 +179,7 @@ mod tests {
 
     #[tokio::test]
     async fn tools_error_without_project() {
-        let ctx = ToolContext { agent: Agent::new(None).await.unwrap() };
+        let ctx = ToolContext { agent: Agent::new(None).await.unwrap(), lsp: Arc::new(LspManager::new()) };
         assert!(SemanticSearch.call(json!({ "query": "test" }), &ctx).await.is_err());
         assert!(IndexProject.call(json!({}), &ctx).await.is_err());
         assert!(IndexStatus.call(json!({}), &ctx).await.is_err());

@@ -12,18 +12,22 @@ pub mod semantic;
 pub mod symbol;
 pub mod workflow;
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use serde_json::Value;
 
 use crate::agent::Agent;
+use crate::lsp::LspManager;
 
 /// Shared context passed to every tool invocation.
 ///
-/// Holds references to all shared resources (agent state, and eventually
-/// LSP manager, parser pool, etc.). Extend this struct as new shared
+/// Holds references to all shared resources (agent state, LSP manager,
+/// and eventually parser pool, etc.). Extend this struct as new shared
 /// resources are added — all tools get access automatically.
 pub struct ToolContext {
     pub agent: Agent,
+    pub lsp: Arc<LspManager>,
 }
 
 /// A single MCP tool exposed to the LLM.
