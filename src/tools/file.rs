@@ -3,7 +3,7 @@
 use anyhow::Result;
 use serde_json::{json, Value};
 
-use super::{Tool, ToolContext};
+use super::{RecoverableError, Tool, ToolContext};
 use crate::util::text::extract_lines;
 
 // ── read_file ────────────────────────────────────────────────────────────────
@@ -45,6 +45,20 @@ impl Tool for ReadFile {
             project_root.as_deref(),
             &security,
         )?;
+
+        // Block source code files — force symbol tool usage
+        if let Some(lang) = crate::ast::detect_language(&resolved) {
+            if lang != "markdown" {
+                return Err(RecoverableError::with_hint(
+                    "read_file is not available for source code files",
+                    "Use symbol tools instead:\n  \
+                     get_symbols_overview(path) — see all symbols + line numbers\n  \
+                     find_symbol(name, include_body=true) — read a specific symbol body\n  \
+                     list_functions(path) — quick function signatures",
+                )
+                .into());
+            }
+        }
 
         // Determine source tag
         let source_tag = {
@@ -373,81 +387,6 @@ impl Tool for FindFile {
         Ok(json!({ "files": matches, "total": matches.len() }))
     }
 }
-
-// ── replace_content ─────────────────────────────────────────────────────────
-
-pub struct ReplaceContent;
-
-#[async_trait::async_trait]
-impl Tool for ReplaceContent {
-    fn name(&self) -> &str {
-        "replace_content"
-    }
-
-    fn description(&self) -> &str {
-        "Find and replace text in a file. Supports regex or literal matching."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "required": ["path", "old", "new"],
-            "properties": {
-                "path": { "type": "string", "description": "File path" },
-                "old": { "type": "string", "description": "Text or regex pattern to find" },
-                "new": { "type": "string", "description": "Replacement text" },
-                "is_regex": { "type": "boolean", "default": false },
-                "replace_all": { "type": "boolean", "default": true }
-            }
-        })
-    }
-
-    async fn call(&self, input: Value, ctx: &ToolContext) -> Result<Value> {
-        let path = input["path"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("missing 'path' parameter"))?;
-        let old = input["old"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("missing 'old' parameter"))?;
-        let new_text = input["new"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("missing 'new' parameter"))?;
-        let is_regex = input["is_regex"].as_bool().unwrap_or(false);
-        let replace_all = input["replace_all"].as_bool().unwrap_or(true);
-
-        let root = ctx.agent.require_project_root().await?;
-        let security = ctx.agent.security_config().await;
-        let resolved = crate::util::path_security::validate_write_path(path, &root, &security)?;
-
-        let content = std::fs::read_to_string(&resolved)?;
-
-        let (replaced, count) = if is_regex {
-            let re = regex::RegexBuilder::new(old)
-                .size_limit(1 << 20)
-                .dfa_size_limit(1 << 20)
-                .build()?;
-            if replace_all {
-                let result = re.replace_all(&content, new_text);
-                let c = re.find_iter(&content).count();
-                (result.into_owned(), c)
-            } else {
-                let c = if re.is_match(&content) { 1 } else { 0 };
-                (re.replace(&content, new_text).into_owned(), c)
-            }
-        } else if replace_all {
-            let c = content.matches(old).count();
-            (content.replace(old, new_text), c)
-        } else {
-            let c = if content.contains(old) { 1 } else { 0 };
-            (content.replacen(old, new_text, 1), c)
-        };
-
-        std::fs::write(&resolved, &replaced)?;
-        Ok(json!({ "status": "ok", "replacements": count, "path": resolved.display().to_string() }))
-    }
-}
-
-// ── edit_lines ──────────────────────────────────────────────────────────────
 
 pub struct EditLines;
 
@@ -1008,137 +947,6 @@ mod tests {
         assert_eq!(result["files"].as_array().unwrap().len(), 0);
     }
 
-    // ── ReplaceContent ───────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn replace_content_literal() {
-        let (dir, ctx) = project_ctx().await;
-        let file = dir.path().join("code.rs");
-        std::fs::write(&file, "let x = 1;\nlet y = 2;\nlet x = 3;\n").unwrap();
-
-        let result = ReplaceContent
-            .call(
-                json!({
-                    "path": file.to_str().unwrap(),
-                    "old": "let x",
-                    "new": "let z",
-                    "replace_all": true
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(result["replacements"], 2);
-        let content = std::fs::read_to_string(&file).unwrap();
-        assert_eq!(content, "let z = 1;\nlet y = 2;\nlet z = 3;\n");
-    }
-
-    #[tokio::test]
-    async fn replace_content_literal_first_only() {
-        let (dir, ctx) = project_ctx().await;
-        let file = dir.path().join("code.rs");
-        std::fs::write(&file, "aaa bbb aaa").unwrap();
-
-        let result = ReplaceContent
-            .call(
-                json!({
-                    "path": file.to_str().unwrap(),
-                    "old": "aaa",
-                    "new": "ccc",
-                    "replace_all": false
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(result["replacements"], 1);
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "ccc bbb aaa");
-    }
-
-    #[tokio::test]
-    async fn replace_content_regex() {
-        let (dir, ctx) = project_ctx().await;
-        let file = dir.path().join("data.txt");
-        std::fs::write(&file, "foo123bar456baz").unwrap();
-
-        let result = ReplaceContent
-            .call(
-                json!({
-                    "path": file.to_str().unwrap(),
-                    "old": r"\d+",
-                    "new": "NUM",
-                    "is_regex": true,
-                    "replace_all": true
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(result["replacements"], 2);
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "fooNUMbarNUMbaz");
-    }
-
-    #[tokio::test]
-    async fn replace_content_regex_first_only() {
-        let (dir, ctx) = project_ctx().await;
-        let file = dir.path().join("data.txt");
-        std::fs::write(&file, "aaa111bbb222").unwrap();
-
-        let result = ReplaceContent
-            .call(
-                json!({
-                    "path": file.to_str().unwrap(),
-                    "old": r"\d+",
-                    "new": "X",
-                    "is_regex": true,
-                    "replace_all": false
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(result["replacements"], 1);
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "aaaXbbb222");
-    }
-
-    #[tokio::test]
-    async fn replace_content_no_match() {
-        let (dir, ctx) = project_ctx().await;
-        let file = dir.path().join("data.txt");
-        std::fs::write(&file, "hello world").unwrap();
-
-        let result = ReplaceContent
-            .call(
-                json!({
-                    "path": file.to_str().unwrap(),
-                    "old": "xyz",
-                    "new": "abc"
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(result["replacements"], 0);
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello world");
-    }
-
-    #[tokio::test]
-    async fn replace_content_missing_params_errors() {
-        let ctx = test_ctx().await;
-        assert!(ReplaceContent.call(json!({}), &ctx).await.is_err());
-        let outside = std::env::temp_dir().join("nonexistent_xplat_test");
-        let outside_str = outside.to_str().unwrap();
-        assert!(ReplaceContent
-            .call(json!({ "path": outside_str, "old": "a" }), &ctx)
-            .await
-            .is_err());
-    }
-
     // ── ListDir .git exclusion ──────────────────────────────────────────────
 
     #[tokio::test]
@@ -1237,26 +1045,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replace_content_missing_params_errors_security() {
-        let ctx = test_ctx().await;
-        let result = ReplaceContent.call(json!({}), &ctx).await;
-        assert!(
-            result.is_err(),
-            "replace_content without params should error"
-        );
-
-        let outside = std::env::temp_dir().join("nonexistent_xplat_test");
-        let outside_str = outside.to_str().unwrap();
-        let result = ReplaceContent
-            .call(json!({ "path": outside_str, "old": "a" }), &ctx)
-            .await;
-        assert!(
-            result.is_err(),
-            "replace_content without 'new' should error"
-        );
-    }
-
-    #[tokio::test]
     async fn search_for_pattern_missing_pattern_errors() {
         let ctx = test_ctx().await;
         let result = SearchForPattern.call(json!({}), &ctx).await;
@@ -1283,26 +1071,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replace_content_invalid_regex_errors() {
-        let (dir, ctx) = project_ctx().await;
-        let file = dir.path().join("test.txt");
-        std::fs::write(&file, "hello").unwrap();
-
-        let result = ReplaceContent
-            .call(
-                json!({
-                    "path": file.to_str().unwrap(),
-                    "old": "[invalid(",
-                    "new": "x",
-                    "is_regex": true
-                }),
-                &ctx,
-            )
-            .await;
-        assert!(result.is_err(), "invalid regex in replace should error");
-    }
-
-    #[tokio::test]
     async fn read_file_nonexistent_errors_gracefully() {
         let ctx = test_ctx().await;
         let result = ReadFile
@@ -1311,47 +1079,6 @@ mod tests {
         assert!(result.is_err());
         // Error should not panic, just return Err
     }
-
-    #[tokio::test]
-    async fn replace_content_nonexistent_file_errors() {
-        let (dir, ctx) = project_ctx().await;
-        let target = dir.path().join("nonexistent.txt");
-        let result = ReplaceContent
-            .call(
-                json!({
-                    "path": target.to_str().unwrap(),
-                    "old": "a",
-                    "new": "b"
-                }),
-                &ctx,
-            )
-            .await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn replace_content_no_matches_reports_zero() {
-        let (dir, ctx) = project_ctx().await;
-        let file = dir.path().join("test.txt");
-        std::fs::write(&file, "hello world").unwrap();
-
-        let result = ReplaceContent
-            .call(
-                json!({
-                    "path": file.to_str().unwrap(),
-                    "old": "xyz_not_found",
-                    "new": "replacement"
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        assert_eq!(result["replacements"], 0);
-        // Original content should be unchanged
-        let content = std::fs::read_to_string(&file).unwrap();
-        assert_eq!(content, "hello world");
-    }
-
     #[tokio::test]
     async fn read_file_binary_content_does_not_panic() {
         let ctx = test_ctx().await;
@@ -1434,31 +1161,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replace_content_outside_project_rejected() {
-        let (_dir, ctx) = project_ctx().await;
-        let outside = tempdir().unwrap();
-        let target = outside.path().join("victim.txt");
-        std::fs::write(&target, "original").unwrap();
-
-        let result = ReplaceContent
-            .call(
-                json!({
-                    "path": target.to_str().unwrap(),
-                    "old": "original",
-                    "new": "hacked"
-                }),
-                &ctx,
-            )
-            .await;
-        assert!(
-            result.is_err(),
-            "replace outside project should be rejected"
-        );
-        // Verify file was not modified
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "original");
-    }
-
-    #[tokio::test]
     async fn create_file_within_project_works() {
         let (dir, ctx) = project_ctx().await;
         let result = CreateTextFile
@@ -1511,27 +1213,6 @@ mod tests {
             result.is_err(),
             "huge regex should be rejected by size limit"
         );
-    }
-
-    #[tokio::test]
-    async fn replace_content_huge_regex_rejected() {
-        let (dir, ctx) = project_ctx().await;
-        let file = dir.path().join("test.txt");
-        std::fs::write(&file, "hello").unwrap();
-
-        let huge_pattern = format!("({})", "a?".repeat(100_000));
-        let result = ReplaceContent
-            .call(
-                json!({
-                    "path": file.to_str().unwrap(),
-                    "old": huge_pattern,
-                    "new": "x",
-                    "is_regex": true
-                }),
-                &ctx,
-            )
-            .await;
-        assert!(result.is_err(), "huge regex in replace should be rejected");
     }
 
     #[tokio::test]
@@ -1727,5 +1408,60 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result["source"], "project");
+    }
+
+    // ── ReadFile source code gate ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn read_file_blocks_source_code_files() {
+        let (dir, ctx) = project_ctx().await;
+        let rs_file = dir.path().join("main.rs");
+        std::fs::write(&rs_file, "fn main() {}\n").unwrap();
+
+        let result = ReadFile
+            .call(json!({ "path": rs_file.to_str().unwrap() }), &ctx)
+            .await;
+        assert!(result.is_err(), "read_file should block .rs files");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("source code"),
+            "error should mention source code: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_allows_non_source_files() {
+        let (dir, ctx) = project_ctx().await;
+        let toml_file = dir.path().join("config.toml");
+        std::fs::write(&toml_file, "key = \"value\"\n").unwrap();
+
+        let result = ReadFile
+            .call(json!({ "path": toml_file.to_str().unwrap() }), &ctx)
+            .await;
+        assert!(result.is_ok(), "read_file should allow .toml files");
+    }
+
+    #[tokio::test]
+    async fn read_file_allows_markdown_files() {
+        let (dir, ctx) = project_ctx().await;
+        let md_file = dir.path().join("README.md");
+        std::fs::write(&md_file, "# Hello\n").unwrap();
+
+        let result = ReadFile
+            .call(json!({ "path": md_file.to_str().unwrap() }), &ctx)
+            .await;
+        assert!(result.is_ok(), "read_file should allow .md files");
+    }
+
+    #[tokio::test]
+    async fn read_file_allows_unknown_extensions() {
+        let (dir, ctx) = project_ctx().await;
+        let csv_file = dir.path().join("data.csv");
+        std::fs::write(&csv_file, "a,b,c\n1,2,3\n").unwrap();
+
+        let result = ReadFile
+            .call(json!({ "path": csv_file.to_str().unwrap() }), &ctx)
+            .await;
+        assert!(result.is_ok(), "read_file should allow unknown extensions");
     }
 }

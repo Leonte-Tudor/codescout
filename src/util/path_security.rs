@@ -254,7 +254,6 @@ pub fn check_tool_access(tool_name: &str, config: &PathSecurityConfig) -> Result
             }
         }
         "create_text_file"
-        | "replace_content"
         | "edit_lines"
         | "replace_symbol_body"
         | "insert_before_symbol"
@@ -561,7 +560,6 @@ mod tests {
         let config = PathSecurityConfig::default();
         assert!(config.file_write_enabled);
         assert!(check_tool_access("create_text_file", &config).is_ok());
-        assert!(check_tool_access("replace_content", &config).is_ok());
         assert!(check_tool_access("replace_symbol_body", &config).is_ok());
     }
 
@@ -571,7 +569,6 @@ mod tests {
         config.file_write_enabled = false;
         for tool in &[
             "create_text_file",
-            "replace_content",
             "edit_lines",
             "replace_symbol_body",
             "insert_before_symbol",

@@ -65,7 +65,7 @@ Follow the hint to refine your query.
 - `list_functions(path, [scope])` — quick function signatures via tree-sitter
 
 ### Reading & Searching
-- `read_file(path, [start_line], [end_line])` — read file content (use line ranges for large files)
+- `read_file(path, [start_line], [end_line])` — read non-code files (README, configs, TOML, JSON, YAML). Blocked for source code files — use symbol tools instead.
 - `semantic_search(query, [limit], [scope])` — find code by natural language description
 - `search_for_pattern(pattern, [max_results])` — regex search across the project
 - `find_file(pattern, [max_results])` — find files by glob pattern
@@ -75,8 +75,7 @@ Follow the hint to refine your query.
 - `replace_symbol_body(name_path, file, new_body)` — replace a function/method body
 - `insert_before_symbol(name_path, file, code)` / `insert_after_symbol(...)` — insert code
 - `rename_symbol(name_path, file, new_name)` — rename across codebase (LSP)
-- `replace_content(path, old, new)` — find-and-replace text
-- `edit_lines(path, start_line, delete_count, [new_text])` — line-based splice edit. Preferred over `replace_content` when you know the line numbers.
+- `edit_lines(path, start_line, delete_count, [new_text])` — line-based splice edit. Use when you know the line numbers.
 - `create_text_file(path, content)` — create or overwrite a file
 
 ### Git
@@ -113,9 +112,9 @@ Tools with `scope`: `find_symbol`, `get_symbols_overview`, `find_referencing_sym
 ## Rules
 
 1. **PREFER symbol tools over reading entire files.** `get_symbols_overview` + `find_symbol(include_body=true)` is almost always more efficient than `read_file`.
-2. **Use `read_file` for non-code files** (README, configs, TOML, JSON, YAML) or when you need a specific line range.
+2. **`read_file` only works for non-code files** (README, configs, TOML, JSON, YAML). It will reject source code files — use `get_symbols_overview` + `find_symbol(include_body=true)` instead.
 3. **Start with semantic search for "how does X work?" questions.** Then drill into results with symbol tools.
 4. **Use exploring mode first.** Only switch to `detail_level: "full"` after you've identified what you need.
 5. **Respect overflow hints.** When a tool says "narrow with a file path or glob", do it — don't re-run the same broad query.
 6. **Use `list_functions` for quick overviews** when you just need signatures, not full symbol trees.
-7. **For edits to code files, prefer symbol tools** (`replace_symbol_body`, `insert_before_symbol`) over `edit_lines` or `replace_content`. Use `edit_lines` for non-code files or intra-symbol edits where you already know the line numbers.
+7. **For edits to code files, prefer symbol tools** (`replace_symbol_body`, `insert_before_symbol`) over `edit_lines`. Use `edit_lines` for non-code files or intra-symbol edits where you already know the line numbers.

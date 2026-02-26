@@ -36,15 +36,14 @@ async fn project_with_files(files: &[(&str, &str)]) -> (tempfile::TempDir, ToolC
 
 #[tokio::test]
 async fn workflow_read_search_replace() {
-    use code_explorer::tools::file::{ReadFile, ReplaceContent, SearchForPattern};
-
+    use code_explorer::tools::file::{EditLines, ReadFile, SearchForPattern};
     let (dir, ctx) = project_with_files(&[
         (
-            "src/main.rs",
+            "src/main.txt",
             "fn main() {\n    println!(\"Hello, world!\");\n}\n",
         ),
         (
-            "src/lib.rs",
+            "src/lib.txt",
             "pub fn greet(name: &str) -> String {\n    format!(\"Hello, {}!\", name)\n}\n",
         ),
     ])
@@ -66,26 +65,27 @@ async fn workflow_read_search_replace() {
     );
 
     // Step 2: Read the file we want to modify
-    let lib_path = dir.path().join("src/lib.rs").display().to_string();
+    let lib_path = dir.path().join("src/lib.txt").display().to_string();
     let read_result = ReadFile
         .call(json!({ "path": &lib_path }), &ctx)
         .await
         .unwrap();
     assert!(read_result["content"].as_str().unwrap().contains("Hello"));
 
-    // Step 3: Replace "Hello" with "Greetings" (ReplaceContent uses "old" and "new")
-    let replace_result = ReplaceContent
+    // Step 3: Replace line 2 containing "Hello" with "Greetings" via EditLines
+    let replace_result = EditLines
         .call(
             json!({
                 "path": &lib_path,
-                "old": "Hello",
-                "new": "Greetings",
+                "start_line": 2,
+                "delete_count": 1,
+                "new_text": "    format!(\"Greetings, {}!\", name)\n",
             }),
             &ctx,
         )
         .await
         .unwrap();
-    assert_eq!(replace_result["replacements"], 1);
+    assert_eq!(replace_result["status"], "ok");
 
     // Step 4: Verify the change
     let read_after = ReadFile
