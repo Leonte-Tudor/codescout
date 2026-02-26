@@ -98,6 +98,12 @@ pub fn open_db(project_root: &Path) -> Result<Connection> {
         conn.execute_batch("ALTER TABLE files ADD COLUMN mtime INTEGER")?;
     }
 
+    // Migrate: add source column to chunks if missing (safe no-op if already present)
+    let has_source: bool = conn.prepare("SELECT source FROM chunks LIMIT 0").is_ok();
+    if !has_source {
+        conn.execute_batch("ALTER TABLE chunks ADD COLUMN source TEXT NOT NULL DEFAULT 'project'")?;
+    }
+
     Ok(conn)
 }
 
