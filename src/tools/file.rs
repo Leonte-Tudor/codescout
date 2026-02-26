@@ -234,7 +234,7 @@ impl Tool for SearchForPattern {
             "required": ["pattern"],
             "properties": {
                 "pattern": { "type": "string", "description": "Regex pattern" },
-                "path": { "type": "string", "description": "Directory to search (default: project root)" },
+                "path": { "type": "string", "description": "File or directory to search (default: project root)" },
                 "max_results": { "type": "integer", "default": 50 }
             }
         })
@@ -1136,6 +1136,36 @@ mod tests {
             .unwrap();
         let matches = result["matches"].as_array().unwrap();
         assert_eq!(matches.len(), 5, "max_results should be respected");
+    }
+
+    #[tokio::test]
+    async fn search_for_pattern_single_file_path() {
+        let ctx = test_ctx().await;
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("spec.md");
+        std::fs::write(
+            &file_path,
+            "# Notifications\nPush notifications are sent via FCM.\nEmail alerts are also supported.\n",
+        )
+        .unwrap();
+
+        // Pass a file path, not a directory
+        let result = SearchForPattern
+            .call(
+                json!({
+                    "pattern": "notification|push",
+                    "path": file_path.to_str().unwrap(),
+                    "max_results": 40
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let matches = result["matches"].as_array().unwrap();
+        assert!(
+            !matches.is_empty(),
+            "search_for_pattern should work with a single file path"
+        );
     }
 
     // ── Security: Path Sandboxing ─────────────────────────────────────────

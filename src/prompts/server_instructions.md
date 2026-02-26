@@ -67,7 +67,7 @@ Follow the hint to refine your query.
 ### Reading & Searching
 - `read_file(path, [start_line], [end_line])` — read non-code files (README, configs, TOML, JSON, YAML). Blocked for source code files — use symbol tools instead.
 - `semantic_search(query, [limit], [scope])` — find code by natural language description
-- `search_for_pattern(pattern, [max_results])` — regex search across the project
+- `search_for_pattern(pattern, [path], [max_results])` — regex search across the project or within a specific file
 - `find_file(pattern, [max_results])` — find files by glob pattern
 - `check_drift([threshold], [path])` — query semantic drift scores from last index build *(opt out with `drift_detection_enabled = false` in `[embeddings]`)*
 
