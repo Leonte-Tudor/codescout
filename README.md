@@ -109,126 +109,31 @@ instead of `semantic_search`.
 tool to use for each situation. The `PreToolUse` hook actively intercepts
 suboptimal tool calls and redirects them before they execute.
 
-## Tools
+## Tools (31)
 
-### Symbol Navigation (LSP)
+| Category | Count | Highlights |
+|---|---|---|
+| Symbol Navigation | 7 | `find_symbol`, `get_symbols_overview`, `find_referencing_symbols`, `rename_symbol` |
+| File Operations | 7 | `read_file`, `list_dir`, `search_for_pattern`, `create_text_file` |
+| Semantic Search | 3 | `semantic_search`, `index_project`, `index_status` |
+| Git | 3 | `git_blame`, `git_log`, `git_diff` |
+| AST Analysis | 2 | `list_functions`, `extract_docstrings` (offline, instant) |
+| Memory | 4 | `write_memory`, `read_memory`, `list_memories`, `delete_memory` |
+| Workflow & Config | 5 | `onboarding`, `execute_shell_command`, `activate_project` |
 
-| Tool | Purpose |
-|---|---|
-| `find_symbol` | Find symbols by name (supports glob patterns) |
-| `get_symbols_overview` | Symbol tree for a file, directory, or glob |
-| `find_referencing_symbols` | Find all callers/usages across the codebase |
-| `replace_symbol_body` | Replace a function/method body by name |
-| `insert_before_symbol` | Insert code before a symbol |
-| `insert_after_symbol` | Insert code after a symbol |
-| `rename_symbol` | Rename across the codebase (LSP-powered) |
+Every tool defaults to compact output (exploring mode) and supports `detail_level: "full"` with pagination for when you need the complete picture.
 
-### File Operations
-
-| Tool | Purpose |
-|---|---|
-| `read_file` | Read file content (with optional line ranges) |
-| `list_dir` | Directory listing (shallow by default) |
-| `search_for_pattern` | Regex search across project files |
-| `find_file` | Find files by glob pattern |
-| `create_text_file` | Create or overwrite a file |
-| `replace_content` | Find-and-replace text in a file |
-
-### Git
-
-| Tool | Purpose |
-|---|---|
-| `git_blame` | Line-by-line authorship with commit info |
-| `git_log` | Commit history (filterable by path) |
-| `git_diff` | Uncommitted changes or diff against a commit |
-
-### Semantic Search
-
-| Tool | Purpose |
-|---|---|
-| `semantic_search` | Find code by natural language description |
-| `index_project` | Build/rebuild the embedding index |
-| `index_status` | Check index health and statistics |
-
-### AST Analysis (tree-sitter)
-
-| Tool | Purpose |
-|---|---|
-| `list_functions` | Quick function signatures (offline, instant) |
-| `extract_docstrings` | Extract doc comments (offline, instant) |
-
-### Memory
-
-| Tool | Purpose |
-|---|---|
-| `write_memory` | Store project knowledge |
-| `read_memory` | Retrieve stored knowledge |
-| `list_memories` | List all memory topics |
-| `delete_memory` | Remove a memory topic |
-
-### Workflow
-
-| Tool | Purpose |
-|---|---|
-| `onboarding` | First-time project discovery |
-| `check_onboarding_performed` | Check if onboarding is done |
-| `execute_shell_command` | Run shell commands in project root |
-
-### Config
-
-| Tool | Purpose |
-|---|---|
-| `activate_project` | Switch active project |
-| `get_current_config` | Show project configuration |
-
-## How It Works
-
-### Progressive Disclosure
-
-Every tool defaults to compact output — names and locations, not full source code. Request details with `detail_level: "full"` only when you need them. This keeps the context window useful throughout long sessions.
-
-- **Exploring mode** (default): compact summaries, capped at 200 items
-- **Focused mode**: full detail with pagination via `offset`/`limit`
-- **Overflow hints**: "showing 47 of 312 — narrow with a file path" instead of silent truncation
-
-### Architecture
-
-```
-MCP Layer (rmcp) → Tool trait → dispatch
-    ↓
-Agent (project state, config, memory)
-    ↓
-┌──────────┬──────────┬──────────┬──────────┐
-│ LSP      │ AST      │ Git      │ Embedding│
-│ (9 langs)│ (t-sitter)│ (git2)  │ (SQLite) │
-└──────────┴──────────┴──────────┴──────────┘
-```
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
-
-## Configuration
-
-code-explorer stores per-project config in `.code-explorer/project.toml`:
-
-```toml
-[embeddings]
-model = "ollama:nomic-embed-text"   # or "openai:text-embedding-3-small"
-chunk_size = 1500
-chunk_overlap = 200
-```
-
-### Embedding backends
-
-- **Remote** (default feature): Any OpenAI-compatible API — Ollama, OpenAI, custom endpoints
-- **Local**: CPU-based via fastembed-rs — `cargo install code-explorer --features local-embed`
+See the [full tool reference](docs/manual/src/tools/overview.md) for parameters, examples, and usage guidance.
 
 ## Supported Languages
 
-### LSP (full navigation)
-Rust, Python, TypeScript/JavaScript, Go, Java, Kotlin, C/C++, C#, Ruby
+| | Languages |
+|---|---|
+| **Full** (LSP + tree-sitter) | Rust, Python, TypeScript, TSX, Go, Java, Kotlin |
+| **LSP only** | JavaScript, JSX, C, C++, C#, Ruby |
+| **Detection only** | PHP, Swift, Scala, Elixir, Haskell, Lua, Bash, Markdown |
 
-### Tree-sitter (AST analysis)
-Rust, Python, TypeScript, Go, Java, Kotlin
+See [Language Support](docs/manual/src/language-support.md) for install commands and known quirks.
 
 ## Contributing
 
