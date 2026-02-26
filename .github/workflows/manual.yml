@@ -1,0 +1,38 @@
+name: Manual
+
+on:
+  push:
+    branches: [master]
+    paths: [docs/manual/**]
+  pull_request:
+    paths: [docs/manual/**]
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@mdbook
+      - run: mdbook build docs/manual
+
+  deploy:
+    name: Deploy
+    if: github.ref == 'refs/heads/master'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@mdbook
+      - run: mdbook build docs/manual
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/manual
+      - id: deploy
+        uses: actions/deploy-pages@v4

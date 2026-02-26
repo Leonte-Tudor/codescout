@@ -52,6 +52,17 @@ jobs:
           key: ${{ matrix.os }}-${{ matrix.name }}
       - run: cargo test ${{ matrix.flags }}
 
+  tool-docs-sync:
+    name: Tool Docs Sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check all tools are documented
+        run: |
+          grep -A1 'fn name(&self)' src/tools/*.rs | grep '"' | sed 's/.*"\(.*\)"/\1/' | sort > /tmp/code-tools.txt
+          grep -roh '## `[a-z_]*`' docs/manual/src/tools/ | sed 's/## `\(.*\)`/\1/' | sort -u > /tmp/doc-tools.txt
+          diff /tmp/code-tools.txt /tmp/doc-tools.txt || { echo "::error::Tool docs out of sync! Update docs/manual/src/tools/ to match src/tools/"; exit 1; }
+
   msrv:
     name: MSRV (1.75)
     runs-on: ubuntu-latest
