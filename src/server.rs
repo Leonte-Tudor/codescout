@@ -179,11 +179,29 @@ impl ServerHandler for CodeExplorerServer {
                     serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string());
                 Ok(CallToolResult::success(vec![Content::text(text)]))
             }
-            Err(e) => {
-                // Surface tool errors to the LLM as error content (not an MCP protocol error)
-                Ok(CallToolResult::error(vec![Content::text(e.to_string())]))
-            }
+            Err(e) => Ok(route_tool_error(e)),
         }
+    }
+}
+
+/// Route a tool `Err(e)` to the appropriate `CallToolResult`.
+///
+/// - [`RecoverableError`] → `isError: false` with a JSON body
+///   `{"error": "...", "hint": "..."}`.  The LLM sees the problem and a
+///   suggestion but sibling parallel calls are **not** aborted by the client.
+/// - Any other error → `isError: true` (fatal; something truly broke).
+///
+/// [`RecoverableError`]: crate::tools::RecoverableError
+fn route_tool_error(e: anyhow::Error) -> CallToolResult {
+    if let Some(rec) = e.downcast_ref::<crate::tools::RecoverableError>() {
+        let mut body = serde_json::json!({ "error": rec.message });
+        if let Some(hint) = &rec.hint {
+            body["hint"] = serde_json::json!(hint);
+        }
+        let text = serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string());
+        CallToolResult::success(vec![Content::text(text)])
+    } else {
+        CallToolResult::error(vec![Content::text(e.to_string())])
     }
 }
 
@@ -481,5 +499,56 @@ mod tests {
             crate::util::path_security::check_tool_access("execute_shell_command", &security)
                 .is_err()
         );
+    }
+
+    // ── route_tool_error ───────────────────────────────────────────────────
+
+    #[test]
+    fn recoverable_error_routes_to_success_not_is_error() {
+        let err = anyhow::Error::new(crate::tools::RecoverableError::new("path not found"));
+        let result = route_tool_error(err);
+        assert!(
+            result.is_error != Some(true),
+            "RecoverableError must not set isError:true"
+        );
+    }
+
+    #[test]
+    fn recoverable_error_body_has_error_key() {
+        let err = anyhow::Error::new(crate::tools::RecoverableError::new(
+            "path not found: foo/bar",
+        ));
+        let result = route_tool_error(err);
+        let text = &result.content[0].as_text().unwrap().text;
+        let body: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(body["error"], "path not found: foo/bar");
+    }
+
+    #[test]
+    fn recoverable_error_body_includes_hint_when_present() {
+        let err = anyhow::Error::new(crate::tools::RecoverableError::with_hint(
+            "not found",
+            "use list_dir to explore",
+        ));
+        let result = route_tool_error(err);
+        let text = &result.content[0].as_text().unwrap().text;
+        let body: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(body["hint"], "use list_dir to explore");
+    }
+
+    #[test]
+    fn recoverable_error_without_hint_omits_hint_from_body() {
+        let err = anyhow::Error::new(crate::tools::RecoverableError::new("not found"));
+        let result = route_tool_error(err);
+        let text = &result.content[0].as_text().unwrap().text;
+        let body: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert!(body.get("hint").is_none(), "hint key must be absent");
+    }
+
+    #[test]
+    fn plain_anyhow_error_routes_to_is_error_true() {
+        let err = anyhow::anyhow!("LSP crashed unexpectedly");
+        let result = route_tool_error(err);
+        assert_eq!(result.is_error, Some(true));
     }
 }

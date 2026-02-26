@@ -33,7 +33,9 @@ code-explorer is an MCP server that gives LLMs IDE-grade code intelligence. It e
 Bridges the internal `Tool` trait to rmcp's `ServerHandler`. All tools are registered as `Vec<Arc<dyn Tool>>` and dispatched dynamically in `call_tool`.
 
 - Stdio transport via `rmcp::transport::stdio()`
-- Tool errors returned as `CallToolResult::error` (surfaces to LLM, doesn't crash)
+- `route_tool_error` in `server.rs` routes tool failures:
+  `RecoverableError` → `isError:false` + JSON hint (sibling calls not aborted);
+  other errors → `isError:true` (fatal)
 - HTTP transport planned but not yet implemented
 
 ### Agent (`src/agent.rs`)

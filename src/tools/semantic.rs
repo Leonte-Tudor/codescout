@@ -566,7 +566,10 @@ mod tests {
         let (_dir, ctx) = project_ctx().await;
         let result = CheckDrift.call(json!({}), &ctx).await.unwrap();
         assert_eq!(result["status"], "disabled");
-        assert!(result["hint"].as_str().unwrap().contains("drift_detection_enabled"));
+        assert!(result["hint"]
+            .as_str()
+            .unwrap()
+            .contains("drift_detection_enabled"));
     }
 
     #[tokio::test]

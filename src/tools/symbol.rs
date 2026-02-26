@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::anyhow;
 use serde_json::{json, Value};
 
+use crate::tools::RecoverableError;
+
 use super::output::{OutputGuard, OutputMode};
 use super::{Tool, ToolContext};
 use crate::ast;
@@ -31,7 +33,12 @@ async fn resolve_read_path(ctx: &ToolContext, relative_path: &str) -> anyhow::Re
         &security,
     )?;
     if !full.exists() {
-        anyhow::bail!("path not found: {}", full.display());
+        return Err(RecoverableError::with_hint(
+            format!("path not found: {}", full.display()),
+            "Use list_dir to explore the directory structure, \
+             or get_symbols_overview on a directory path.",
+        )
+        .into());
     }
     Ok(full)
 }
@@ -78,7 +85,11 @@ async fn resolve_glob(ctx: &ToolContext, path_or_glob: &str) -> anyhow::Result<V
     }
 
     if matches.is_empty() {
-        anyhow::bail!("no files matched glob pattern: {}", path_or_glob);
+        return Err(RecoverableError::with_hint(
+            format!("no files matched glob pattern: {}", path_or_glob),
+            "Try a broader pattern or use list_dir to verify the path exists.",
+        )
+        .into());
     }
     matches.sort();
     Ok(matches)
@@ -106,11 +117,11 @@ async fn get_lsp_client(
     path: &Path,
 ) -> anyhow::Result<(std::sync::Arc<crate::lsp::LspClient>, String)> {
     let lang = ast::detect_language(path).ok_or_else(|| {
-        anyhow!(
-            "unsupported file type: {:?}. Languages with LSP support: \
-             rust, python, typescript, tsx, javascript, jsx, go, java, kotlin, \
-             c, cpp, csharp, ruby",
-            path
+        RecoverableError::with_hint(
+            format!("unsupported file type: {:?}", path),
+            "LSP symbol analysis supports: rust, python, typescript, tsx, \
+             javascript, jsx, go, java, kotlin, c, cpp, csharp, ruby. \
+             Use list_functions for a tree-sitter fallback on other file types.",
         )
     })?;
     let root = ctx.agent.require_project_root().await?;
@@ -1285,6 +1296,68 @@ impl Point {
         assert!(
             err.to_string().contains("project"),
             "should fail on project, not param: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn path_not_found_is_recoverable_error() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".code-explorer")).unwrap();
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        let ctx = ToolContext { agent, lsp: lsp() };
+
+        let err = GetSymbolsOverview
+            .call(json!({ "relative_path": "nonexistent/file.py" }), &ctx)
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.downcast_ref::<crate::tools::RecoverableError>()
+                .is_some(),
+            "path not found must be RecoverableError, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn path_not_found_hint_mentions_list_dir() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".code-explorer")).unwrap();
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        let ctx = ToolContext { agent, lsp: lsp() };
+
+        let err = GetSymbolsOverview
+            .call(json!({ "relative_path": "missing.rs" }), &ctx)
+            .await
+            .unwrap_err();
+
+        let rec = err
+            .downcast_ref::<crate::tools::RecoverableError>()
+            .expect("should be RecoverableError");
+        assert!(
+            rec.hint.as_deref().unwrap_or("").contains("list_dir"),
+            "hint should mention list_dir, got: {:?}",
+            rec.hint
+        );
+    }
+
+    #[tokio::test]
+    async fn glob_no_match_is_recoverable_error() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".code-explorer")).unwrap();
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        let ctx = ToolContext { agent, lsp: lsp() };
+
+        let err = GetSymbolsOverview
+            .call(json!({ "relative_path": "src/**/*.nonexistent" }), &ctx)
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.downcast_ref::<crate::tools::RecoverableError>()
+                .is_some(),
+            "empty glob must be RecoverableError, got: {}",
             err
         );
     }
