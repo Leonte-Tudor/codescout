@@ -1,0 +1,13 @@
+[book]
+title = "code-explorer Manual"
+authors = ["Marius"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "../../target/manual"
+
+[output.html]
+git-repository-url = "https://github.com/mareurs/code-explorer"
+edit-url-template = "https://github.com/mareurs/code-explorer/edit/master/docs/manual/{path}"
+no-section-label = false
