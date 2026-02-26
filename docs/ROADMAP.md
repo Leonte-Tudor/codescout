@@ -35,6 +35,23 @@ See the detailed implementation plan: [`plans/2026-02-25-v1-implementation-plan.
 
 ## Future Improvements
 
+### Library Search
+
+Search and navigate third-party library/dependency source code. Read-only access via LSP-inferred discovery, symbol navigation, and semantic search. See [`plans/2026-02-26-library-search-design.md`](plans/2026-02-26-library-search-design.md) for the full design.
+
+**Progressive rollout:**
+
+| Level | Name | What it enables |
+|-------|------|-----------------|
+| A | Follow-through reads | Read files LSP points to outside project root |
+| B | Symbol navigation | `find_symbol` / `get_symbols_overview` on library code with `scope` parameter |
+| C | Semantic search | Explicit `index_library` + scoped `semantic_search` on dependency source |
+| D | LSP-inferred discovery | Auto-register libraries from `goto_definition` responses |
+
+**Key concepts:** `LibraryRegistry` (`.code-explorer/libraries.json`) tracks known library paths. All library access is read-only. Results tagged `"source": "lib:<name>"` to distinguish from project code.
+
+---
+
 ### Tool Usage Monitor / Statistics
 
 Track tool call patterns to surface bugs, usage drift, and performance regressions over time.
