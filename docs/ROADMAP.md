@@ -31,7 +31,7 @@ See the detailed implementation plan: [`plans/2026-02-25-v1-implementation-plan.
 - Additional tree-sitter grammars
 - Additional LSP server configurations
 - sqlite-vec integration for vector similarity (currently pure-Rust cosine)
-- Companion Claude Code plugin: `code-explorer-routing`
+- Companion Claude Code plugin: `code-explorer-routing` (live at [mareurs/claude-plugins](https://github.com/mareurs/claude-plugins))
 
 ## Future Improvements
 
@@ -82,3 +82,27 @@ Make code-explorer usable by any MCP-capable agent — Copilot, Cursor, Cline, c
 4. **Tool description quality** — every tool's `description()` should embed just enough routing guidance to work even without a system prompt (one-sentence "prefer this over X when Y" hint).
 
 5. **Benchmark routing quality** — extend the live benchmark to test tool selection accuracy across agent backends, not just result quality.
+
+---
+
+## Contributor Skills
+
+Three Claude Code skills living in `.claude/skills/` within this repo. Contributors who open code-explorer in Claude Code get them automatically — no build step required. See [`plans/2026-02-26-contributor-skills-design.md`](plans/2026-02-26-contributor-skills-design.md) for the full design.
+
+| Skill | Purpose | Status |
+|---|---|---|
+| `project-management` | Navigate sprint status, roadmap, open PRs and issues | Planned |
+| `debugging` | Systematic debugging workflow for the Rust codebase | Planned |
+| `log-stat-analyzer` | Analyze `usage.db` for call pattern drift and latency regressions | Blocked on Tool Usage Monitor |
+
+### `project-management`
+
+Surface current sprint status from the roadmap, map recent commits to sprint items, and guide contributors through opening correctly-structured PRs. Uses `git_log`, `git_diff`, and the GitHub MCP tools alongside `docs/ROADMAP.md` and `docs/plans/`.
+
+### `debugging`
+
+Systematic workflow from symptom to fix to verification — covering build failures, test failures, LSP timeouts, tree-sitter parse errors, and embedding pipeline issues. Guides contributors through hypothesis formation (`semantic_search`, `find_symbol`), targeted investigation (`git_blame`, `search_for_pattern`), and the `cargo build` / `cargo test` / `cargo clippy` verification loop.
+
+### `log-stat-analyzer`
+
+Structured workflow for interpreting Tool Usage Monitor data: per-tool call counts, error rates, p50/p99 latency, overflow rates, and time-bucketed drift detection. Produces actionable summaries (e.g. "semantic_search error rate up 3× in last 24h"). **Blocked** until the Tool Usage Monitor (`get_usage_stats` tool) is implemented.
