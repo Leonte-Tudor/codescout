@@ -55,7 +55,7 @@ pub struct IgnoredPathsSection {
     pub patterns: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecuritySection {
     /// Additional path patterns to deny reads from (beyond built-in deny-list).
     #[serde(default)]
@@ -81,6 +81,21 @@ pub struct SecuritySection {
     /// Enable semantic search and indexing tools (default: true)
     #[serde(default = "default_true")]
     pub indexing_enabled: bool,
+}
+
+impl Default for SecuritySection {
+    fn default() -> Self {
+        Self {
+            denied_read_patterns: Vec::new(),
+            extra_write_roots: Vec::new(),
+            shell_command_mode: default_shell_mode(),
+            shell_output_limit_bytes: default_shell_output_limit(),
+            shell_enabled: false,
+            file_write_enabled: true,
+            git_enabled: true,
+            indexing_enabled: true,
+        }
+    }
 }
 
 fn default_shell_mode() -> String {
@@ -203,5 +218,38 @@ mod tests {
     fn default_config_has_mxbai_model() {
         let cfg = ProjectConfig::default_for("my-project".into());
         assert_eq!(cfg.embeddings.model, "ollama:mxbai-embed-large");
+    }
+
+    #[test]
+    fn security_section_default_enables_write_git_indexing() {
+        // Previously derived Default gave false for all bool fields,
+        // silently disabling write tools for projects without a [security] TOML block.
+        let sec = SecuritySection::default();
+        assert!(sec.file_write_enabled, "file_write_enabled should default to true");
+        assert!(sec.git_enabled, "git_enabled should default to true");
+        assert!(sec.indexing_enabled, "indexing_enabled should default to true");
+        assert!(!sec.shell_enabled, "shell_enabled should default to false");
+    }
+
+    #[test]
+    fn project_config_default_for_enables_write_tools() {
+        // default_for() is used when no .code-explorer/project.toml exists.
+        let cfg = ProjectConfig::default_for("test-project".into());
+        assert!(cfg.security.file_write_enabled);
+        assert!(cfg.security.git_enabled);
+        assert!(cfg.security.indexing_enabled);
+        assert!(!cfg.security.shell_enabled);
+    }
+
+    #[test]
+    fn toml_without_security_section_enables_write_tools() {
+        // When [security] is entirely absent from TOML, serde calls Default::default()
+        // for SecuritySection. This must agree with the serde field-level defaults.
+        let toml = "[project]\nname = \"test\"";
+        let cfg: ProjectConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.security.file_write_enabled);
+        assert!(cfg.security.git_enabled);
+        assert!(cfg.security.indexing_enabled);
+        assert!(!cfg.security.shell_enabled);
     }
 }
