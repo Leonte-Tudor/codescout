@@ -26,16 +26,18 @@ src/
 ├── lsp/             # LSP types, server configs (9 langs), JSON-RPC client
 ├── ast/             # Language detection (20+ exts), tree-sitter parser
 ├── git/             # git2: blame, file_log, open_repo
-├── embed/           # Chunker, SQLite index, RemoteEmbedder, schema
+├── embed/           # Chunker, SQLite index, RemoteEmbedder, schema, drift detection
+├── library/         # LibraryRegistry, Scope enum, manifest discovery
 ├── memory/          # Markdown-based MemoryStore (.code-explorer/memories/)
 ├── prompts/         # LLM guidance: server_instructions.md, onboarding_prompt.md
 ├── tools/           # Tool implementations by category
 │   ├── output.rs    #   OutputGuard: progressive disclosure (exploring/focused)
 │   ├── file.rs      #   read_file, list_dir, search_for_pattern, find_file, etc.
 │   ├── workflow.rs  #   onboarding, check_onboarding, execute_shell_command
-│   ├── symbol.rs    #   7 LSP-backed tools (find_symbol, get_symbols_overview, etc.)
+│   ├── symbol.rs    #   7 LSP-backed tools (find_symbol, get_symbols_overview, etc.) + scope param
 │   ├── git.rs       #   blame, log, diff
-│   ├── semantic.rs  #   search, index_project, index_status
+│   ├── semantic.rs  #   search, index_project, index_status, check_drift
+│   ├── library.rs   #   list_libraries, index_library
 │   ├── memory.rs    #   CRUD tools (write/read/list/delete)
 │   ├── ast.rs       #   list_functions, extract_docstrings
 │   └── config.rs    #   activate_project, get_current_config

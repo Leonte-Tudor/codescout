@@ -30,6 +30,7 @@ ranked chunks with file path, line range, and similarity score.
 | `limit` | integer | no | `10` | Maximum number of results to return |
 | `detail_level` | string | no | compact | `"full"` returns the complete chunk content instead of a 150-character preview |
 | `offset` | integer | no | `0` | Skip this many results (for pagination) |
+| `scope` | string | no | `"project"` | Search scope: `"project"` (default), `"lib:<name>"` for a specific library, `"libraries"` for all libraries, `"all"` for everything |
 
 **Example:**
 
@@ -51,7 +52,8 @@ ranked chunks with file path, line range, and similarity score.
       "content": "async fn with_retry<F, Fut, T>(mut f: F, max_attempts: u8) -> anyhow::Result<T>\nwhere\n    F: FnMut() -> Fut,...",
       "start_line": 42,
       "end_line": 68,
-      "score": 0.91
+      "score": 0.91,
+      "source": "project"
     },
     {
       "file_path": "src/util/http.rs",
@@ -59,7 +61,8 @@ ranked chunks with file path, line range, and similarity score.
       "content": "/// Exponential back-off starting at 200ms, doubling each attempt up to...",
       "start_line": 12,
       "end_line": 30,
-      "score": 0.84
+      "score": 0.84,
+      "source": "project"
     }
   ],
   "total": 2
@@ -139,22 +142,44 @@ run unless `force` is set.
 ```json
 {
   "status": "ok",
-  "files_indexed": 47,
-  "chunks": 312
+  "files_indexed": 3,
+  "files_deleted": 0,
+  "detail": "3 deleted",
+  "total_files": 47,
+  "total_chunks": 312
 }
 ```
 
-`files_indexed` is the total number of source files now in the index.
-`chunks` is the total number of embedded chunks (a single file may produce
-multiple chunks depending on its size and the configured `chunk_size`).
+When `drift_detection_enabled = true` is set in `[embeddings]` and files had
+meaningful semantic changes, a `drift_summary` field is included with the
+top-5 most-drifted files:
+
+```json
+{
+  "status": "ok",
+  "files_indexed": 3,
+  "total_files": 47,
+  "total_chunks": 312,
+  "drift_summary": [
+    { "file": "src/auth/service.rs", "avg_drift": "0.72", "max_drift": "0.91", "added": 2, "removed": 1 }
+  ]
+}
+```
+
+**Staleness warning** — if `semantic_search` is called when the index is behind
+the current HEAD commit, results include:
+
+```json
+{ "stale": true, "behind_commits": 3, "hint": "Index is behind HEAD. Run index_project to update." }
+```
 
 **Tips:**
 
 - Run `index_project` once when you first activate a project, then again after
   large refactors or when many files have changed.
-- The incremental mode (default) compares file content hashes against what was
-  indexed last time. It is safe to run frequently — unchanged files are skipped
-  at negligible cost.
+- The incremental mode (default) uses a git diff → mtime → SHA-256 fallback
+  chain. It is safe to run frequently — unchanged files are skipped at
+  negligible cost.
 - Use `force: true` if you have changed the embedding model in
   `project.toml`. Changing the model produces incompatible vectors, so a full
   reindex is required.
@@ -209,3 +234,67 @@ lives.
 - `chunk_count` and `embedding_count` should be equal under normal conditions.
   A mismatch can indicate an interrupted indexing run; fix it with
   `index_project`.
+
+---
+
+## `check_drift`
+
+**Purpose:** Query semantic drift scores from the most recent index build.
+Answers the question "which files changed *meaningfully* in code semantics, not
+just in bytes?" after running `index_project`.
+
+**Requires:** `drift_detection_enabled = true` in `.code-explorer/project.toml`:
+
+```toml
+[embeddings]
+drift_detection_enabled = true
+```
+
+If drift detection is disabled (the default), `check_drift` returns
+`{"status": "disabled", "hint": "..."}` with the TOML snippet to enable it.
+
+**Parameters:**
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `threshold` | number | no | `0.1` | Minimum `avg_drift` to include (range 0.0–1.0) |
+| `path` | string | no | — | SQL LIKE pattern to filter file paths (e.g. `"src/tools/%"`) |
+| `detail_level` | string | no | exploring | `"full"` adds the most-drifted chunk content snippet |
+
+**Example:**
+
+```json
+{ "threshold": 0.2 }
+```
+
+**Output (exploring mode):**
+
+```json
+{
+  "results": [
+    {
+      "file_path": "src/auth/service.rs",
+      "avg_drift": 0.72,
+      "max_drift": 0.91,
+      "chunks_added": 2,
+      "chunks_removed": 1
+    }
+  ],
+  "total": 1
+}
+```
+
+Results are sorted by `max_drift` descending (most-changed files first).
+`avg_drift` is the mean across all chunks (including exact-match chunks at
+0.0). `max_drift` is the worst single chunk — useful for detecting large
+isolated rewrites.
+
+**Tips:**
+
+- Use `check_drift` after a major refactor to surface which files changed
+  semantically, not just syntactically. A whitespace-only reformatting will
+  have `avg_drift ≈ 0.0`; a complete function rewrite will approach `1.0`.
+- The drift table is cleared and rebuilt on every `index_project` run. It
+  only reflects the *most recent* indexing operation.
+- Pair with doc-staleness workflows: `avg_drift < 0.05` means the doc is
+  likely still accurate; `avg_drift > 0.4` means it probably needs updating.

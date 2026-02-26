@@ -7,7 +7,7 @@ code-explorer is an MCP server that gives LLMs IDE-grade code intelligence. It e
 ```
 ┌────────────────────────────────────────────────────────┐
 │              MCP Layer (rmcp)                           │
-│   CodeExplorerServer → registered tools (30)           │
+│   CodeExplorerServer → registered tools (33)           │
 └────────────────────────────────────────────────────────┘
                           ↓
 ┌────────────────────────────────────────────────────────┐
@@ -70,11 +70,20 @@ Embedded semantic search with zero external services.
 
 - `schema.rs` — `CodeChunk` and `SearchResult` data types
 - `chunker.rs` — Language-aware recursive text splitter tracking 1-indexed line numbers. Handles overlap via character-count estimation.
-- `index.rs` — SQLite schema (`files`, `chunks`, `chunk_embeddings`), CRUD operations, pure-Rust cosine similarity search, `build_index()` for incremental project indexing
+- `index.rs` — SQLite schema (`files`, `chunks`, `chunk_embeddings`, `meta`, `drift_report`), CRUD operations, pure-Rust cosine similarity search, `build_index()` for incremental project indexing. Change detection fallback chain: git diff → mtime → SHA-256.
+- `drift.rs` — `compute_file_drift()`: content-hash-first chunk matching, greedy cosine pairing on remainder. Produces per-file `avg_drift` + `max_drift` scores. Opt-in via `drift_detection_enabled` config.
 - `remote.rs` — `RemoteEmbedder` supporting OpenAI, Ollama, and custom API endpoints
 - `mod.rs` — `Embedder` trait, `create_embedder()` factory, `embed_one()` helper
 
 **sqlite-vec**: Extension loading is commented out (TODO). Pure-Rust cosine fallback works but loads all embeddings into memory.
+
+### Library Registry (`src/library/`)
+
+Third-party library source code navigation (read-only).
+
+- `registry.rs` — `LibraryRegistry` persists known library paths in `.code-explorer/libraries.json`. CRUD + serialization.
+- `discovery.rs` — `discover_library_from_path()`: walks parent dirs to find package manifests (Cargo.toml, package.json, pyproject.toml, go.mod). Auto-triggered when LSP goto_definition returns a path outside the project root.
+- `scope.rs` — `Scope` enum: `Project`, `Library(name)`, `Libraries`, `All`. Parsed from the `scope` string parameter on symbol/semantic tools.
 
 ### Memory (`src/memory/`)
 
@@ -86,12 +95,13 @@ Each tool implements the `Tool` trait (`name`, `description`, `input_schema`, `a
 
 | Category | File | Tools | Status |
 |----------|------|-------|--------|
-| File | `file.rs` | read_file, list_dir, search_for_pattern, find_file, create_text_file, replace_content | Working |
+| File | `file.rs` | read_file, list_dir, search_for_pattern, find_file, create_text_file, replace_content, edit_lines | Working |
 | Workflow | `workflow.rs` | onboarding, check_onboarding_performed, execute_shell_command | Working |
-| Symbol | `symbol.rs` | find_symbol, get_symbols_overview, find_referencing_symbols, replace_symbol_body, insert_before_symbol, insert_after_symbol, rename_symbol | Working (LSP) |
+| Symbol | `symbol.rs` | find_symbol, get_symbols_overview, find_referencing_symbols, replace_symbol_body, insert_before_symbol, insert_after_symbol, rename_symbol (all support `scope` param) | Working (LSP) |
 | AST | `ast.rs` | list_functions, extract_docstrings | Working (tree-sitter) |
 | Git | `git.rs` | git_blame, git_log, git_diff | Working |
-| Semantic | `semantic.rs` | semantic_search, index_project, index_status | Working |
+| Semantic | `semantic.rs` | semantic_search, index_project, index_status, check_drift | Working |
+| Library | `library.rs` | list_libraries, index_library | Working |
 | Memory | `memory.rs` | write_memory, read_memory, list_memories, delete_memory | Working |
 | Config | `config.rs` | activate_project, get_current_config | Working |
 

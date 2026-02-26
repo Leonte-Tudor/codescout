@@ -11,6 +11,8 @@ All symbol navigation tools require an LSP server for the target language. If
 the LSP server is not running or is still indexing, some tools fall back to
 tree-sitter for basic results.
 
+**Scope parameter:** `find_symbol`, `get_symbols_overview`, `find_referencing_symbols`, and `list_functions` accept an optional `scope` string to search library code as well as project code. See [Library Navigation](library-navigation.md) for the full scope reference.
+
 ---
 
 ## `get_symbols_overview`

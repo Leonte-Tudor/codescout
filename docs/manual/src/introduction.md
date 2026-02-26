@@ -72,15 +72,21 @@ and exposes their answers as agent-friendly tools.
 Supported languages: Rust, Python, TypeScript/JavaScript, Go, Java, Kotlin,
 C/C++, C#, Ruby.
 
-### Semantic Search (3 tools)
+### Semantic Search (4 tools)
 
 Sometimes you know the concept but not the name. Semantic search finds code by
 meaning using embeddings, not keywords.
 
 - `semantic_search` — "authentication middleware", "retry with exponential
-  backoff", "how errors are serialized" — returns ranked code chunks
-- `index_project` — build or update the embedding index
-- `index_status` — check index coverage
+  backoff", "how errors are serialized" — returns ranked code chunks. The
+  optional `scope` parameter restricts search to project code, a specific
+  library, or all sources.
+- `index_project` — build or incrementally update the embedding index (smart
+  change detection via git diff → mtime → SHA-256 fallback)
+- `index_status` — check index coverage and staleness
+- `check_drift` — after re-indexing, see which files changed meaningfully in
+  *semantics* vs. trivially in bytes. Requires `drift_detection_enabled = true`
+  in `[embeddings]`.
 
 The embedding backend is configurable: OpenAI, Ollama, or any compatible
 endpoint.
@@ -101,12 +107,22 @@ lightweight key-value store backed by markdown files in `.code-explorer/memories
 Use this to record decisions, gotchas, and conventions so the agent picks them
 up on the next session without re-discovery.
 
+### Library Navigation (2 tools)
+
+Navigate third-party dependency source code without leaving your agent workflow.
+Libraries auto-register when LSP `goto_definition` returns paths outside the
+project root.
+
+- `list_libraries` — see all registered libraries and their status
+- `index_library` — build an embedding index for a library so you can
+  `semantic_search` within it using `scope: "lib:<name>"`
+
 ### The Rest
 
-Beyond the four pillars: 7 file operation tools (directory listing, file
+Beyond the five pillars: 7 file operation tools (directory listing, file
 reading, pattern search, file creation, content replacement), 2 AST analysis
 tools (function signatures, docstrings via tree-sitter), 3 workflow tools
-(project onboarding, shell commands), and 2 config tools — 31 tools total.
+(project onboarding, shell commands), and 2 config tools — **33 tools total**.
 
 ### Token Efficiency by Design
 

@@ -26,6 +26,7 @@
   - [File Operations](tools/file-operations.md)
   - [Editing](tools/editing.md)
   - [Semantic Search](tools/semantic-search.md)
+  - [Library Navigation](tools/library-navigation.md)
   - [Git](tools/git.md)
   - [AST Analysis](tools/ast.md)
   - [Memory](tools/memory.md)

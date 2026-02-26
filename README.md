@@ -36,7 +36,7 @@ Tested on **Linux**. macOS and Windows may work but have not been verified. Cont
 
 code-explorer has two components that work together:
 
-1. **MCP Server** — provides the 30 tools (symbol navigation, semantic search, git, etc.)
+1. **MCP Server** — provides the 33 tools (symbol navigation, semantic search, git, etc.)
 2. **Routing Plugin** — ensures Claude always uses the right tool, across all sessions and subagents
 
 **Both are recommended.** The MCP server gives Claude the capability; the plugin ensures
@@ -84,7 +84,7 @@ The plugin is available from the [claude-plugins marketplace](https://github.com
 
 ```bash
 claude mcp list
-# Should show: code-explorer with 30 tools
+# Should show: code-explorer with 33 tools
 ```
 
 ### How They Interact
@@ -103,7 +103,7 @@ claude mcp list
 │  └──────────────────────┬──────────────────────┘    │
 │                         │ routes to                   │
 │  ┌──────────────────────▼──────────────────────┐    │
-│  │  code-explorer MCP server (30 tools)         │    │
+│  │  code-explorer MCP server (33 tools)         │    │
 │  │                                              │    │
 │  │  LSP · Semantic · Git · AST · Memory · ...   │    │
 │  └──────────────────────────────────────────────┘    │

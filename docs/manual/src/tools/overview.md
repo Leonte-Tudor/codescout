@@ -1,6 +1,6 @@
 # Tools Overview
 
-code-explorer exposes 31 tools organized into eight categories. This page is a
+code-explorer exposes 33 tools organized into nine categories. This page is a
 quick map. Each category has a dedicated reference page linked from the headings
 below.
 
@@ -10,6 +10,8 @@ below.
 
 LSP-backed tools for locating and editing code by name rather than by line
 number. These tools require an LSP server to be running for the target language.
+
+The navigation tools (`find_symbol`, `get_symbols_overview`, `find_referencing_symbols`, `list_functions`) accept an optional **`scope`** parameter to search library code as well as project code — see [Library Navigation](#library-navigation) below.
 
 | Tool | Description |
 |------|-------------|
@@ -52,13 +54,15 @@ Create and modify files directly, without going through LSP.
 ## [Semantic Search](semantic-search.md)
 
 Find code by meaning rather than by name or pattern. Requires an embedding
-index built with `index_project`.
+index built with `index_project`. Use the optional `scope` parameter to search
+within a specific library (see [Library Navigation](#library-navigation)).
 
 | Tool | Description |
 |------|-------------|
 | `semantic_search` | Search code by natural language description or code snippet |
 | `index_project` | Build or incrementally update the embedding index |
 | `index_status` | Show index stats: file count, chunk count, model, last update |
+| `check_drift` | Query semantic drift scores from the last index build — which files changed *meaningfully* (requires `drift_detection_enabled = true`) |
 
 ---
 
@@ -71,6 +75,32 @@ Inspect version history and uncommitted changes.
 | `git_blame` | Who last changed each line and in which commit |
 | `git_log` | Commit history for a file or the whole project |
 | `git_diff` | Uncommitted changes, or diff against a specific commit |
+
+---
+
+## Library Navigation {#library-navigation}
+
+Navigate third-party dependency source code (read-only). Libraries are
+auto-registered when LSP `goto_definition` returns a path outside the project
+root; you can also register them manually.
+
+| Tool | Description |
+|------|-------------|
+| `list_libraries` | Show all registered libraries, their root paths, and index status |
+| `index_library` | Build an embedding index for a registered library |
+
+**Scope parameter** — once a library is registered, pass `scope` to any
+navigation or search tool to target it:
+
+| Value | What it searches |
+|---|---|
+| `"project"` (default) | Only project source code |
+| `"lib:<name>"` | A specific registered library |
+| `"libraries"` | All registered libraries |
+| `"all"` | Project + all libraries |
+
+All results include a `"source"` field (`"project"` or `"lib:<name>"`) so you
+can tell where each result came from.
 
 ---
 
@@ -128,6 +158,9 @@ for.
 | Add a new function next to an existing one | `insert_after_symbol` |
 | Rename a function everywhere | `rename_symbol` |
 | Find code that does something (concept, not name) | `semantic_search` |
+| Find code by concept inside a library | `semantic_search` with `scope: "lib:<name>"` (after `index_library`) |
+| See what third-party libraries are registered | `list_libraries` |
+| Check which files changed meaningfully after re-indexing | `check_drift` |
 | Search for a string or regex across files | `search_for_pattern` |
 | Find files matching a name pattern | `find_file` |
 | Read a specific part of a file | `read_file` (with `start_line`/`end_line`) |
