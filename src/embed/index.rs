@@ -66,6 +66,7 @@ pub fn open_db(project_root: &Path) -> Result<Connection> {
 
     init_sqlite_vec();
     let conn = Connection::open(&path)?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
 
     conn.execute_batch(
         "

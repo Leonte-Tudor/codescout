@@ -10,9 +10,15 @@ use crate::library::registry::LibraryRegistry;
 use crate::memory::MemoryStore;
 
 /// Shared agent state — cloned into each tool invocation.
+/// Cached embedder: `(model_name, embedder)` — invalidated on model change.
+type CachedEmbedder = Arc<tokio::sync::Mutex<Option<(String, Arc<dyn crate::embed::Embedder>)>>>;
+
 #[derive(Clone)]
 pub struct Agent {
     pub inner: Arc<RwLock<AgentInner>>,
+    /// Stored outside the RwLock so creation doesn't block agent reads.
+    /// Mutex deduplicates concurrent creation: second caller waits and reuses.
+    cached_embedder: CachedEmbedder,
 }
 
 pub struct AgentInner {
@@ -45,9 +51,12 @@ impl Agent {
 
         Ok(Self {
             inner: Arc::new(RwLock::new(AgentInner { active_project })),
+            cached_embedder: Arc::new(tokio::sync::Mutex::new(None)),
         })
     }
 
+    /// Activate a project by path, replacing the current active project.
+    /// Activate a project by path, replacing the current active project.
     /// Activate a project by path, replacing the current active project.
     pub async fn activate(&self, root: PathBuf) -> Result<()> {
         let config = ProjectConfig::load_or_default(&root)?;
@@ -61,7 +70,28 @@ impl Agent {
             memory,
             library_registry,
         });
+        // Clear cached embedder — new project may use a different model
+        *self.cached_embedder.lock().await = None;
         Ok(())
+    }
+
+    /// Get or create a cached embedder for the given model.
+    /// If the cached model matches, returns the existing embedder.
+    /// The Mutex deduplicates concurrent creation — second caller waits and reuses.
+    pub async fn get_or_create_embedder(
+        &self,
+        model: &str,
+    ) -> anyhow::Result<Arc<dyn crate::embed::Embedder>> {
+        let mut guard = self.cached_embedder.lock().await;
+        if let Some((cached_model, embedder)) = guard.as_ref() {
+            if cached_model == model {
+                return Ok(Arc::clone(embedder));
+            }
+        }
+        let embedder: Arc<dyn crate::embed::Embedder> =
+            Arc::from(crate::embed::create_embedder(model).await?);
+        *guard = Some((model.to_string(), Arc::clone(&embedder)));
+        Ok(embedder)
     }
 
     /// Get the active project root, or error if none is set.

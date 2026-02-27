@@ -118,17 +118,25 @@ impl Tool for IndexLibrary {
             project.library_registry.save(&registry_path)?;
         }
 
-        // Return stats
-        let conn = crate::embed::index::open_db(&root)?;
-        let by_source = crate::embed::index::index_stats_by_source(&conn)?;
-        let lib_stats = by_source.get(&source);
+        // Return stats — sync SQLite off async runtime
+        let source2 = source.clone();
+        let (file_count, chunk_count) = tokio::task::spawn_blocking(move || {
+            let conn = crate::embed::index::open_db(&root)?;
+            let by_source = crate::embed::index::index_stats_by_source(&conn)?;
+            let lib_stats = by_source.get(&source2);
+            anyhow::Ok((
+                lib_stats.map_or(0, |s| s.file_count),
+                lib_stats.map_or(0, |s| s.chunk_count),
+            ))
+        })
+        .await??;
 
         Ok(json!({
             "status": "ok",
             "library": name,
             "source": source,
-            "files_indexed": lib_stats.map_or(0, |s| s.file_count),
-            "chunks": lib_stats.map_or(0, |s| s.chunk_count),
+            "files_indexed": file_count,
+            "chunks": chunk_count,
         }))
     }
 }
