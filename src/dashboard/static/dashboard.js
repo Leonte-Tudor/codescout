@@ -3,6 +3,12 @@
 
     const POLL_INTERVAL = 5000;
     let callsChart = null;
+    let lastErrors = [];
+
+    function activePage() {
+        const btn = document.querySelector('.nav-btn.active');
+        return btn ? btn.dataset.page : 'overview';
+    }
 
     // --- Page navigation ---
     document.querySelectorAll('.nav-btn').forEach(btn => {
@@ -124,6 +130,47 @@
         }
     }
 
+    // --- Errors rendering (search + collapse) ---
+    function renderErrors() {
+        const el = document.getElementById('errors-list');
+        if (!lastErrors.length) { el.innerHTML = '<p class="muted">No recent errors.</p>'; return; }
+
+        const q = (document.getElementById('errors-search').value || '').toLowerCase();
+        const collapse = document.getElementById('errors-collapse').checked;
+
+        let rows = lastErrors.filter(e =>
+            !q ||
+            (e.tool || '').toLowerCase().includes(q) ||
+            (e.outcome || '').toLowerCase().includes(q) ||
+            (e.message || '').toLowerCase().includes(q)
+        );
+
+        if (!rows.length) { el.innerHTML = '<p class="muted">No matching errors.</p>'; return; }
+
+        let thead, tbody;
+        if (collapse) {
+            const groups = new Map();
+            rows.forEach(e => {
+                const key = (e.tool || '') + '\x00' + (e.outcome || '') + '\x00' + (e.message || '');
+                if (!groups.has(key)) groups.set(key, { ...e, count: 1 });
+                else groups.get(key).count++;
+            });
+            thead = '<thead><tr><th>Time</th><th>Tool</th><th>Type</th><th>Message</th><th>#</th></tr></thead>';
+            tbody = [...groups.values()].map(e =>
+                '<tr><td>' + esc(e.timestamp) + '</td><td>' + esc(e.tool) +
+                '</td><td>' + esc(e.outcome) + '</td><td>' + esc(e.message || '&mdash;') +
+                '</td><td class="num">' + (e.count > 1 ? '<span class="badge">' + e.count + '</span>' : '') + '</td></tr>'
+            ).join('');
+        } else {
+            thead = '<thead><tr><th>Time</th><th>Tool</th><th>Type</th><th>Message</th></tr></thead>';
+            tbody = rows.map(e =>
+                '<tr><td>' + esc(e.timestamp) + '</td><td>' + esc(e.tool) +
+                '</td><td>' + esc(e.outcome) + '</td><td>' + esc(e.message || '&mdash;') + '</td></tr>'
+            ).join('');
+        }
+        el.innerHTML = '<table>' + thead + '<tbody>' + tbody + '</tbody></table>';
+    }
+
     // --- Tool Stats page ---
     async function refreshStats() {
         const win = document.getElementById('stats-window').value;
@@ -145,32 +192,33 @@
                 '<strong>' + errorPct + '%</strong> error rate &nbsp;|&nbsp; ' +
                 '<strong>' + overflowPct + '%</strong> overflow rate';
 
-            // Chart
-            const labels = tools.map(t => t.tool);
-            const data = tools.map(t => t.calls);
-            const ctx = document.getElementById('calls-chart').getContext('2d');
-            if (callsChart) callsChart.destroy();
-            callsChart = new Chart(ctx, {
-                type: 'bar',
-                data: {
-                    labels,
-                    datasets: [{
-                        label: 'Calls',
-                        data,
-                        backgroundColor: 'rgba(13, 110, 253, 0.7)',
-                    }],
-                },
-                options: {
-                    responsive: true,
-                    plugins: { legend: { display: false } },
-                    scales: { y: { beginAtZero: true } },
-                },
-            });
+            // Chart — built once on first load, never updated by polling
+            if (!callsChart) {
+                const labels = tools.map(t => t.tool);
+                const data = tools.map(t => t.calls);
+                const ctx = document.getElementById('calls-chart').getContext('2d');
+                callsChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels,
+                        datasets: [{
+                            label: 'Calls',
+                            data,
+                            backgroundColor: 'rgba(13, 110, 253, 0.7)',
+                        }],
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: { legend: { display: false } },
+                        scales: { y: { beginAtZero: true } },
+                    },
+                });
+            }
 
             // Table
             if (tools.length > 0) {
-                const thead = '<thead><tr><th>Tool</th><th>Calls</th><th>Errors</th><th>Err%</th>' +
-                    '<th>Overflows</th><th>Ovf%</th><th>p50</th><th>p99</th></tr></thead>';
+                const thead = '<thead><tr><th>Tool</th><th class="num">Calls</th><th class="num">Errors</th><th class="num">Err%</th>' +
+                    '<th class="num">Overflows</th><th class="num">Ovf%</th><th class="num">p50</th><th class="num">p99</th></tr></thead>';
                 const rows = tools.map(t =>
                     '<tr><td>' + esc(t.tool) + '</td><td class="num">' + t.calls +
                     '</td><td class="num">' + t.errors +
@@ -193,21 +241,13 @@
             document.getElementById('usage-table').innerHTML = '';
         }
 
-        if (errors && errors.available && errors.errors.length > 0) {
-            const rows = errors.errors.map(e =>
-                '<tr><td>' + esc(e.timestamp) + '</td><td>' + esc(e.tool) +
-                '</td><td>' + esc(e.outcome) + '</td><td>' + esc(e.message || '&mdash;') + '</td></tr>'
-            ).join('');
-            document.getElementById('errors-list').innerHTML =
-                '<table><thead><tr><th>Time</th><th>Tool</th><th>Type</th><th>Message</th></tr></thead>' +
-                '<tbody>' + rows + '</tbody></table>';
-        } else {
-            document.getElementById('errors-list').innerHTML =
-                '<p class="muted">No recent errors.</p>';
-        }
+        lastErrors = (errors && errors.available) ? (errors.errors || []) : [];
+        renderErrors();
     }
 
     document.getElementById('stats-window').addEventListener('change', refreshStats);
+    document.getElementById('errors-search').addEventListener('input', renderErrors);
+    document.getElementById('errors-collapse').addEventListener('change', renderErrors);
 
     // --- Memories page ---
     let currentTopic = null;
@@ -251,11 +291,18 @@
 
     // --- Polling ---
     async function refreshAll() {
-        await Promise.all([refreshOverview(), refreshStats(), refreshMemories()]);
+        const page = activePage();
+        if (page === 'overview') await refreshOverview();
+        else if (page === 'stats') await refreshStats();
+        else if (page === 'memories') await refreshMemories();
         document.getElementById('last-refresh').textContent =
             'Last refreshed: ' + new Date().toLocaleTimeString();
     }
 
-    refreshAll();
+    // Initial load: populate all pages so switching tabs feels instant
+    Promise.all([refreshOverview(), refreshStats(), refreshMemories()]).then(() => {
+        document.getElementById('last-refresh').textContent =
+            'Last refreshed: ' + new Date().toLocaleTimeString();
+    });
     setInterval(refreshAll, POLL_INTERVAL);
 })();

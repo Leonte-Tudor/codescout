@@ -60,7 +60,7 @@
             </div>
             <div class="card" id="card-usage-chart">
                 <h2>Calls by Tool</h2>
-                <canvas id="calls-chart" height="300"></canvas>
+                <canvas id="calls-chart" height="128"></canvas>
             </div>
             <div class="card" id="card-usage-table">
                 <h2>Per-Tool Breakdown</h2>
@@ -68,6 +68,10 @@
             </div>
             <div class="card" id="card-errors">
                 <h2>Recent Errors</h2>
+                <div class="errors-controls">
+                    <input type="text" id="errors-search" placeholder="Search…">
+                    <label><input type="checkbox" id="errors-collapse"> Group duplicates</label>
+                </div>
                 <div class="card-body" id="errors-list">Loading...</div>
             </div>
         </div>
