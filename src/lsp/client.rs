@@ -840,6 +840,7 @@ struct Point {
             detail: None,
             kind: LspSymbolKind::FUNCTION,
             tags: None,
+            #[allow(deprecated)]
             deprecated: None,
             range: Range {
                 start: Position {
@@ -899,6 +900,7 @@ struct Point {
                 name: "MyClass".to_string(),
                 kind: LspSymbolKind::CLASS,
                 tags: None,
+                #[allow(deprecated)]
                 deprecated: None,
                 location: Location {
                     uri: uri.clone(),
@@ -919,6 +921,7 @@ struct Point {
                 name: "my_method".to_string(),
                 kind: LspSymbolKind::METHOD,
                 tags: None,
+                #[allow(deprecated)]
                 deprecated: None,
                 location: Location {
                     uri: uri.clone(),

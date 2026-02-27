@@ -8,7 +8,7 @@
 //!   chunks(id, file_path, language, content,   — code chunks
 //!          start_line, end_line, file_hash,
 //!          source)
-//!   chunk_embeddings(rowid, embedding)         — sqlite-vec virtual table
+//!   chunk_embeddings(rowid, embedding)         — blob table (sqlite-vec for search)
 //!   meta(key TEXT, value TEXT)                  — stores embed_model, last_indexed_commit
 //!
 //! Change detection fallback chain:
@@ -16,15 +16,12 @@
 //!   2. mtime comparison (untracked files or git unavailable)
 //!   3. SHA-256 hash (final arbiter)
 //!
-//! TODO: Load the sqlite-vec extension at connection time:
-//!   conn.load_extension_enable()?;
-//!   conn.load_extension("sqlite_vec", None)?;
-//!   conn.load_extension_disable()?;
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::sync::Once;
 
 use super::schema::{CodeChunk, SearchResult};
 
@@ -34,17 +31,41 @@ pub fn db_path(project_root: &Path) -> PathBuf {
 }
 
 /// Open (or create) the embedding database and apply the schema.
+/// Register sqlite-vec globally so every SQLite connection in this process
+/// gets `vec_distance_cosine`, `vec_f32`, and the `vec0` virtual table module.
+/// Uses `sqlite3_auto_extension` so the init runs on every `Connection::open`.
+/// Safe to call multiple times — the `Once` guard makes it idempotent.
+fn init_sqlite_vec() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        // SAFETY: sqlite3_vec_init is a valid SQLite extension entry point.
+        // sqlite3_auto_extension expects the full extension init signature:
+        // fn(db, pzErrMsg, pApi) -> i32, but sqlite3_vec_init is declared as
+        // extern "C" fn() in the crate. The transmute is safe because SQLite
+        // will call it with the correct arguments at the C level.
+        unsafe {
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
+                *const (),
+                unsafe extern "C" fn(
+                    *mut rusqlite::ffi::sqlite3,
+                    *mut *const i8,
+                    *const rusqlite::ffi::sqlite3_api_routines,
+                ) -> i32,
+            >(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+    });
+}
+
 pub fn open_db(project_root: &Path) -> Result<Connection> {
     let path = db_path(project_root);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
+    init_sqlite_vec();
     let conn = Connection::open(&path)?;
-
-    // TODO: load sqlite-vec extension here
-    // conn.load_extension_enable()?;
-    // conn.load_extension("sqlite_vec", None)?;
 
     conn.execute_batch(
         "
@@ -67,9 +88,6 @@ pub fn open_db(project_root: &Path) -> Result<Connection> {
             source     TEXT NOT NULL DEFAULT 'project'
         );
 
-        -- TODO: replace with sqlite-vec virtual table once extension is loaded:
-        -- CREATE VIRTUAL TABLE IF NOT EXISTS chunk_embeddings
-        --   USING vec0(embedding float[768]);
         CREATE TABLE IF NOT EXISTS chunk_embeddings (
             rowid     INTEGER PRIMARY KEY,
             embedding BLOB NOT NULL
@@ -246,12 +264,9 @@ pub fn read_file_embeddings(conn: &Connection, file_path: &str) -> Result<Vec<Ol
     Ok(chunks)
 }
 
-/// Naive cosine similarity search (pure Rust fallback, no sqlite-vec).
+/// Search for the most similar chunks across all sources.
 ///
-/// TODO: Replace with sqlite-vec virtual table query for production:
-///   SELECT c.*, vec_distance_cosine(ce.embedding, ?1) AS distance
-///   FROM chunk_embeddings ce JOIN chunks c ON c.id = ce.rowid
-///   ORDER BY distance LIMIT ?2
+/// Shorthand for [`search_scoped`] with no source filter.
 pub fn search(
     conn: &Connection,
     query_embedding: &[f32],
@@ -273,80 +288,59 @@ pub fn search_scoped(
     limit: usize,
     source_filter: Option<&str>,
 ) -> Result<Vec<SearchResult>> {
-    let (where_clause, filter_param): (&str, Option<String>) = match source_filter {
-        None => ("", None),
-        Some("project") => ("WHERE c.source = ?1", Some("project".to_string())),
-        Some("libraries") => ("WHERE c.source != 'project'", None),
-        Some(x) if x.starts_with("lib:") => ("WHERE c.source = ?1", Some(x.to_string())),
-        Some(x) => ("WHERE c.source = ?1", Some(x.to_string())),
-    };
-
-    let sql = format!(
-        "SELECT c.file_path, c.language, c.content, c.start_line, c.end_line, c.source, ce.embedding
-         FROM chunks c JOIN chunk_embeddings ce ON c.id = ce.rowid {where_clause}"
-    );
-
-    let mut stmt = conn.prepare(&sql)?;
-
-    // Collect rows into a Vec to avoid closure type mismatch between if/else branches
-    type Row = (String, String, String, usize, usize, String, Vec<u8>);
-    let rows: Vec<Row> = if let Some(ref param) = filter_param {
-        let mut rows_out = Vec::new();
-        let mut query_rows = stmt.query(params![param])?;
-        while let Some(row) = query_rows.next()? {
-            let blob: Vec<u8> = row.get(6)?;
-            rows_out.push((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, usize>(3)?,
-                row.get::<_, usize>(4)?,
-                row.get::<_, String>(5)?,
-                blob,
-            ));
-        }
-        rows_out
-    } else {
-        let mut rows_out = Vec::new();
-        let mut query_rows = stmt.query([])?;
-        while let Some(row) = query_rows.next()? {
-            let blob: Vec<u8> = row.get(6)?;
-            rows_out.push((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, usize>(3)?,
-                row.get::<_, usize>(4)?,
-                row.get::<_, String>(5)?,
-                blob,
-            ));
-        }
-        rows_out
-    };
-
-    let qnorm = l2_norm(query_embedding);
-    let mut scored: Vec<(f32, SearchResult)> = rows
-        .into_iter()
-        .map(|(fp, lang, content, sl, el, source, blob)| {
-            let emb = bytes_to_f32(&blob);
-            let sim = cosine_sim(query_embedding, &emb, qnorm);
-            (
-                sim,
-                SearchResult {
-                    file_path: fp,
-                    language: lang,
-                    content,
-                    start_line: sl,
-                    end_line: el,
-                    score: sim,
-                    source,
-                },
-            )
-        })
+    // Encode the query as little-endian f32 bytes — the format vec_f32() expects.
+    let query_blob: Vec<u8> = query_embedding
+        .iter()
+        .flat_map(|f| f.to_le_bytes())
         .collect();
 
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    Ok(scored.into_iter().take(limit).map(|(_, r)| r).collect())
+    let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<SearchResult> {
+        // vec_distance_cosine returns cosine distance ∈ [0, 1] (0 = identical).
+        // COALESCE maps NULL (degenerate zero-vector) to 1.0 (maximum distance).
+        let distance: f64 = row.get(6)?;
+        let score = (1.0_f32 - distance as f32).clamp(0.0, 1.0);
+        Ok(SearchResult {
+            file_path: row.get(0)?,
+            language: row.get(1)?,
+            content: row.get(2)?,
+            start_line: row.get(3)?,
+            end_line: row.get(4)?,
+            source: row.get(5)?,
+            score,
+        })
+    };
+
+    // Common SELECT with sqlite-vec distance. ORDER BY + LIMIT pushed to SQLite.
+    let sel = "SELECT c.file_path, c.language, c.content, c.start_line, c.end_line, c.source, \
+               COALESCE(vec_distance_cosine(vec_f32(ce.embedding), vec_f32(?1)), 1.0) AS distance \
+               FROM chunks c JOIN chunk_embeddings ce ON c.id = ce.rowid";
+
+    match source_filter {
+        None => {
+            let sql = format!("{sel} ORDER BY distance ASC LIMIT ?2");
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt
+                .query_map(params![query_blob, limit as i64], map_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        }
+        Some("libraries") => {
+            let sql = format!("{sel} WHERE c.source != 'project' ORDER BY distance ASC LIMIT ?2");
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt
+                .query_map(params![query_blob, limit as i64], map_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        }
+        Some(source) => {
+            let sql = format!("{sel} WHERE c.source = ?2 ORDER BY distance ASC LIMIT ?3");
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt
+                .query_map(params![query_blob, source, limit as i64], map_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        }
+    }
 }
 
 fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {

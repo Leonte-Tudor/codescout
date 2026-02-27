@@ -44,8 +44,9 @@ clap = { version = "4", features = ["derive"] }
 git2 = "0.19"
 
 # Database — SQLite with bundled libsqlite3
-# sqlite-vec extension loaded at runtime for vector similarity search
+# sqlite-vec provides vec_distance_cosine for in-SQL similarity computation
 rusqlite = { version = "0.31", features = ["bundled"] }
+sqlite-vec = "0.1"
 
 # File system traversal (respects .gitignore)
 walkdir = "2"
