@@ -95,16 +95,15 @@ async fn resolve_glob(ctx: &ToolContext, path_or_glob: &str) -> anyhow::Result<V
     Ok(matches)
 }
 
-/// Extract a path parameter from input, accepting both "relative_path" and "path".
-/// LLMs sometimes use "path" instead of "relative_path" since file tools use "path".
+/// Extract a file path parameter from input, accepting "path", "relative_path", or "file".
 fn get_path_param(input: &Value, required: bool) -> anyhow::Result<Option<&str>> {
-    match input["relative_path"]
+    match input["path"]
         .as_str()
-        .or_else(|| input["path"].as_str())
+        .or_else(|| input["relative_path"].as_str())
         .or_else(|| input["file"].as_str())
     {
         Some(p) => Ok(Some(p)),
-        None if required => Err(anyhow!("missing 'relative_path' (or 'path') parameter")),
+        None if required => Err(anyhow!("missing 'path' parameter")),
         None => Ok(None),
     }
 }
@@ -222,7 +221,7 @@ impl Tool for GetSymbolsOverview {
         json!({
             "type": "object",
             "properties": {
-                "relative_path": { "type": "string", "description": "File or directory path relative to project root. Supports glob patterns (e.g. 'src/**/*.rs')" },
+                "path": { "type": "string", "description": "File or directory path relative to project root. Supports glob patterns (e.g. 'src/**/*.rs')" },
                 "depth": { "type": "integer", "default": 1, "description": "Depth of children to include (0=none, 1=direct children)" },
                 "detail_level": { "type": "string", "description": "Output detail: omit or 'exploring' for compact (default), 'full' for complete with bodies" },
                 "offset": { "type": "integer", "description": "Skip this many files (focused mode pagination)" },
@@ -396,10 +395,10 @@ impl Tool for FindSymbol {
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
-            "required": ["pattern"],
             "properties": {
                 "pattern": { "type": "string", "description": "Symbol name or substring to search for" },
-                "relative_path": { "type": "string", "description": "Restrict search to this file or glob pattern (e.g. 'src/**/*.rs')" },
+                "name_path": { "type": "string", "description": "Exact name path from get_symbols_overview (e.g. 'MyStruct/my_method'). Alternative to pattern." },
+                "path": { "type": "string", "description": "Restrict search to this file or glob pattern (e.g. 'src/**/*.rs')" },
                 "include_body": { "type": "boolean", "default": false },
                 "depth": { "type": "integer", "default": 0, "description": "Depth of children to include" },
                 "detail_level": { "type": "string", "description": "Output detail: omit for compact (default), 'full' for complete with bodies" },
@@ -412,7 +411,13 @@ impl Tool for FindSymbol {
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
         let pattern = input["pattern"]
             .as_str()
-            .ok_or_else(|| anyhow!("missing 'pattern' parameter"))?;
+            .or_else(|| input["name_path"].as_str())
+            .ok_or_else(|| {
+                RecoverableError::with_hint(
+                    "missing required parameter",
+                    "Provide 'pattern' (substring search) or 'name_path' (exact path from get_symbols_overview, e.g. 'MyStruct/my_method')",
+                )
+            })?;
         let guard = OutputGuard::from_input(&input);
         let include_body = input["include_body"]
             .as_bool()
@@ -502,7 +507,10 @@ impl Tool for FindSymbol {
             // Fast path: workspace/symbol — one LSP request per language instead of
             // one textDocument/documentSymbol request per file.
             let mut languages = std::collections::HashSet::new();
-            let walker = ignore::WalkBuilder::new(&root).build();
+            let walker = ignore::WalkBuilder::new(&root)
+                .hidden(true)
+                .git_ignore(true)
+                .build();
             for entry in walker.flatten() {
                 if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
                     if let Some(lang) = ast::detect_language(entry.path()) {
@@ -617,10 +625,10 @@ impl Tool for FindReferencingSymbols {
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
-            "required": ["name_path", "relative_path"],
+            "required": ["name_path", "path"],
             "properties": {
                 "name_path": { "type": "string", "description": "Symbol name path (e.g. 'MyStruct/my_method')" },
-                "relative_path": { "type": "string", "description": "File containing the symbol" },
+                "path": { "type": "string", "description": "File containing the symbol" },
                 "detail_level": { "type": "string", "description": "Output detail: omit for compact (default), 'full' for complete with bodies" },
                 "offset": { "type": "integer", "description": "Skip this many results (focused mode pagination)" },
                 "limit": { "type": "integer", "description": "Max results per page (focused mode, default 50)" },
@@ -703,10 +711,10 @@ impl Tool for ReplaceSymbolBody {
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
-            "required": ["name_path", "relative_path", "new_body"],
+            "required": ["name_path", "path", "new_body"],
             "properties": {
                 "name_path": { "type": "string" },
-                "relative_path": { "type": "string" },
+                "path": { "type": "string" },
                 "new_body": { "type": "string" }
             }
         })
@@ -758,10 +766,10 @@ impl Tool for InsertBeforeSymbol {
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
-            "required": ["name_path", "relative_path", "code"],
+            "required": ["name_path", "path", "code"],
             "properties": {
                 "name_path": { "type": "string" },
-                "relative_path": { "type": "string" },
+                "path": { "type": "string" },
                 "code": { "type": "string" }
             }
         })
@@ -809,10 +817,10 @@ impl Tool for InsertAfterSymbol {
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
-            "required": ["name_path", "relative_path", "code"],
+            "required": ["name_path", "path", "code"],
             "properties": {
                 "name_path": { "type": "string" },
-                "relative_path": { "type": "string" },
+                "path": { "type": "string" },
                 "code": { "type": "string" }
             }
         })
@@ -862,10 +870,10 @@ impl Tool for RenameSymbol {
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
-            "required": ["name_path", "relative_path", "new_name"],
+            "required": ["name_path", "path", "new_name"],
             "properties": {
                 "name_path": { "type": "string" },
-                "relative_path": { "type": "string" },
+                "path": { "type": "string" },
                 "new_name": { "type": "string" }
             }
         })
@@ -1204,7 +1212,7 @@ impl Point {
         let result = GetSymbolsOverview
             .call(
                 json!({
-                    "relative_path": "src/main.rs",
+                    "path": "src/main.rs",
                     "depth": 1
                 }),
                 &ctx,
@@ -1244,7 +1252,7 @@ impl Point {
         // Trigger LSP startup and background indexing via a file-restricted call.
         let _ = FindSymbol
             .call(
-                json!({ "pattern": "main", "relative_path": "src/main.rs" }),
+                json!({ "pattern": "main", "path": "src/main.rs" }),
                 &ctx,
             )
             .await;
@@ -1284,7 +1292,7 @@ impl Point {
             .call(
                 json!({
                     "pattern": "add",
-                    "relative_path": "src/main.rs"
+                    "path": "src/main.rs"
                 }),
                 &ctx,
             )
@@ -1307,7 +1315,7 @@ impl Point {
         // Should error because no project, but NOT because of unknown param
         let err = GetSymbolsOverview
             .call(
-                json!({ "relative_path": "x", "detail_level": "full" }),
+                json!({ "path": "x", "detail_level": "full" }),
                 &ctx,
             )
             .await
@@ -1327,7 +1335,7 @@ impl Point {
         let ctx = ToolContext { agent, lsp: lsp() };
 
         let err = GetSymbolsOverview
-            .call(json!({ "relative_path": "nonexistent/file.py" }), &ctx)
+            .call(json!({ "path": "nonexistent/file.py" }), &ctx)
             .await
             .unwrap_err();
 
@@ -1347,7 +1355,7 @@ impl Point {
         let ctx = ToolContext { agent, lsp: lsp() };
 
         let err = GetSymbolsOverview
-            .call(json!({ "relative_path": "missing.rs" }), &ctx)
+            .call(json!({ "path": "missing.rs" }), &ctx)
             .await
             .unwrap_err();
 
@@ -1369,7 +1377,7 @@ impl Point {
         let ctx = ToolContext { agent, lsp: lsp() };
 
         let err = GetSymbolsOverview
-            .call(json!({ "relative_path": "src/**/*.nonexistent" }), &ctx)
+            .call(json!({ "path": "src/**/*.nonexistent" }), &ctx)
             .await
             .unwrap_err();
 
@@ -1388,7 +1396,7 @@ impl Point {
             lsp: lsp(),
         };
         assert!(GetSymbolsOverview
-            .call(json!({"relative_path": "x"}), &ctx)
+            .call(json!({"path": "x"}), &ctx)
             .await
             .is_err());
         assert!(FindSymbol
@@ -1396,7 +1404,7 @@ impl Point {
             .await
             .is_err());
         assert!(FindReferencingSymbols
-            .call(json!({"name_path": "x", "relative_path": "y"}), &ctx)
+            .call(json!({"name_path": "x", "path": "y"}), &ctx)
             .await
             .is_err());
     }
@@ -1534,7 +1542,7 @@ impl Point {
 
         // Target "src" specifically — should be shallow (depth 1)
         let result = GetSymbolsOverview
-            .call(json!({ "relative_path": "src" }), &ctx)
+            .call(json!({ "path": "src" }), &ctx)
             .await
             .unwrap();
 
@@ -1678,7 +1686,7 @@ fn main() {
                 .call(
                     json!({
                         "name_path": "add",
-                        "relative_path": "src/main.rs"
+                        "path": "src/main.rs"
                     }),
                     &ctx,
                 )
@@ -1805,7 +1813,7 @@ fn main() {
 
         // "src" is a directory — should walk it and find symbols inside
         let result = FindSymbol
-            .call(json!({ "pattern": "add", "relative_path": "src" }), &ctx)
+            .call(json!({ "pattern": "add", "path": "src" }), &ctx)
             .await
             .unwrap();
 
@@ -1908,7 +1916,7 @@ fn main() {
 
         let result = FindSymbol
             .call(
-                json!({ "pattern": "add", "relative_path": "src/main.rs" }),
+                json!({ "pattern": "add", "path": "src/main.rs" }),
                 &ctx,
             )
             .await
@@ -1927,7 +1935,7 @@ fn main() {
         let (_dir, ctx) = rich_project_ctx().await;
 
         let result = FindSymbol
-            .call(json!({ "pattern": "helper", "relative_path": "src" }), &ctx)
+            .call(json!({ "pattern": "helper", "path": "src" }), &ctx)
             .await
             .unwrap();
 
@@ -1946,7 +1954,7 @@ fn main() {
 
         let result = FindSymbol
             .call(
-                json!({ "pattern": "multiply", "relative_path": "src/utils" }),
+                json!({ "pattern": "multiply", "path": "src/utils" }),
                 &ctx,
             )
             .await
@@ -1967,7 +1975,7 @@ fn main() {
 
         let result = FindSymbol
             .call(
-                json!({ "pattern": "add", "relative_path": "src/**/*.rs" }),
+                json!({ "pattern": "add", "path": "src/**/*.rs" }),
                 &ctx,
             )
             .await
@@ -1987,7 +1995,7 @@ fn main() {
 
         let result = FindSymbol
             .call(
-                json!({ "pattern": "anything", "relative_path": "src/empty" }),
+                json!({ "pattern": "anything", "path": "src/empty" }),
                 &ctx,
             )
             .await
@@ -2003,7 +2011,7 @@ fn main() {
 
         let result = FindSymbol
             .call(
-                json!({ "pattern": "impl Calculator/compute", "relative_path": "src" }),
+                json!({ "pattern": "impl Calculator/compute", "path": "src" }),
                 &ctx,
             )
             .await

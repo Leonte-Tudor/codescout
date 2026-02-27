@@ -186,6 +186,8 @@ fn default_ignored_patterns() -> Vec<String> {
         "dist".into(),
         "build".into(),
         ".code-explorer".into(),
+        ".worktrees".into(),
+        ".claude".into(),
     ]
 }
 

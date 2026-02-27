@@ -260,7 +260,10 @@ impl Tool for SearchForPattern {
             .build()?;
         let mut matches = vec![];
 
-        let walker = ignore::WalkBuilder::new(&search_path).build();
+        let walker = ignore::WalkBuilder::new(&search_path)
+            .hidden(true)
+            .git_ignore(true)
+            .build();
         'outer: for entry in walker.flatten() {
             if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
                 continue;
@@ -374,7 +377,10 @@ impl Tool for FindFile {
             .compile_matcher();
 
         let mut matches = vec![];
-        let walker = ignore::WalkBuilder::new(&search_path).build();
+        let walker = ignore::WalkBuilder::new(&search_path)
+            .hidden(true)
+            .git_ignore(true)
+            .build();
         for entry in walker.flatten() {
             if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
                 continue;
@@ -1008,6 +1014,85 @@ mod tests {
             !entries.iter().any(|e| e.contains(".git")),
             ".git/ entries should be excluded, got: {:?}",
             entries
+        );
+    }
+    #[tokio::test]
+    async fn search_for_pattern_skips_hidden_dirs() {
+        let ctx = test_ctx().await;
+        let dir = tempdir().unwrap();
+
+        // Create a normal source file with a match
+        std::fs::write(dir.path().join("main.rs"), "fn hello() {}").unwrap();
+
+        // Create a hidden .worktrees/ dir with the same pattern — should be skipped
+        let wt_dir = dir.path().join(".worktrees").join("feature");
+        std::fs::create_dir_all(&wt_dir).unwrap();
+        std::fs::write(wt_dir.join("lib.rs"), "fn hello() {}").unwrap();
+
+        let result = SearchForPattern
+            .call(
+                json!({ "pattern": "fn hello", "path": dir.path().to_str().unwrap() }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let matches: Vec<&str> = result["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["file"].as_str().unwrap())
+            .collect();
+
+        assert!(
+            matches.iter().any(|f| f.ends_with("main.rs")),
+            "should find match in main.rs"
+        );
+        assert!(
+            !matches.iter().any(|f| f.contains(".worktrees")),
+            ".worktrees/ should be excluded, got: {:?}",
+            matches
+        );
+    }
+
+    #[tokio::test]
+    async fn find_file_skips_hidden_dirs() {
+        let ctx = test_ctx().await;
+        let dir = tempdir().unwrap();
+
+        // Normal file
+        std::fs::write(dir.path().join("main.rs"), "").unwrap();
+
+        // Same pattern inside a hidden .claude/worktrees/ dir — should be skipped
+        let wt_dir = dir.path().join(".claude").join("worktrees").join("branch");
+        std::fs::create_dir_all(&wt_dir).unwrap();
+        std::fs::write(wt_dir.join("main.rs"), "").unwrap();
+
+        let result = FindFile
+            .call(
+                json!({ "pattern": "**/*.rs", "path": dir.path().to_str().unwrap() }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let files: Vec<&str> = result["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+
+        assert_eq!(
+            files.len(),
+            1,
+            "only main.rs should match, got: {:?}",
+            files
+        );
+        assert!(
+            files[0].ends_with("main.rs"),
+            "expected main.rs, got: {:?}",
+            files
         );
     }
 
