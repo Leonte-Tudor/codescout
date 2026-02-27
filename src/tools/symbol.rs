@@ -967,7 +967,7 @@ impl Tool for ReplaceSymbol {
 
         let mut new_lines = Vec::new();
         new_lines.extend_from_slice(&lines[..start]);
-        new_lines.push(new_body);
+        new_lines.extend(new_body.lines());
         new_lines.extend_from_slice(&lines[end..]);
 
         write_lines(&full_path, &new_lines, content.ends_with('\n'))?;
@@ -1029,7 +1029,7 @@ impl Tool for InsertCode {
 
         let mut new_lines = Vec::new();
         new_lines.extend_from_slice(&lines[..insert_at]);
-        new_lines.push(code);
+        new_lines.extend(code.lines());
         new_lines.extend_from_slice(&lines[insert_at..]);
 
         write_lines(&full_path, &new_lines, content.ends_with('\n'))?;
@@ -1054,11 +1054,7 @@ struct TextualMatch {
 
 /// Classify a file by extension for result prioritization.
 fn classify_file(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-    {
+    match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
         "md" | "txt" | "rst" | "adoc" => "documentation",
         "toml" | "yaml" | "yml" | "json" => "config",
         _ => "source",
@@ -1301,7 +1297,7 @@ fn write_lines(
     had_trailing_newline: bool,
 ) -> std::io::Result<()> {
     let mut out = lines.join("\n");
-    if had_trailing_newline {
+    if had_trailing_newline && !out.is_empty() {
         out.push('\n');
     }
     std::fs::write(path, out)
@@ -2413,11 +2409,7 @@ fn main() {
 
         let modified_file = dir.path().join("already.rs");
         std::fs::write(&modified_file, "// FooHandler was here\n").unwrap();
-        std::fs::write(
-            dir.path().join("untouched.md"),
-            "FooHandler docs\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("untouched.md"), "FooHandler docs\n").unwrap();
 
         let mut lsp_files = std::collections::HashSet::new();
         lsp_files.insert(modified_file);
@@ -2464,7 +2456,7 @@ fn main() {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].occurrence_count, 10);
         assert_eq!(matches[0].previews.len(), 2); // capped at 2
-        assert_eq!(matches[0].lines.len(), 10);   // all line numbers kept
+        assert_eq!(matches[0].lines.len(), 10); // all line numbers kept
     }
 
     #[test]
@@ -2486,5 +2478,173 @@ fn main() {
         // So only 1 match: the comment line.
         assert_eq!(matches[0].occurrence_count, 1);
         assert!(matches[0].previews[0].contains("// FooHandler docs"));
+    }
+
+    // ── write_lines / splice edge cases ────────────────────────────────────
+
+    #[test]
+    fn write_lines_no_trailing_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.txt");
+        let lines: Vec<&str> = vec!["line1", "line2", "line3"];
+        write_lines(&file, &lines, false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "line1\nline2\nline3"
+        );
+    }
+
+    #[test]
+    fn write_lines_with_trailing_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.txt");
+        let lines: Vec<&str> = vec!["line1", "line2", "line3"];
+        write_lines(&file, &lines, true).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "line1\nline2\nline3\n"
+        );
+    }
+
+    #[test]
+    fn write_lines_empty_with_trailing_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.txt");
+        let lines: Vec<&str> = vec![];
+        write_lines(&file, &lines, true).unwrap();
+        // Empty content should not become "\n"
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "");
+    }
+
+    /// Simulates the replace_symbol pattern: lines before + multi-line body + lines after.
+    /// The body should be split into individual lines before inserting.
+    #[test]
+    fn splice_multiline_body_no_trailing_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.rs");
+
+        let original = "// before\nfn foo() {\n    old();\n}\n// after\n";
+        std::fs::write(&file, original).unwrap();
+
+        let content = std::fs::read_to_string(&file).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+
+        // Simulate replace_symbol: replace lines 1-3 (0-indexed) with new body
+        let new_body = "fn foo() {\n    new();\n}";
+        let start = 1usize;
+        let end = 4usize; // exclusive
+
+        let mut new_lines = Vec::new();
+        new_lines.extend_from_slice(&lines[..start]);
+        // FIX: split body into lines, don't push as single element
+        new_lines.extend(new_body.lines());
+        new_lines.extend_from_slice(&lines[end..]);
+
+        write_lines(&file, &new_lines, content.ends_with('\n')).unwrap();
+
+        let result = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(result, "// before\nfn foo() {\n    new();\n}\n// after\n");
+    }
+
+    /// When body has trailing newline, the extra \n must NOT create a blank line.
+    #[test]
+    fn splice_multiline_body_with_trailing_newline_no_blank_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.rs");
+
+        let original = "// before\nfn foo() {\n    old();\n}\n// after\n";
+        std::fs::write(&file, original).unwrap();
+
+        let content = std::fs::read_to_string(&file).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+
+        // LLM passes body WITH trailing newline (common)
+        let new_body = "fn foo() {\n    new();\n}\n";
+        let start = 1usize;
+        let end = 4usize;
+
+        let mut new_lines = Vec::new();
+        new_lines.extend_from_slice(&lines[..start]);
+        new_lines.extend(new_body.lines()); // .lines() strips the trailing \n — correct!
+        new_lines.extend_from_slice(&lines[end..]);
+
+        write_lines(&file, &new_lines, content.ends_with('\n')).unwrap();
+
+        let result = std::fs::read_to_string(&file).unwrap();
+        // Must NOT have blank line between "}" and "// after"
+        assert_eq!(result, "// before\nfn foo() {\n    new();\n}\n// after\n");
+    }
+
+    /// Demonstrates the BUG: pushing multi-line body as single element creates extra blank line
+    /// when body has trailing newline. This test documents the broken behavior.
+    #[test]
+    fn splice_push_single_element_creates_blank_line_bug() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.rs");
+
+        let original = "// before\nfn foo() {\n    old();\n}\n// after\n";
+        std::fs::write(&file, original).unwrap();
+
+        let content = std::fs::read_to_string(&file).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+
+        let new_body = "fn foo() {\n    new();\n}\n"; // trailing newline
+        let start = 1usize;
+        let end = 4usize;
+
+        let mut new_lines = Vec::new();
+        new_lines.extend_from_slice(&lines[..start]);
+        new_lines.push(new_body); // THE BUG: push as single element
+        new_lines.extend_from_slice(&lines[end..]);
+
+        write_lines(&file, &new_lines, content.ends_with('\n')).unwrap();
+
+        let result = std::fs::read_to_string(&file).unwrap();
+        // BUG: extra blank line between "}" and "// after"
+        assert!(
+            result.contains("}\n\n// after"),
+            "Expected blank line bug, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn apply_text_edits_preserves_trailing_newline() {
+        let content = "hello world\nfoo bar\nbaz\n";
+        let edits = vec![lsp_types::TextEdit {
+            range: lsp_types::Range {
+                start: lsp_types::Position {
+                    line: 1,
+                    character: 0,
+                },
+                end: lsp_types::Position {
+                    line: 1,
+                    character: 7,
+                },
+            },
+            new_text: "replaced".to_string(),
+        }];
+        let result = apply_text_edits(content, &edits);
+        assert_eq!(result, "hello world\nreplaced\nbaz\n");
+    }
+
+    #[test]
+    fn apply_text_edits_multiline_replacement() {
+        let content = "aaa\nbbb\nccc\n";
+        let edits = vec![lsp_types::TextEdit {
+            range: lsp_types::Range {
+                start: lsp_types::Position {
+                    line: 1,
+                    character: 0,
+                },
+                end: lsp_types::Position {
+                    line: 1,
+                    character: 3,
+                },
+            },
+            new_text: "xxx\nyyy".to_string(),
+        }];
+        let result = apply_text_edits(content, &edits);
+        assert_eq!(result, "aaa\nxxx\nyyy\nccc\n");
     }
 }
