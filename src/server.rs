@@ -29,9 +29,11 @@ use crate::tools::{
         FindReferences, FindSymbol, GotoDefinition, Hover, InsertCode, ListSymbols, RenameSymbol,
         ReplaceSymbol,
     },
+    usage::GetUsageStats,
     workflow::{Onboarding, RunCommand},
     Tool, ToolContext,
 };
+use crate::usage::UsageRecorder;
 
 /// The MCP server handler — holds shared agent state and a registry of tools.
 #[derive(Clone)]
@@ -95,6 +97,8 @@ impl CodeExplorerServer {
             // Library tools
             Arc::new(ListLibraries),
             Arc::new(IndexLibrary),
+            // Usage monitoring
+            Arc::new(GetUsageStats),
         ];
         Self {
             agent,
@@ -181,19 +185,24 @@ impl ServerHandler for CodeExplorerServer {
                 .ok()
         };
 
+        let recorder = UsageRecorder::new(self.agent.clone());
+
         let result = if let Some(secs) = timeout_secs {
-            tokio::time::timeout(std::time::Duration::from_secs(secs), tool.call(input, &ctx))
-                .await
-                .unwrap_or_else(|_| {
-                    Err(anyhow::anyhow!(
-                        "Tool '{}' timed out after {}s. \
+            tokio::time::timeout(
+                std::time::Duration::from_secs(secs),
+                recorder.record(&req.name, || tool.call(input, &ctx)),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err(anyhow::anyhow!(
+                    "Tool '{}' timed out after {}s. \
                      Increase tool_timeout_secs in .code-explorer/project.toml if needed.",
-                        req.name,
-                        secs
-                    ))
-                })
+                    req.name,
+                    secs
+                ))
+            })
         } else {
-            tool.call(input, &ctx).await
+            recorder.record(&req.name, || tool.call(input, &ctx)).await
         };
 
         match result {
@@ -438,6 +447,7 @@ mod tests {
             "get_config",
             "list_libraries",
             "index_library",
+            "get_usage_stats",
         ];
         assert_eq!(
             server.tools.len(),
