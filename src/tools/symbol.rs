@@ -530,7 +530,9 @@ impl Tool for FindSymbol {
                 };
                 for sym in symbols {
                     // LSP servers may use fuzzy/prefix matching — enforce substring.
-                    if sym.name.to_lowercase().contains(&pattern_lower) {
+                    if sym.name.to_lowercase().contains(&pattern_lower)
+                        || sym.name_path.to_lowercase().contains(&pattern_lower)
+                    {
                         let source = if include_body {
                             std::fs::read_to_string(&sym.file).ok()
                         } else {
@@ -1869,5 +1871,210 @@ fn main() {
             !results2.is_empty(),
             "pattern without '/' should still match via name"
         );
+    }
+
+    async fn rich_project_ctx() -> (tempfile::TempDir, ToolContext) {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/utils")).unwrap();
+        std::fs::create_dir_all(dir.path().join("src/empty")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".code-explorer")).unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"test-project\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/main.rs"),
+            "fn main() {}\n\nfn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub fn helper() -> bool { true }\n\npub struct Calculator;\n\nimpl Calculator {\n    pub fn compute() -> i32 { 42 }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/utils/math.rs"),
+            "pub fn multiply(a: i32, b: i32) -> i32 { a * b }\n",
+        )
+        .unwrap();
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        (dir, ToolContext { agent, lsp: lsp() })
+    }
+
+    #[tokio::test]
+    async fn find_symbol_path_type_file() {
+        let (_dir, ctx) = rich_project_ctx().await;
+
+        let result = FindSymbol
+            .call(
+                json!({ "pattern": "add", "relative_path": "src/main.rs" }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let symbols = result["symbols"].as_array().unwrap();
+        assert!(
+            !symbols.is_empty(),
+            "find_symbol with file relative_path should find symbols"
+        );
+        assert!(symbols.iter().any(|s| s["name"] == "add"));
+    }
+
+    #[tokio::test]
+    async fn find_symbol_path_type_directory() {
+        let (_dir, ctx) = rich_project_ctx().await;
+
+        let result = FindSymbol
+            .call(json!({ "pattern": "helper", "relative_path": "src" }), &ctx)
+            .await
+            .unwrap();
+
+        let symbols = result["symbols"].as_array().unwrap();
+        assert!(
+            !symbols.is_empty(),
+            "find_symbol with directory relative_path should find symbols: {:?}",
+            result
+        );
+        assert!(symbols.iter().any(|s| s["name"] == "helper"));
+    }
+
+    #[tokio::test]
+    async fn find_symbol_path_type_nested_directory() {
+        let (_dir, ctx) = rich_project_ctx().await;
+
+        let result = FindSymbol
+            .call(
+                json!({ "pattern": "multiply", "relative_path": "src/utils" }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let symbols = result["symbols"].as_array().unwrap();
+        assert!(
+            !symbols.is_empty(),
+            "find_symbol with nested directory relative_path should find symbols: {:?}",
+            result
+        );
+        assert!(symbols.iter().any(|s| s["name"] == "multiply"));
+    }
+
+    #[tokio::test]
+    async fn find_symbol_path_type_glob() {
+        let (_dir, ctx) = rich_project_ctx().await;
+
+        let result = FindSymbol
+            .call(
+                json!({ "pattern": "add", "relative_path": "src/**/*.rs" }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let symbols = result["symbols"].as_array().unwrap();
+        assert!(
+            !symbols.is_empty(),
+            "find_symbol with glob relative_path should find symbols: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn find_symbol_empty_directory_returns_empty() {
+        let (_dir, ctx) = rich_project_ctx().await;
+
+        let result = FindSymbol
+            .call(
+                json!({ "pattern": "anything", "relative_path": "src/empty" }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let total = result["total"].as_u64().unwrap();
+        assert_eq!(total, 0, "empty directory should return 0 results");
+    }
+
+    #[tokio::test]
+    async fn find_symbol_name_path_pattern_in_directory() {
+        let (_dir, ctx) = rich_project_ctx().await;
+
+        let result = FindSymbol
+            .call(
+                json!({ "pattern": "impl Calculator/compute", "relative_path": "src" }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let symbols = result["symbols"].as_array().unwrap();
+        assert!(
+            !symbols.is_empty(),
+            "find_symbol with name_path pattern in directory should find symbols: {:?}",
+            result
+        );
+        assert!(symbols.iter().any(|s| s["name"] == "compute"));
+    }
+
+    #[tokio::test]
+    async fn find_symbol_name_path_pattern_project_wide() {
+        let (_dir, ctx) = rich_project_ctx().await;
+
+        // tree-sitter merges impl methods under the type name directly
+        // (no "impl" prefix), so name_path is "Calculator/compute"
+        let result = FindSymbol
+            .call(json!({ "pattern": "Calculator/compute" }), &ctx)
+            .await
+            .unwrap();
+
+        let symbols = result["symbols"].as_array().unwrap();
+        assert!(
+            !symbols.is_empty(),
+            "find_symbol with name_path pattern project-wide should find symbols via tree-sitter: {:?}",
+            result
+        );
+        assert!(symbols.iter().any(|s| s["name"] == "compute"));
+    }
+
+    #[test]
+    fn collect_matching_slash_pattern_precision() {
+        let symbols = vec![SymbolInfo {
+            name: "MyStruct".into(),
+            name_path: "MyStruct".into(),
+            kind: crate::lsp::SymbolKind::Struct,
+            file: PathBuf::from("test.rs"),
+            start_line: 0,
+            end_line: 10,
+            start_col: 0,
+            children: vec![SymbolInfo {
+                name: "my_method".into(),
+                name_path: "MyStruct/my_method".into(),
+                kind: crate::lsp::SymbolKind::Method,
+                file: PathBuf::from("test.rs"),
+                start_line: 2,
+                end_line: 5,
+                start_col: 4,
+                children: vec![],
+            }],
+        }];
+
+        let mut results = vec![];
+        collect_matching(
+            &symbols,
+            "mystruct/my_method",
+            false,
+            None,
+            0,
+            "project",
+            &mut results,
+        );
+        assert_eq!(
+            results.len(),
+            1,
+            "slash pattern should match exactly 1 result (the method), not the parent struct"
+        );
+        assert_eq!(results[0]["name"], "my_method");
     }
 }

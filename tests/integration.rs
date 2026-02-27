@@ -448,3 +448,91 @@ async fn workflow_onboarding_explore() {
 
     drop(dir);
 }
+
+/// Exercises find_symbol with file, directory, nested directory, glob, and
+/// name_path patterns — all via tree-sitter fallback (no LSP).
+#[tokio::test]
+async fn workflow_find_symbol_path_types() {
+    use code_explorer::tools::symbol::FindSymbol;
+
+    let (_dir, ctx) = project_with_files(&[
+        (
+            "src/main.rs",
+            "fn main() {}\nfn add(a: i32, b: i32) -> i32 { a + b }\n",
+        ),
+        (
+            "src/lib.rs",
+            "pub fn helper() -> bool { true }\npub struct Calculator;\nimpl Calculator { pub fn compute() -> i32 { 42 } }\n",
+        ),
+        (
+            "src/utils/math.rs",
+            "pub fn multiply(a: i32, b: i32) -> i32 { a * b }\n",
+        ),
+    ])
+    .await;
+
+    // 1. File path — baseline
+    let r = FindSymbol
+        .call(
+            json!({ "pattern": "add", "relative_path": "src/main.rs" }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    let syms = r["symbols"].as_array().unwrap();
+    assert!(
+        syms.iter().any(|s| s["name"] == "add"),
+        "file path should find 'add': {r:?}"
+    );
+
+    // 2. Directory path — bug #1 regression
+    let r = FindSymbol
+        .call(json!({ "pattern": "helper", "relative_path": "src" }), &ctx)
+        .await
+        .unwrap();
+    let syms = r["symbols"].as_array().unwrap();
+    assert!(
+        syms.iter().any(|s| s["name"] == "helper"),
+        "directory path should find 'helper': {r:?}"
+    );
+
+    // 3. Nested directory path — bug #1 nested
+    let r = FindSymbol
+        .call(
+            json!({ "pattern": "multiply", "relative_path": "src/utils" }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    let syms = r["symbols"].as_array().unwrap();
+    assert!(
+        syms.iter().any(|s| s["name"] == "multiply"),
+        "nested directory path should find 'multiply': {r:?}"
+    );
+
+    // 4. Glob path
+    let r = FindSymbol
+        .call(
+            json!({ "pattern": "add", "relative_path": "src/**/*.rs" }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    let syms = r["symbols"].as_array().unwrap();
+    assert!(
+        syms.iter().any(|s| s["name"] == "add"),
+        "glob path should find 'add': {r:?}"
+    );
+
+    // 5. Name_path pattern project-wide — bug #2 regression
+    // tree-sitter uses "Calculator/compute" as name_path (no "impl" prefix)
+    let r = FindSymbol
+        .call(json!({ "pattern": "Calculator/compute" }), &ctx)
+        .await
+        .unwrap();
+    let syms = r["symbols"].as_array().unwrap();
+    assert!(
+        syms.iter().any(|s| s["name"] == "compute"),
+        "name_path pattern should find 'compute' project-wide: {r:?}"
+    );
+}

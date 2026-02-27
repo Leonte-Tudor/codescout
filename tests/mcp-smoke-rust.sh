@@ -30,6 +30,14 @@ assert_json_has() {
     echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); assert '$1' in d" 2>/dev/null
 }
 
+assert_symbols_found() {
+    echo "$RESULT" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d.get('total', 0) > 0 or len(d.get('symbols', [])) > 0
+" 2>/dev/null
+}
+
 pass() {
     local steps="$1" name="$2"
     PASS=$((PASS + 1))
@@ -189,7 +197,7 @@ test_symbols_overview() {
 
 test_find_symbol() {
     call find_symbol '{"pattern": "route_tool_error"}'
-    if assert_contains "route_tool_error" && assert_contains "server.rs"; then
+    if assert_contains "route_tool_error" && assert_contains "server.rs" && assert_symbols_found; then
         pass 1 "find_symbol locates route_tool_error"
     else
         fail 1 "find_symbol locates route_tool_error" "function not found"
@@ -198,7 +206,7 @@ test_find_symbol() {
 
 test_find_symbol_with_body() {
     call find_symbol '{"pattern": "route_tool_error", "include_body": true}'
-    if assert_contains "RecoverableError"; then
+    if assert_contains "RecoverableError" && assert_symbols_found; then
         pass 1 "find_symbol with include_body returns source"
     else
         fail 1 "find_symbol with include_body returns source" "body not returned or missing RecoverableError"
@@ -214,10 +222,40 @@ test_list_functions() {
     fi
 }
 
+test_find_symbol_directory() {
+    call find_symbol '{"pattern": "route_tool_error", "relative_path": "src"}'
+    if assert_symbols_found && assert_contains "route_tool_error"; then
+        pass 1 "find_symbol with directory relative_path finds symbols"
+    else
+        fail 1 "find_symbol with directory relative_path finds symbols" "not found via directory path"
+    fi
+}
+
+test_find_symbol_glob() {
+    call find_symbol '{"pattern": "route_tool_error", "relative_path": "src/**/*.rs"}'
+    if assert_symbols_found && assert_contains "server.rs"; then
+        pass 1 "find_symbol with glob relative_path finds symbols"
+    else
+        fail 1 "find_symbol with glob relative_path finds symbols" "not found via glob path"
+    fi
+}
+
+test_find_symbol_name_path() {
+    call find_symbol '{"pattern": "impl Tool for FindSymbol/call", "relative_path": "src/tools/symbol.rs"}'
+    if assert_symbols_found && assert_contains "call"; then
+        pass 1 "find_symbol with name_path pattern finds method"
+    else
+        fail 1 "find_symbol with name_path pattern finds method" "name_path pattern not matched"
+    fi
+}
+
 test_symbols_overview
 test_find_symbol
 test_find_symbol_with_body
 test_list_functions
+test_find_symbol_directory
+test_find_symbol_glob
+test_find_symbol_name_path
 
 # ── Category 3: Search Workflows ────────────────────────────────────────────
 
@@ -311,8 +349,23 @@ test_explore_tool_architecture() {
     fi
 }
 
+test_explore_directory_then_drilldown() {
+    call find_symbol '{"pattern": "OutputGuard", "relative_path": "src/tools"}'
+    if ! assert_symbols_found; then
+        fail 2 "explore: directory search then drilldown" "OutputGuard not found in src/tools"
+        return
+    fi
+    call find_symbol '{"pattern": "OutputGuard", "relative_path": "src/tools/output.rs", "include_body": true}'
+    if assert_symbols_found && assert_contains "max_results"; then
+        pass 2 "explore: directory search then drilldown into OutputGuard"
+    else
+        fail 2 "explore: directory search then drilldown into OutputGuard" "body missing or incomplete"
+    fi
+}
+
 test_explore_error_routing
 test_explore_tool_architecture
+test_explore_directory_then_drilldown
 
 # ── Report ───────────────────────────────────────────────────────────────────
 
