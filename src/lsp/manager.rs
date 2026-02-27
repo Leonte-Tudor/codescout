@@ -109,17 +109,31 @@ impl LspManager {
             Err(e) => Err(e),
         };
 
-        // Clean up the starting barrier and notify waiters.
-        {
-            let mut starting = self.starting.lock().await;
-            starting.remove(language);
+        // CRITICAL ordering: on success, insert into cache BEFORE cleaning up
+        // the barrier. This ensures waiters see the client when they wake up.
+        // On failure, just clean up the barrier so waiters can retry.
+        match result {
+            Ok(new_client) => {
+                {
+                    let mut clients = self.clients.lock().await;
+                    clients.insert(language.to_string(), new_client.clone());
+                }
+                {
+                    let mut starting = self.starting.lock().await;
+                    starting.remove(language);
+                }
+                notify.notify_waiters();
+                Ok(new_client)
+            }
+            Err(e) => {
+                {
+                    let mut starting = self.starting.lock().await;
+                    starting.remove(language);
+                }
+                notify.notify_waiters();
+                Err(e)
+            }
         }
-        notify.notify_waiters();
-
-        let new_client = result?;
-        let mut clients = self.clients.lock().await;
-        clients.insert(language.to_string(), new_client.clone());
-        Ok(new_client)
     }
 
     /// Get an existing alive client without starting one.
