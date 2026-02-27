@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>code-explorer dashboard</title>
+    <link rel="stylesheet" href="/dashboard.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+    <header>
+        <h1>code-explorer</h1>
+        <nav>
+            <button class="nav-btn active" data-page="overview">Overview</button>
+            <button class="nav-btn" data-page="stats">Tool Stats</button>
+            <button class="nav-btn" data-page="memories">Memories</button>
+        </nav>
+        <button id="theme-toggle" title="Toggle theme">&#9728;</button>
+    </header>
+
+    <main>
+        <div id="page-overview" class="page active">
+            <div class="card-grid">
+                <div class="card" id="card-project">
+                    <h2>Project</h2>
+                    <div class="card-body" id="project-info">Loading...</div>
+                </div>
+                <div class="card" id="card-config">
+                    <h2>Configuration</h2>
+                    <div class="card-body" id="config-info">Loading...</div>
+                </div>
+                <div class="card" id="card-index">
+                    <h2>Semantic Index</h2>
+                    <div class="card-body" id="index-info">Loading...</div>
+                </div>
+                <div class="card" id="card-drift">
+                    <h2>Drift</h2>
+                    <div class="card-body" id="drift-info">Loading...</div>
+                </div>
+                <div class="card" id="card-libraries">
+                    <h2>Libraries</h2>
+                    <div class="card-body" id="libraries-info">Loading...</div>
+                </div>
+            </div>
+        </div>
+
+        <div id="page-stats" class="page">
+            <div class="stats-controls">
+                <label>Window:</label>
+                <select id="stats-window">
+                    <option value="1h">1 hour</option>
+                    <option value="24h">24 hours</option>
+                    <option value="7d">7 days</option>
+                    <option value="30d" selected>30 days</option>
+                </select>
+            </div>
+            <div class="card" id="card-usage-summary">
+                <h2>Summary</h2>
+                <div class="card-body" id="usage-summary">Loading...</div>
+            </div>
+            <div class="card" id="card-usage-chart">
+                <h2>Calls by Tool</h2>
+                <canvas id="calls-chart" height="300"></canvas>
+            </div>
+            <div class="card" id="card-usage-table">
+                <h2>Per-Tool Breakdown</h2>
+                <div class="card-body" id="usage-table">Loading...</div>
+            </div>
+            <div class="card" id="card-errors">
+                <h2>Recent Errors</h2>
+                <div class="card-body" id="errors-list">Loading...</div>
+            </div>
+        </div>
+
+        <div id="page-memories" class="page">
+            <div class="memories-layout">
+                <div class="memories-sidebar">
+                    <h2>Topics</h2>
+                    <button id="new-memory-btn" class="btn">+ New</button>
+                    <ul id="memory-topics"></ul>
+                </div>
+                <div class="memories-content">
+                    <div id="memory-viewer">
+                        <p class="muted">Select a topic to view its content.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <span id="last-refresh">Last refreshed: &mdash;</span>
+    </footer>
+
+    <script src="/dashboard.js"></script>
+</body>
+</html>

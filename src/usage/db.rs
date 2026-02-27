@@ -147,6 +147,35 @@ fn window_to_modifier(window: &str) -> &'static str {
     }
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct ErrorRecord {
+    pub tool: String,
+    pub timestamp: String,
+    pub outcome: String,
+    pub message: Option<String>,
+}
+
+pub fn recent_errors(conn: &Connection, limit: i64) -> Result<Vec<ErrorRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT tool_name, called_at, outcome, error_msg
+         FROM tool_calls
+         WHERE outcome IN ('error', 'recoverable_error')
+         ORDER BY called_at DESC, rowid DESC
+         LIMIT ?",
+    )?;
+    let rows = stmt
+        .query_map([limit], |r| {
+            Ok(ErrorRecord {
+                tool: r.get(0)?,
+                timestamp: r.get(1)?,
+                outcome: r.get(2)?,
+                message: r.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,5 +340,53 @@ mod tests {
         // Only new_tool (inserted now) should appear in 1h window
         assert_eq!(stats_1h.total_calls, 1);
         assert_eq!(stats_1h.by_tool[0].tool, "new_tool");
+    }
+
+    #[test]
+    fn recent_errors_returns_latest_errors() {
+        let (_dir, conn) = tmp();
+        write_record(&conn, "find_symbol", 50, "success", false, None).unwrap();
+        write_record(
+            &conn,
+            "semantic_search",
+            100,
+            "error",
+            false,
+            Some("index missing"),
+        )
+        .unwrap();
+        write_record(
+            &conn,
+            "list_symbols",
+            30,
+            "recoverable_error",
+            false,
+            Some("path not found"),
+        )
+        .unwrap();
+
+        let errors = recent_errors(&conn, 10).unwrap();
+        assert_eq!(errors.len(), 2);
+        // Most recent first
+        assert_eq!(errors[0].tool, "list_symbols");
+        assert_eq!(errors[1].tool, "semantic_search");
+    }
+
+    #[test]
+    fn recent_errors_respects_limit() {
+        let (_dir, conn) = tmp();
+        for i in 0..5 {
+            write_record(
+                &conn,
+                &format!("tool_{}", i),
+                10,
+                "error",
+                false,
+                Some("fail"),
+            )
+            .unwrap();
+        }
+        let errors = recent_errors(&conn, 3).unwrap();
+        assert_eq!(errors.len(), 3);
     }
 }

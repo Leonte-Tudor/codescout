@@ -5,6 +5,8 @@
 pub mod agent;
 pub mod ast;
 pub mod config;
+#[cfg(feature = "dashboard")]
+pub mod dashboard;
 pub mod embed;
 pub mod git;
 pub mod library;

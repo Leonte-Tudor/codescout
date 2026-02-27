@@ -81,8 +81,14 @@ tree-sitter-java = "0.23.5"
 tree-sitter-kotlin-ng = "1.1.0"
 libc = "0.2.182"
 
+# Dashboard web server (behind "dashboard" feature)
+axum = { version = "0.8", features = ["json"], optional = true }
+tower-http = { version = "0.6", features = ["cors"], optional = true }
+open = { version = "5", optional = true }
+
 [features]
-default = ["remote-embed"]
+default = ["remote-embed", "dashboard"]
+dashboard = ["dep:axum", "dep:tower-http", "dep:open"]
 # Remote embedding via OpenAI-compatible HTTP API (Ollama, OpenAI, etc.)
 remote-embed = ["dep:reqwest"]
 # Local CPU embedding via fastembed-rs (ONNX Runtime + HuggingFace model hub).
@@ -106,3 +112,4 @@ strip = true
 
 [dev-dependencies]
 tempfile = "3"
+tower = "0.5"

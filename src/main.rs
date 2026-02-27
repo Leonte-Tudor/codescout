@@ -48,6 +48,26 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+
+    /// Launch the project dashboard web UI
+    #[cfg(feature = "dashboard")]
+    Dashboard {
+        /// Project root path (defaults to CWD)
+        #[arg(short, long)]
+        project: Option<std::path::PathBuf>,
+
+        /// Listen address
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+
+        /// Listen port
+        #[arg(long, default_value_t = 8099)]
+        port: u16,
+
+        /// Don't auto-open the browser
+        #[arg(long)]
+        no_open: bool,
+    },
 }
 
 #[tokio::main]
@@ -79,6 +99,19 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|| std::path::PathBuf::from("."));
             tracing::info!("Indexing project at {}", root.display());
             code_explorer::embed::index::build_index(&root, force).await?;
+        }
+        #[cfg(feature = "dashboard")]
+        Commands::Dashboard {
+            project,
+            host,
+            port,
+            no_open,
+        } => {
+            let root = project
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            tracing::info!("Launching dashboard for {}", root.display());
+            code_explorer::dashboard::serve(root, host, port, !no_open).await?;
         }
     }
 

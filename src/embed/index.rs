@@ -993,7 +993,7 @@ pub fn set_last_indexed_commit(conn: &Connection, sha: &str) -> Result<()> {
     set_meta(conn, "last_indexed_commit", sha)
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct Staleness {
     pub stale: bool,
     pub behind_commits: usize,
@@ -1070,7 +1070,7 @@ fn count_commits_between(repo: &git2::Repository, from: &str, to: &str) -> usize
 }
 
 /// A row from the drift_report table.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DriftReportRow {
     pub file_path: String,
     pub avg_drift: f32,
