@@ -525,3 +525,53 @@ async fn workflow_find_symbol_path_types() {
         "name_path pattern should find 'compute' project-wide: {r:?}"
     );
 }
+
+#[tokio::test]
+async fn write_blocked_when_worktrees_exist_and_not_explicitly_activated() {
+    use code_explorer::tools::file::CreateFile;
+
+    // 1. Create a temp project dir with fake worktree metadata
+    let dir = tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".code-explorer")).unwrap();
+
+    // Simulate a linked worktree: .git/worktrees/feat/gitdir pointing to some path
+    let wt_entry = dir.path().join(".git").join("worktrees").join("feat");
+    std::fs::create_dir_all(&wt_entry).unwrap();
+    let fake_wt_root = dir.path().join("..").join("my-worktree");
+    std::fs::create_dir_all(&fake_wt_root).unwrap();
+    let gitdir_content = format!("{}/.git\n", fake_wt_root.display());
+    std::fs::write(wt_entry.join("gitdir"), &gitdir_content).unwrap();
+
+    // 2. Create Agent via new(Some(path)) — project_explicitly_activated stays false
+    let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+    let ctx = ToolContext {
+        agent,
+        lsp: Arc::new(LspManager::new()),
+    };
+
+    // 3. Attempt a write via create_file tool
+    let result = CreateFile
+        .call(json!({ "path": "test.txt", "content": "hello" }), &ctx)
+        .await;
+
+    // 4. Should fail with a RecoverableError mentioning worktrees
+    let err = result.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Write blocked"),
+        "expected 'Write blocked' in error, got: {msg}"
+    );
+    assert!(
+        msg.contains("activate_project"),
+        "expected 'activate_project' hint in error, got: {msg}"
+    );
+
+    // 5. Verify it's a RecoverableError (not a fatal error)
+    assert!(
+        err.downcast_ref::<code_explorer::tools::RecoverableError>()
+            .is_some(),
+        "expected RecoverableError, got: {err:?}"
+    );
+
+    drop(dir);
+}
