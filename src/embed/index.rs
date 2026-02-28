@@ -123,7 +123,62 @@ pub fn open_db(project_root: &Path) -> Result<Connection> {
         conn.execute_batch("ALTER TABLE chunks ADD COLUMN source TEXT NOT NULL DEFAULT 'project'")?;
     }
 
+    maybe_migrate_to_vec0(&conn)?;
+
     Ok(conn)
+}
+
+/// Migrate `chunk_embeddings` from a plain BLOB table to a `vec0` virtual
+/// table if `embedding_dims` is stored in meta and the table is not yet
+/// a virtual table. Safe to call multiple times (idempotent).
+pub fn maybe_migrate_to_vec0(conn: &Connection) -> Result<()> {
+    use rusqlite::OptionalExtension;
+
+    let dims: usize = match get_meta(conn, "embedding_dims")? {
+        Some(s) => s.parse().unwrap_or(0),
+        None => return Ok(()),
+    };
+    if dims == 0 {
+        return Ok(());
+    }
+
+    // sqlite-vec registers vec0 virtual tables as type='table' in sqlite_master
+    // (same as plain tables). The sql column contains "USING vec0" which is how
+    // we distinguish them. This is the correct detection idiom for this extension.
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='chunk_embeddings'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+
+    match sql {
+        None => return Ok(()), // table doesn't exist yet
+        Some(s) if s.contains("USING vec0") => return Ok(()), // already migrated
+        _ => {}
+    }
+
+    tracing::info!("Migrating chunk_embeddings to vec0 virtual table (dims={dims})");
+
+    // Wrap all four steps in a transaction so that a crash between steps cannot
+    // leave the database in a half-migrated state (empty vec0 table + data still
+    // in chunk_embeddings_v1). vec0 DDL supports explicit SQLite transactions
+    // (verified by the vec0_migration_is_transactional test).
+    conn.execute_batch("BEGIN")?;
+    conn.execute_batch("ALTER TABLE chunk_embeddings RENAME TO chunk_embeddings_v1")?;
+    conn.execute_batch(&format!(
+        "CREATE VIRTUAL TABLE chunk_embeddings USING vec0(embedding float[{dims}] distance_metric=cosine)"
+    ))?;
+    conn.execute_batch(
+        "INSERT INTO chunk_embeddings(rowid, embedding) \
+         SELECT rowid, embedding FROM chunk_embeddings_v1",
+    )?;
+    conn.execute_batch("DROP TABLE chunk_embeddings_v1")?;
+    conn.execute_batch("COMMIT")?;
+
+    tracing::info!("vec0 migration complete");
+    Ok(())
 }
 
 /// Hash the content of a file for change detection.
@@ -275,6 +330,21 @@ pub fn search(
 ) -> Result<Vec<SearchResult>> {
     search_scoped(conn, query_embedding, limit, None)
 }
+// Returns true when `chunk_embeddings` is a vec0 virtual table.
+// Checked via sqlite_master DDL — O(1) index lookup.
+fn is_vec0_active(conn: &Connection) -> bool {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='chunk_embeddings'",
+        [],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .map(|sql| sql.contains("USING vec0"))
+    .unwrap_or(false)
+}
 
 /// Scoped cosine similarity search with optional source filtering.
 ///
@@ -289,6 +359,10 @@ pub fn search_scoped(
     limit: usize,
     source_filter: Option<&str>,
 ) -> Result<Vec<SearchResult>> {
+    if is_vec0_active(conn) {
+        return search_scoped_vec0(conn, query_embedding, limit, source_filter);
+    }
+
     // Encode the query as little-endian f32 bytes — the format vec_f32() expects.
     let query_blob: Vec<u8> = query_embedding
         .iter()
@@ -338,6 +412,76 @@ pub fn search_scoped(
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt
                 .query_map(params![query_blob, source, limit as i64], map_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        }
+    }
+}
+
+/// KNN search via vec0 virtual table. Called by `search_scoped` when the
+/// table has been migrated. `ORDER BY + LIMIT` must live inside the vec0
+/// subquery — this is a vec0 requirement, not a SQL convention.
+fn search_scoped_vec0(
+    conn: &Connection,
+    query_embedding: &[f32],
+    limit: usize,
+    source_filter: Option<&str>,
+) -> Result<Vec<SearchResult>> {
+    let query_blob: Vec<u8> = query_embedding
+        .iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+
+    let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<SearchResult> {
+        // COALESCE maps NULL distance (degenerate zero-vector) to 1.0 (maximum
+        // distance), matching the behaviour of the full-scan path.
+        let distance: f64 = row.get(6)?;
+        let score = (1.0_f32 - distance as f32).clamp(0.0, 1.0);
+        Ok(SearchResult {
+            file_path: row.get(0)?,
+            language: row.get(1)?,
+            content: row.get(2)?,
+            start_line: row.get(3)?,
+            end_line: row.get(4)?,
+            source: row.get(5)?,
+            score,
+        })
+    };
+
+    // KNN subquery: bare `distance` column required — vec0's query planner must
+    // see it to honour the LIMIT constraint. COALESCE is applied at the outer
+    // SELECT level so zero-vector NULLs are mapped to 1.0 (maximum distance).
+    let knn = "SELECT rowid, distance FROM chunk_embeddings \
+               WHERE embedding MATCH vec_f32(?1) ORDER BY distance LIMIT ?2";
+
+    let sel = format!(
+        "SELECT c.file_path, c.language, c.content, c.start_line, c.end_line, c.source, \
+         COALESCE(knn.distance, 1.0) AS distance \
+         FROM chunks c JOIN ({knn}) knn ON c.id = knn.rowid"
+    );
+
+    match source_filter {
+        None => {
+            let sql = format!("{sel} ORDER BY distance ASC");
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt
+                .query_map(params![query_blob, limit as i64], map_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        }
+        Some("libraries") => {
+            let sql = format!("{sel} WHERE c.source != 'project' ORDER BY distance ASC");
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt
+                .query_map(params![query_blob, limit as i64], map_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        }
+        Some(source) => {
+            let sql = format!("{sel} WHERE c.source = ?3 ORDER BY distance ASC");
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt
+                .query_map(params![query_blob, limit as i64, source], map_row)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(rows)
         }
@@ -636,6 +780,15 @@ pub async fn build_index(project_root: &Path, force: bool) -> Result<IndexReport
     // ── Phase 3: Single transaction for all DB writes ─────────────────────────
     let indexed = results.len();
     conn.execute_batch("BEGIN")?;
+    // Store embedding dims for vec0 migration. Derived from the first result's
+    // first embedding so no extra API call is needed. No-op if no files indexed.
+    if let Some(dims) = results
+        .first()
+        .and_then(|r| r.embeddings.first())
+        .map(|e| e.len())
+    {
+        set_meta(&conn, "embedding_dims", &dims.to_string())?;
+    }
     // Always clear drift data so stale rows don't persist when the feature is toggled off
     clear_drift_report(&conn)?;
     let mut drift_results: Vec<crate::embed::drift::FileDrift> = Vec::new();
@@ -849,6 +1002,13 @@ pub async fn build_library_index(
     let indexed = results.len();
     let source_owned = source.to_string();
     conn.execute_batch("BEGIN")?;
+    if let Some(dims) = results
+        .first()
+        .and_then(|r| r.embeddings.first())
+        .map(|e| e.len())
+    {
+        set_meta(&conn, "embedding_dims", &dims.to_string())?;
+    }
     for result in results {
         delete_file_chunks(&conn, &result.rel)?;
         for (raw, emb) in result.chunks.iter().zip(result.embeddings.iter()) {
@@ -1167,12 +1327,124 @@ pub fn clear_drift_report(conn: &Connection) -> Result<()> {
 mod tests {
     use super::*;
     use crate::embed::schema::CodeChunk;
+    use rusqlite::OptionalExtension;
     use tempfile::tempdir;
 
     fn open_test_db() -> (tempfile::TempDir, Connection) {
         let dir = tempdir().unwrap();
         let conn = open_db(dir.path()).unwrap();
         (dir, conn)
+    }
+
+    fn open_test_db_vec0(dims: usize) -> (tempfile::TempDir, Connection) {
+        let (dir, conn) = open_test_db();
+        set_meta(&conn, "embedding_dims", &dims.to_string()).unwrap();
+        maybe_migrate_to_vec0(&conn).unwrap();
+        (dir, conn)
+    }
+
+    #[test]
+    fn vec0_migration_skips_when_no_dims() {
+        let (_dir, conn) = open_test_db();
+        // No embedding_dims in meta → migration is a no-op, plain table stays
+        maybe_migrate_to_vec0(&conn).unwrap();
+        let sql: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='chunk_embeddings'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        let sql = sql.unwrap();
+        assert!(
+            !sql.contains("USING vec0"),
+            "expected plain table, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn vec0_migration_upgrades_plain_table() {
+        let (_dir, conn) = open_test_db();
+        // Insert a chunk so there is data to migrate
+        insert_chunk(
+            &conn,
+            &dummy_chunk("a.rs", "fn a() {}"),
+            &[0.1_f32, 0.2_f32],
+        )
+        .unwrap();
+        set_meta(&conn, "embedding_dims", "2").unwrap();
+
+        maybe_migrate_to_vec0(&conn).unwrap();
+
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='chunk_embeddings'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            sql.contains("USING vec0"),
+            "expected vec0 virtual table, got: {sql}"
+        );
+
+        // Data must survive the migration
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chunk_embeddings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn vec0_migration_is_idempotent() {
+        let (_dir, conn) = open_test_db();
+        insert_chunk(
+            &conn,
+            &dummy_chunk("a.rs", "fn a() {}"),
+            &[0.1_f32, 0.2_f32],
+        )
+        .unwrap();
+        set_meta(&conn, "embedding_dims", "2").unwrap();
+
+        maybe_migrate_to_vec0(&conn).unwrap();
+        // Second call must not error
+        maybe_migrate_to_vec0(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chunk_embeddings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn vec0_migration_is_transactional() {
+        let (_dir, conn) = open_test_db();
+        insert_chunk(
+            &conn,
+            &dummy_chunk("a.rs", "fn a() {}"),
+            &[0.1_f32, 0.2_f32],
+        )
+        .unwrap();
+        set_meta(&conn, "embedding_dims", "2").unwrap();
+        // Try wrapping the four migration steps in an explicit transaction
+        conn.execute_batch("BEGIN").unwrap();
+        conn.execute_batch("ALTER TABLE chunk_embeddings RENAME TO chunk_embeddings_v1")
+            .unwrap();
+        conn.execute_batch("CREATE VIRTUAL TABLE chunk_embeddings USING vec0(embedding float[2])")
+            .unwrap();
+        conn.execute_batch(
+            "INSERT INTO chunk_embeddings(rowid, embedding) \
+             SELECT rowid, embedding FROM chunk_embeddings_v1",
+        )
+        .unwrap();
+        conn.execute_batch("DROP TABLE chunk_embeddings_v1")
+            .unwrap();
+        conn.execute_batch("COMMIT").unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chunk_embeddings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     fn dummy_chunk(file_path: &str, content: &str) -> CodeChunk {
@@ -1212,6 +1484,35 @@ mod tests {
             .unwrap();
         assert_eq!(files, 0);
         assert_eq!(chunks, 0);
+    }
+
+    #[test]
+    fn open_db_auto_migrates_when_dims_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn1 = open_db(dir.path()).unwrap();
+        // Insert a chunk and store dims (simulates a post-indexing state)
+        insert_chunk(
+            &conn1,
+            &dummy_chunk("x.rs", "fn x() {}"),
+            &[1.0_f32, 0.0_f32],
+        )
+        .unwrap();
+        set_meta(&conn1, "embedding_dims", "2").unwrap();
+        drop(conn1);
+
+        // Re-open — open_db should auto-migrate
+        let conn2 = open_db(dir.path()).unwrap();
+        let sql: String = conn2
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='chunk_embeddings'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            sql.contains("USING vec0"),
+            "expected vec0 after reopen, got: {sql}"
+        );
     }
 
     #[test]
@@ -1881,5 +2182,62 @@ mod tests {
         clear_drift_report(&conn).unwrap();
         let reports = query_drift_report(&conn, None, None).unwrap();
         assert!(reports.is_empty());
+    }
+
+    #[test]
+    fn vec0_search_returns_closest_vector() {
+        let (_dir, conn) = open_test_db_vec0(4);
+        insert_chunk(
+            &conn,
+            &dummy_chunk("a.rs", "fn a() {}"),
+            &[1.0_f32, 0.0, 0.0, 0.0],
+        )
+        .unwrap();
+        insert_chunk(
+            &conn,
+            &dummy_chunk("b.rs", "fn b() {}"),
+            &[0.0_f32, 1.0, 0.0, 0.0],
+        )
+        .unwrap();
+
+        let results = search(&conn, &[0.9_f32, 0.1, 0.0, 0.0], 1).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].file_path, "a.rs");
+        assert!(results[0].score > 0.9, "score={}", results[0].score);
+    }
+
+    #[test]
+    fn vec0_search_respects_limit() {
+        let (_dir, conn) = open_test_db_vec0(2);
+        for i in 1..=5u8 {
+            insert_chunk(
+                &conn,
+                &dummy_chunk(&format!("{i}.rs"), "fn f() {}"),
+                &[i as f32, 0.0_f32],
+            )
+            .unwrap();
+        }
+        let results = search(&conn, &[1.0_f32, 0.0], 3).unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn vec0_search_scoped_filters_by_source() {
+        let (_dir, conn) = open_test_db_vec0(2);
+        let mut proj = dummy_chunk_with_source("p.rs", "fn p() {}", "project");
+        insert_chunk(&conn, &proj, &[1.0_f32, 0.0]).unwrap();
+        proj = dummy_chunk_with_source("l.rs", "fn l() {}", "mylib");
+        insert_chunk(&conn, &proj, &[0.9_f32, 0.1]).unwrap();
+
+        let all = search_scoped(&conn, &[1.0_f32, 0.0], 10, None).unwrap();
+        assert_eq!(all.len(), 2);
+
+        let proj_only = search_scoped(&conn, &[1.0_f32, 0.0], 10, Some("project")).unwrap();
+        assert_eq!(proj_only.len(), 1);
+        assert_eq!(proj_only[0].source, "project");
+
+        let libs_only = search_scoped(&conn, &[1.0_f32, 0.0], 10, Some("libraries")).unwrap();
+        assert_eq!(libs_only.len(), 1);
+        assert_eq!(libs_only[0].source, "mylib");
     }
 }
