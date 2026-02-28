@@ -51,6 +51,11 @@ of the shell's working directory — they are NOT automatically coupled.
 MCP write tools (`edit_lines`, `replace_symbol`, `insert_code`, `create_file`) are
 HARD-BLOCKED until `activate_project` is called.
 
+To clean up a finished worktree: run `git worktree prune` from the main repo root
+(not `git worktree remove` — that requires the directory to still exist and will
+leave the session in an unrecoverable state if the directory is already gone).
+Then start a new session from the main repo directory.
+
 ## Rules
 
 1. **PREFER symbol tools over read_file.** `list_symbols` + `find_symbol(include_body=true)` beats reading entire files.
