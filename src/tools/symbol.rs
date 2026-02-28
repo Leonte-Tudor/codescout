@@ -1068,6 +1068,7 @@ impl Tool for ReplaceSymbol {
         })
     }
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
+        super::guard_worktree_write(ctx).await?;
         let name_path = input["name_path"]
             .as_str()
             .ok_or_else(|| anyhow!("missing 'name_path'"))?;
@@ -1128,6 +1129,7 @@ impl Tool for InsertCode {
         })
     }
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
+        super::guard_worktree_write(ctx).await?;
         let name_path = input["name_path"]
             .as_str()
             .ok_or_else(|| anyhow!("missing 'name_path'"))?;
@@ -1294,6 +1296,7 @@ impl Tool for RenameSymbol {
         })
     }
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
+        super::guard_worktree_write(ctx).await?;
         let name_path = input["name_path"]
             .as_str()
             .ok_or_else(|| anyhow!("missing 'name_path'"))?;

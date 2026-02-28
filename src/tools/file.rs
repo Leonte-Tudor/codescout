@@ -327,6 +327,7 @@ impl Tool for CreateFile {
     }
 
     async fn call(&self, input: Value, ctx: &ToolContext) -> Result<Value> {
+        super::guard_worktree_write(ctx).await?;
         let path = input["path"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing 'path' parameter"))?;
@@ -443,6 +444,7 @@ impl Tool for EditLines {
     }
 
     async fn call(&self, input: Value, ctx: &ToolContext) -> Result<Value> {
+        super::guard_worktree_write(ctx).await?;
         let path = input["path"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing 'path' parameter"))?;
