@@ -55,9 +55,12 @@ src/
 
 ## Design Principles
 
-**Progressive Disclosure** — Every tool defaults to the most compact useful
-representation. Details are available on demand via `detail_level: "full"` +
-pagination. Tools never dump unbounded output. See `docs/plans/2026-02-25-progressive-disclosure-design.md`.
+**Progressive Disclosure & Discoverability** — Every tool defaults to the most
+compact useful representation. Details are available on demand via
+`detail_level: "full"` + pagination. When results overflow, responses include
+actionable hints and file distribution maps (`by_file`). See
+`docs/PROGRESSIVE_DISCOVERABILITY.md` for the canonical patterns and
+anti-patterns — **read it before adding or modifying any tool**.
 
 **Token Efficiency** — The LLM's context window is a scarce resource. Tools
 minimize output by default: names + locations in exploring mode, full bodies
@@ -114,6 +117,7 @@ The `PreToolUse` hook will **block** any attempt to use the native `Read`, `Grep
 
 ## Docs
 
+- **`docs/PROGRESSIVE_DISCOVERABILITY.md`** — Canonical guide for output sizing, overflow hints, and agent guidance patterns. **READ THIS before adding or modifying any tool.**
 - `docs/plans/2026-02-25-v1-implementation-plan.md` — Sprint-level plan (Phase 0–5, 15 sprints)
 - `docs/ARCHITECTURE.md` — Component details, tech stack, design principles
 - `docs/ROADMAP.md` — Quick status overview

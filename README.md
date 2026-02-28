@@ -37,6 +37,30 @@ Plus file operations (6 tools), AST analysis (2 tools), workflow & config (4 too
 
 Tested on **Linux**. macOS and Windows may work but have not been verified. Contributions welcome.
 
+## Tested Setup
+
+The behavior described in this README — Claude consistently reaching for the right tool, structured workflows, cross-session memory — was produced with a specific combination of Claude Code plugins running together. Without the full stack, results will vary.
+
+> **The short version:** code-explorer gives Claude the *capability*. The surrounding plugins ensure that capability is actually *used*, consistently, across every session and every subagent.
+
+**Our full stack:**
+
+| Component | Plugin ID | Role |
+|---|---|---|
+| **code-explorer** | *(this server)* | 31 tools: symbol navigation, semantic search, git, memory |
+| **code-explorer-routing** | `code-explorer-routing@sdd-misc-plugins` | Hooks that enforce tool selection — intercepts `grep`/`cat`/`read` in all sessions and subagents and redirects to code-explorer equivalents |
+| **superpowers** | `superpowers@superpowers-marketplace` | Skills framework: TDD, systematic debugging, brainstorming, parallel agents, code review |
+| **episodic-memory** | `episodic-memory@superpowers-marketplace` | Cross-session memory: Claude searches past conversations semantically before starting any task |
+| **hookify** | `hookify@claude-plugins-official` | Hook-based behavior enforcement: codify recurring antipatterns into rules that block them automatically |
+| **rust-analyzer-lsp** | `rust-analyzer-lsp@claude-plugins-official` | Rust language server: powers `goto_definition`, `hover`, `find_references` for Rust code |
+
+**Gotchas:**
+
+- **Without `code-explorer-routing`**: Claude has the tools but won't always reach for them. Old habits resurface — especially `grep`, `cat`, and `read` in subagents that start with a blank slate. The routing plugin is what makes the behavior consistent.
+- **Without `superpowers`**: Claude works but lacks structured workflows. TDD, systematic debugging, and parallel agent dispatch require the skills framework.
+- **Without `episodic-memory`**: Knowledge resets each session. The built-in `write_memory`/`read_memory` tools persist notes within a project, but only episodic-memory lets Claude search past *conversations*.
+- **Without `rust-analyzer-lsp`** (or a running `rust-analyzer` daemon): LSP tools (`goto_definition`, `hover`, `find_references`, `find_symbol`) degrade to tree-sitter-only mode for Rust — still useful, but no type resolution or cross-file navigation.
+
 ## Installation
 
 > **This is a Claude Code tool.** code-explorer is built for [Claude Code](https://code.claude.com/) and currently requires it as the host agent. Other MCP-capable agents may work but are not tested.
