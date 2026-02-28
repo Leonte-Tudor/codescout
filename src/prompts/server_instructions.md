@@ -48,8 +48,9 @@ to customize how the AI navigates and works with your codebase.
 After `EnterWorktree`, ALWAYS call `activate_project("/absolute/worktree/path")` before
 using any code-explorer tools. code-explorer tracks its own active project independently
 of the shell's working directory — they are NOT automatically coupled.
-MCP write tools (`edit_lines`, `replace_symbol`, `insert_code`, `create_file`) are
-HARD-BLOCKED until `activate_project` is called.
+Write tools (`edit_lines`, `replace_symbol`, `insert_code`, `create_file`, `rename_symbol`)
+are **blocked** until `activate_project` is called when git worktrees exist. You'll see a
+`RecoverableError` with the list of detected worktrees and a hint to call `activate_project`.
 
 To clean up a finished worktree: run `git worktree prune` from the main repo root
 (not `git worktree remove` — that requires the directory to still exist and will
