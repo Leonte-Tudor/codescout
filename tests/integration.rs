@@ -3,7 +3,6 @@
 //! These tests exercise realistic tool sequences that a coding agent would
 //! perform, ensuring tools compose correctly end-to-end.
 
-
 use code_explorer::agent::Agent;
 use code_explorer::lsp::LspManager;
 use code_explorer::tools::{Tool, ToolContext};
