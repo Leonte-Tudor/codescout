@@ -290,6 +290,7 @@ impl Tool for SearchPattern {
                 )
             })?;
         let mut matches = vec![];
+        let mut total_match_count = 0usize;
 
         let walker = ignore::WalkBuilder::new(&search_path)
             .hidden(true)
@@ -323,13 +324,12 @@ impl Tool for SearchPattern {
                 let n = file_lines.len();
                 // (block_start_idx, first_match_idx, block_end_idx) — all 0-indexed
                 let mut current: Option<(usize, usize, usize)> = None;
-                let mut match_count = 0usize;
 
                 for (i, line) in file_lines.iter().enumerate() {
                     if !re.is_match(line) {
                         continue;
                     }
-                    match_count += 1;
+                    total_match_count += 1;
                     let ctx_start = i.saturating_sub(context_lines);
                     let ctx_end = (i + context_lines).min(n.saturating_sub(1));
 
@@ -355,7 +355,7 @@ impl Tool for SearchPattern {
                         }
                     }
 
-                    if match_count >= max {
+                    if total_match_count >= max {
                         break;
                     }
                 }
@@ -371,7 +371,7 @@ impl Tool for SearchPattern {
                     }));
                 }
 
-                if match_count >= max {
+                if total_match_count >= max {
                     break 'outer;
                 }
             }
@@ -2151,5 +2151,40 @@ mod tests {
         );
         assert_eq!(matches[0]["match_line"], 2);
         assert_eq!(matches[1]["match_line"], 18);
+    }
+
+    #[tokio::test]
+    async fn search_pattern_context_lines_max_results_is_global_not_per_file() {
+        let ctx = test_ctx().await;
+        let dir = tempdir().unwrap();
+        // Each file has 2 non-adjacent matches (lines 1 and 6) with context_lines=1.
+        // With context=1, windows are [0..=1] and [4..=5] — non-overlapping (gap of 2 lines).
+        // Per-file: 2 match events → 2 separate blocks.
+        // max_results=3 → globally should stop after 3 match events total.
+        // Before fix: per-file counter resets; file a emits 2 blocks, file b emits 2 blocks = 4 total.
+        // After fix: counter is global; file a emits 2 blocks (count=2), file b emits 1 block (count=3, cap hit) = 3 total.
+        let content = "MATCH\nother\nother\nother\nother\nMATCH\n";
+        std::fs::write(dir.path().join("a.txt"), content).unwrap();
+        std::fs::write(dir.path().join("b.txt"), content).unwrap();
+
+        let result = SearchPattern
+            .call(
+                json!({
+                    "pattern": "MATCH",
+                    "path": dir.path().to_str().unwrap(),
+                    "context_lines": 1,
+                    "max_results": 3
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let matches = result["matches"].as_array().unwrap();
+        let total_blocks = matches.len();
+        assert!(
+            total_blocks <= 3,
+            "max_results must be enforced globally across files, got {total_blocks} blocks"
+        );
     }
 }
