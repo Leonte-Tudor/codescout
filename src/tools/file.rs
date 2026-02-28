@@ -18,7 +18,8 @@ impl Tool for ReadFile {
 
     fn description(&self) -> &str {
         "Read the contents of a file. Optionally restrict to a line range. \
-         Rejects source code files — use symbol tools for .rs, .py, .ts, etc."
+         Source code files (.rs, .py, .ts, etc.) require start_line + end_line — \
+         use symbol tools for whole-file reads."
     }
 
     fn input_schema(&self) -> Value {
@@ -54,19 +55,28 @@ impl Tool for ReadFile {
             &security,
         )?;
 
-        // Block source code files — force symbol tool usage
-        if let Some(lang) = crate::ast::detect_language(&resolved) {
-            if lang != "markdown" {
-                return Err(RecoverableError::with_hint(
-                    "read_file is not available for source code files",
-                    "Use symbol tools instead:\n  \
-                     list_symbols(path) — see all symbols + line numbers\n  \
-                     find_symbol(name, include_body=true) — read a specific symbol body\n  \
-                     list_functions(path) — quick function signatures\n  \
-                     search_pattern(\".\", path) — read raw lines (e.g. imports); \
-                     then edit_lines(path, line, count, text) to modify",
-                )
-                .into());
+        // Extract line range early — a targeted read unlocks source code files
+        let start_line = input["start_line"].as_u64();
+        let end_line = input["end_line"].as_u64();
+        let has_range = start_line.is_some() && end_line.is_some();
+
+        // Block source code files — unless a targeted line range is provided
+        if !has_range {
+            if let Some(lang) = crate::ast::detect_language(&resolved) {
+                if lang != "markdown" {
+                    return Err(RecoverableError::with_hint(
+                        "read_file is not available for source code files without a line range \
+                         (use start_line + end_line for targeted reads)",
+                        "For targeted reads: provide start_line + end_line.\n\
+                         For whole-file reads, use symbol tools:\n  \
+                         list_symbols(path) — see all symbols + line numbers\n  \
+                         find_symbol(name, include_body=true) — read a specific symbol body\n  \
+                         list_functions(path) — quick function signatures\n  \
+                         search_pattern(\".\", path) — read raw lines (e.g. imports); \
+                         then edit_lines(path, line, count, text) to modify",
+                    )
+                    .into());
+                }
             }
         }
 
@@ -87,8 +97,7 @@ impl Tool for ReadFile {
         let text = std::fs::read_to_string(&resolved)?;
 
         // If explicit line range given, use it directly (no capping)
-        if let (Some(start), Some(end)) = (input["start_line"].as_u64(), input["end_line"].as_u64())
-        {
+        if let (Some(start), Some(end)) = (start_line, end_line) {
             let content = extract_lines(&text, start as usize, end as usize);
             return Ok(json!({ "content": content, "source": source_tag }));
         }
@@ -512,7 +521,6 @@ impl Tool for EditLines {
         } else {
             new_text.lines().collect()
         };
-
 
         // Splice: remove delete_count lines at idx, insert new lines
         let tail: Vec<&str> = lines.split_off(idx + delete_count);
@@ -1418,7 +1426,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(result, json!("ok"));
-        assert!(result.is_string(), "response must be a plain string, not an object");
+        assert!(
+            result.is_string(),
+            "response must be a plain string, not an object"
+        );
     }
 
     #[tokio::test]
@@ -1874,5 +1885,50 @@ mod tests {
             "search should be case-sensitive by default"
         );
         assert!(matches[0]["content"].as_str().unwrap().starts_with("async"));
+    }
+
+    #[tokio::test]
+    async fn read_file_source_with_range_allowed() {
+        let (dir, ctx) = project_ctx().await;
+        let rs_file = dir.path().join("lib.rs");
+        std::fs::write(&rs_file, "line1\nline2\nline3\nline4\nline5\n").unwrap();
+
+        let result = ReadFile
+            .call(
+                json!({
+                    "path": rs_file.to_str().unwrap(),
+                    "start_line": 2,
+                    "end_line": 4
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let content = result["content"].as_str().unwrap();
+        assert!(content.contains("line2"), "should include line2: {content}");
+        assert!(content.contains("line4"), "should include line4: {content}");
+        assert!(
+            !content.contains("line5"),
+            "should not include line5: {content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_source_without_range_still_blocked() {
+        let (dir, ctx) = project_ctx().await;
+        let rs_file = dir.path().join("lib.rs");
+        std::fs::write(&rs_file, "fn main() {}\n").unwrap();
+
+        let result = ReadFile
+            .call(json!({ "path": rs_file.to_str().unwrap() }), &ctx)
+            .await;
+
+        assert!(result.is_err(), "should still block source without range");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("start_line") || err.contains("line range"),
+            "error hint should mention range option: {err}"
+        );
     }
 }
