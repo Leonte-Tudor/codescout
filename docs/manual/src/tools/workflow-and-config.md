@@ -99,6 +99,8 @@ Requires an active project (set one with `activate_project` first).
 
 ### Security
 
+> See [Security & Permissions](../concepts/security.md) for the full permission model, including write sandboxing and the built-in credential deny list.
+
 Shell execution is **disabled by default**. To enable it, add to `.code-explorer/project.toml`:
 
 ```toml

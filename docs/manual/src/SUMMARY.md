@@ -25,6 +25,8 @@
 - [Dashboard](concepts/dashboard.md)
 - [Git Worktrees](concepts/worktrees.md)
 
+- [Security & Permissions](concepts/security.md)
+
 - [Routing Plugin](concepts/routing-plugin.md)
   - [Superpowers Workflow](concepts/superpowers.md)
 

@@ -66,6 +66,12 @@ Large command output and file reads are stored in a buffer and returned as `@id`
 
 → [Full details: Shell Integration](docs/manual/src/concepts/shell-integration.md)
 
+## Security & Permissions
+
+Reads are permissive (agents can navigate any codebase, library source, or system headers they need). Writes are hard-sandboxed to the project root — an agent running autonomously cannot touch unrelated projects or system files without explicit opt-in. Shell execution is off by default and requires two-field opt-in. Credential paths (`~/.ssh`, `~/.aws`, etc.) are blocked unconditionally for both reads and writes.
+
+→ [Full details: Security & Permissions](docs/manual/src/concepts/security.md)
+
 ## Git Worktree Support
 
 `EnterWorktree` moves the shell into a worktree, but the MCP server's project root doesn't follow — write tools silently target the main repo unless you call `activate_project` first. Three layers handle this: a write guard (hard block), a `worktree_hint` advisory on every write response, and `.worktrees/` exclusions from file navigation.

@@ -118,6 +118,8 @@ patterns = [
 
 ## `[security]` — Access Controls
 
+> See [Security & Permissions](../concepts/security.md) for the rationale behind these settings and how the permission model works end-to-end.
+
 Controls what operations the AI agent is permitted to perform. These settings are intentionally
 conservative by default: shell execution is off, file writes are on, git reads are on.
 

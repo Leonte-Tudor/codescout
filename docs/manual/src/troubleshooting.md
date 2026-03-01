@@ -292,6 +292,8 @@ code-explorer start --project /path/to/project
 
 ## File Operations
 
+> For a full explanation of the permission model, see [Security & Permissions](concepts/security.md).
+
 ### "Permission denied" or "Access denied" reading a file
 
 The file is in the built-in deny list or matches a pattern in
