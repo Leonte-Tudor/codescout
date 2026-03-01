@@ -303,6 +303,42 @@ returned 0 results instead of also timing out.
 
 ---
 
+### BUG-010 — `insert_code`: inserts between `#[derive]` attribute and struct definition
+
+**Date:** 2026-03-01
+**Severity:** High — produces uncompilable code silently
+**Status:** Open
+
+**What happened:**
+Called `insert_code(name_path="CodeExplorerServer", path="src/server.rs", position="before", code="const USER_OUTPUT_ENABLED: bool = false;\n")`.
+Expected the const to land _before_ the doc comment `/// The MCP server handler` that precedes the struct.
+Instead, the const was inserted between `#[derive(Clone)]` and `pub struct CodeExplorerServer` — splitting the attribute from the item it annotates:
+
+```rust
+/// The MCP server handler — holds shared agent state and a registry of tools.
+#[derive(Clone)]
+const USER_OUTPUT_ENABLED: bool = false;   // ← inserted HERE (wrong)
+
+pub struct CodeExplorerServer {
+```
+
+This caused two compiler errors:
+- `E0774: derive may only be applied to structs, enums and unions`
+- `E0277: the trait bound … Clone is not satisfied`
+
+**Reproduction hint:**
+Any struct with leading `#[derive(...)]` + `/// doc comment`. Use `insert_code(position="before")` targeting the struct name.
+The tool resolves the struct's first line as the `#[derive]` line (or possibly the opening `pub struct` line), then inserts immediately before the `pub struct` declaration — after any attributes on that line range.
+
+**Root cause hypothesis:**
+`insert_code` uses the LSP symbol range for the struct, whose `start_line` points to the first attribute (`#[derive]`). The "before" logic then inserts at `start_line`, which is _inside_ the attribute group rather than before the entire annotated item. Specifically, `trim_symbol_start` skips lines that look like closing braces but does not skip `#[...]` attribute lines.
+
+**Fix ideas:**
+- In the "before" branch of `InsertCode::call`, walk _backward_ from `start_line` past any contiguous `#[…]` attribute lines and doc-comment lines (`///`, `//!`), then insert before that extended prefix.
+- Add a regression test: insert before a struct that has `#[derive]` + `///` and assert the const appears before the `///` line.
+
+---
+
 ## Template for new entries
 
 ```

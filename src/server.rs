@@ -9,7 +9,7 @@ use anyhow::Result;
 use rmcp::{
     model::{
         CallToolRequestParam, CallToolResult, Content, ListToolsResult, PaginatedRequestParam,
-        ServerCapabilities, ServerInfo, Tool as McpTool,
+        Role, ServerCapabilities, ServerInfo, Tool as McpTool,
     },
     service::RequestContext,
     Error as McpError, RoleServer, ServerHandler, ServiceExt,
@@ -36,7 +36,11 @@ use crate::tools::{
 };
 use crate::usage::UsageRecorder;
 
-/// The MCP server handler — holds shared agent state and a registry of tools.
+/// When false, user-audience content blocks are stripped before sending to the
+/// MCP client. Flip to `true` once Claude Code implements proper audience
+/// filtering (i.e. LLM context no longer receives Role::User-only blocks).
+const USER_OUTPUT_ENABLED: bool = false;
+
 #[derive(Clone)]
 pub struct CodeExplorerServer {
     agent: Agent,
@@ -226,7 +230,12 @@ impl ServerHandler for CodeExplorerServer {
         };
 
         match result {
-            Ok(blocks) => Ok(CallToolResult::success(blocks)),
+            Ok(mut blocks) => {
+                if !USER_OUTPUT_ENABLED {
+                    blocks.retain(|b| b.audience() != Some(&vec![Role::User]));
+                }
+                Ok(CallToolResult::success(blocks))
+            }
             Err(e) => Ok(route_tool_error(e)),
         }
     }
