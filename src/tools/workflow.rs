@@ -1084,11 +1084,22 @@ mod tests {
             .call(json!({"command": "rm -rf /tmp/ce_nonexistent_test"}), &ctx)
             .await;
         assert!(result.is_err(), "dangerous command should be rejected");
-        let err_msg = result.unwrap_err().to_string();
+        let err = result.unwrap_err();
+        let rec = err
+            .downcast_ref::<crate::tools::RecoverableError>()
+            .expect("should be a RecoverableError, not a fatal error");
         assert!(
-            err_msg.contains("dangerous command blocked"),
-            "error should mention dangerous command blocked, got: {}",
-            err_msg
+            rec.message.to_lowercase().contains("dangerous"),
+            "message should mention dangerous, got: {}",
+            rec.message
+        );
+        assert!(
+            rec.hint
+                .as_deref()
+                .unwrap_or("")
+                .contains("acknowledge_risk"),
+            "hint should mention acknowledge_risk, got: {:?}",
+            rec.hint
         );
     }
 
