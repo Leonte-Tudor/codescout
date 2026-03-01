@@ -502,6 +502,17 @@ async fn run_command_inner(
         }
     }
 
+    // --- Step 2.5: Source file access block ---
+    if !buffer_only && !acknowledge_risk {
+        if let Some(hint) = crate::util::path_security::check_source_file_access(resolved_command) {
+            return Err(super::RecoverableError::with_hint(
+                "shell access to source files is blocked",
+                &hint,
+            )
+            .into());
+        }
+    }
+
     // --- Step 3: Shell command mode check (skip for buffer-only queries) ---
     if !buffer_only {
         match security.shell_command_mode.as_str() {
@@ -1114,6 +1125,59 @@ mod tests {
             .call(json!({"command": "echo hello"}), &ctx)
             .await;
         assert!(result.is_ok(), "echo should not be blocked: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn run_command_blocks_cat_on_source_file() {
+        let (_dir, ctx) = project_ctx().await;
+        let result = RunCommand
+            .call(json!({"command": "cat src/main.rs"}), &ctx)
+            .await;
+        let err = result.unwrap_err();
+        let rec = err
+            .downcast_ref::<crate::tools::RecoverableError>()
+            .expect("should be a RecoverableError");
+        assert!(
+            rec.message.contains("source files is blocked"),
+            "expected source-file block message, got: {}",
+            rec.message
+        );
+    }
+
+    #[tokio::test]
+    async fn run_command_source_block_bypassed_with_acknowledge_risk() {
+        let (dir, ctx) = project_ctx().await;
+        std::fs::write(dir.path().join("tiny.rs"), "fn main() {}\n").unwrap();
+        let result = RunCommand
+            .call(
+                json!({"command": "cat tiny.rs", "acknowledge_risk": true}),
+                &ctx,
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "acknowledge_risk should bypass source block"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_command_source_block_not_triggered_for_markdown() {
+        let (dir, ctx) = project_ctx().await;
+        std::fs::write(dir.path().join("README.md"), "# hello\n").unwrap();
+        let result = RunCommand
+            .call(json!({"command": "cat README.md"}), &ctx)
+            .await;
+        assert!(result.is_ok(), "cat on markdown should not be blocked");
+    }
+
+    #[tokio::test]
+    async fn run_command_source_block_not_triggered_for_non_source() {
+        let (dir, ctx) = project_ctx().await;
+        std::fs::write(dir.path().join("data.txt"), "hello\n").unwrap();
+        let result = RunCommand
+            .call(json!({"command": "cat data.txt"}), &ctx)
+            .await;
+        assert!(result.is_ok(), "cat on .txt should not be blocked");
     }
 
     #[tokio::test]

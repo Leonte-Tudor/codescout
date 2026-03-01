@@ -252,6 +252,29 @@ CREATE TABLE doc_sources (
 
 ---
 
+### Interactive Sessions
+
+Allow the agent to interact with long-running processes — REPLs, debuggers, and confirmation prompts — instead of waiting for them to exit.
+
+**Motivation:** `run_command` currently blocks until the process exits. Commands like `python3 -i`, `pdb`, or `npm install` (with y/n prompts) hang until timeout. There is no way for the agent to send input to a running process.
+
+**Design:** Three tools built on a `SessionStore` (analogous to `OutputBuffer`):
+
+| Tool | Purpose |
+|------|---------|
+| `run_command(interactive: true)` | Spawns with piped I/O, waits for initial output to settle, returns a `@ses_<hex>` session handle |
+| `session_send(session_id, input)` | Writes a line to stdin, waits for settle window of silence, returns the output delta |
+| `session_cancel(session_id)` | Kills the process and frees all resources |
+
+**Settle detection:** After each write, poll the output buffer every 10ms. When 150ms passes with no new bytes, the response is considered complete. Configurable via `settle_ms`. No prompt-pattern knowledge needed.
+
+**Scope:** REPLs, debuggers, confirmation flows. Full-screen TUI apps (vim, less) are explicitly out of scope — no PTY allocation.
+
+**Design doc:** [`plans/2026-03-01-interactive-sessions-design.md`](plans/2026-03-01-interactive-sessions-design.md)
+**Implementation plan:** [`plans/2026-03-01-interactive-sessions-plan.md`](plans/2026-03-01-interactive-sessions-plan.md)
+
+---
+
 ## Contributor Skills
 
 Three Claude Code skills living in `.claude/skills/` within this repo. Contributors who open code-explorer in Claude Code get them automatically — no build step required. See [`plans/2026-02-26-contributor-skills-design.md`](plans/2026-02-26-contributor-skills-design.md) for the full design.

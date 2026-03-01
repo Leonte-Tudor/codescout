@@ -53,6 +53,12 @@ Anti-patterns (never do these):
 - ❌ `cd /home/user/proj && cargo test` → ✅ `cargo test`
 - ❌ `cargo test 2>&1 | tail -20` → ✅ `cargo test` then `tail -20 @cmd_id`
 - ❌ `cargo test 2>&1 | grep FAILED | head -20` → ✅ `cargo test` then `grep FAILED @cmd_id`
+- ❌ `cat src/main.rs` → ✅ `read_file("src/main.rs", start_line, end_line)` or `list_symbols("src/main.rs")`
+- ❌ `head -20 lib.py` → ✅ `read_file("lib.py", start_line=1, end_line=20)`
+- ❌ `sed -n '1,50p' main.ts` → ✅ `read_file("main.ts", start_line=1, end_line=50)`
+- ❌ `awk '{print}' server.go` → ✅ `search_pattern(regex)` or `find_symbol(name)`
+
+Shell access to source files (`.rs`, `.py`, `.ts`, `.go`, etc.) is blocked — use code-explorer symbol tools instead. Pass `acknowledge_risk: true` to bypass if absolutely necessary.
 
 ### Edit code
 

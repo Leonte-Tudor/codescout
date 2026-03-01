@@ -397,6 +397,51 @@ pub fn is_dangerous_command(command: &str, config: &PathSecurityConfig) -> Optio
     None
 }
 
+/// Source file extensions that should be accessed via code-explorer tools,
+/// not raw shell commands. Mirrors `crate::ast::detect_language()` minus markdown.
+const SOURCE_EXTENSIONS: &str = r"\.(rs|py|ts|tsx|js|cjs|mjs|jsx|go|java|kt|kts|c|cpp|cc|cxx|cs|rb|php|swift|scala|ex|exs|hs|lua|sh|bash)\b";
+
+/// Shell commands whose primary job is reading file content.
+const SOURCE_ACCESS_COMMANDS: &str = r"\b(cat|head|tail|sed|awk|less|more|wc)\b";
+
+/// Returns a hint string if `command` is a file-reading tool targeting a source file,
+/// `None` if the command is safe to execute.
+///
+/// Two-part heuristic: both a blocked command name AND a source file extension must be
+/// present in the command string. Use code-explorer tools instead:
+/// - `read_file`, `list_symbols`, `find_symbol` for reading
+/// - `search_pattern` for regex extraction
+///
+/// Known limit: variable expansion (`cat $FILE`) is undetectable at parse time — accepted.
+pub fn check_source_file_access(command: &str) -> Option<String> {
+    let cmd_re = Regex::new(SOURCE_ACCESS_COMMANDS).ok()?;
+    let ext_re = Regex::new(SOURCE_EXTENSIONS).ok()?;
+
+    if !cmd_re.is_match(command) || !ext_re.is_match(command) {
+        return None;
+    }
+
+    let hint = if let Some(m) = cmd_re.find(command) {
+        match m.as_str() {
+            "sed" | "awk" => {
+                "use read_file(path, start_line, end_line), list_symbols(path), \
+                 find_symbol(name, include_body=true), or search_pattern(regex) instead. \
+                 Re-run with acknowledge_risk: true if you need raw shell access."
+            }
+            _ => {
+                "use read_file(path, start_line, end_line) or list_symbols(path) + \
+                 find_symbol(name, include_body=true) instead. \
+                 Re-run with acknowledge_risk: true if you need raw shell access."
+            }
+        }
+    } else {
+        "use read_file, list_symbols, or find_symbol instead. \
+         Re-run with acknowledge_risk: true if you need raw shell access."
+    };
+
+    Some(hint.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -868,5 +913,96 @@ mod tests {
         let mut config = PathSecurityConfig::default();
         config.shell_dangerous_patterns = vec!["kubectl delete".to_string()];
         assert!(is_dangerous_command("kubectl delete pod nginx", &config).is_some());
+    }
+
+    // ── Source file access detection ─────────────────────────────────────
+
+    #[test]
+    fn source_file_access_blocks_cat_on_rs() {
+        assert!(check_source_file_access("cat src/main.rs").is_some());
+    }
+
+    #[test]
+    fn source_file_access_blocks_head_on_ts() {
+        assert!(check_source_file_access("head -20 src/tools/mod.ts").is_some());
+    }
+
+    #[test]
+    fn source_file_access_blocks_tail_on_go() {
+        assert!(check_source_file_access("tail -n 50 server.go").is_some());
+    }
+
+    #[test]
+    fn source_file_access_blocks_sed_on_py() {
+        assert!(check_source_file_access("sed -n '1,100p' lib.py").is_some());
+    }
+
+    #[test]
+    fn source_file_access_blocks_awk_on_java() {
+        assert!(check_source_file_access("awk '{print}' Foo.java").is_some());
+    }
+
+    #[test]
+    fn source_file_access_blocks_less_on_rs() {
+        assert!(check_source_file_access("less src/agent.rs").is_some());
+    }
+
+    #[test]
+    fn source_file_access_blocks_wc_on_rs() {
+        assert!(check_source_file_access("wc -l src/lib.rs").is_some());
+    }
+
+    #[test]
+    fn source_file_access_allows_cat_on_markdown() {
+        // markdown is excluded — it's not source code
+        assert!(check_source_file_access("cat README.md").is_none());
+    }
+
+    #[test]
+    fn source_file_access_allows_wc_on_txt() {
+        assert!(check_source_file_access("wc -l output.txt").is_none());
+    }
+
+    #[test]
+    fn source_file_access_allows_sed_on_toml() {
+        assert!(check_source_file_access("sed 's/foo/bar/g' config.toml").is_none());
+    }
+
+    #[test]
+    fn source_file_access_allows_cat_without_source_ext() {
+        assert!(check_source_file_access("cat Makefile").is_none());
+    }
+
+    #[test]
+    fn source_file_access_hint_mentions_read_file() {
+        let hint = check_source_file_access("cat src/main.rs").unwrap();
+        assert!(
+            hint.contains("read_file"),
+            "hint should mention read_file, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn source_file_access_hint_mentions_list_symbols() {
+        let hint = check_source_file_access("head -5 lib.rs").unwrap();
+        assert!(
+            hint.contains("list_symbols"),
+            "hint should mention list_symbols, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn source_file_access_sed_hint_mentions_search_pattern() {
+        let hint = check_source_file_access("sed -n '1p' foo.ts").unwrap();
+        assert!(
+            hint.contains("search_pattern"),
+            "sed hint should mention search_pattern, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn source_file_access_allows_non_blocked_command() {
+        // cp, mv, diff are not in the blocked command set
+        assert!(check_source_file_access("cp src/main.rs src/main2.rs").is_none());
     }
 }
