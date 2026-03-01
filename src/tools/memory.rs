@@ -23,7 +23,11 @@ impl Tool for WriteMemory {
             "required": ["topic", "content"],
             "properties": {
                 "topic": { "type": "string" },
-                "content": { "type": "string" }
+                "content": { "type": "string" },
+                "private": {
+                    "type": "boolean",
+                    "description": "If true, write to the gitignored private store (personal/machine-specific notes, not shared with teammates)."
+                }
             }
         })
     }
@@ -55,7 +59,13 @@ impl Tool for ReadMemory {
         json!({
             "type": "object",
             "required": ["topic"],
-            "properties": { "topic": { "type": "string" } }
+            "properties": {
+                "topic": { "type": "string" },
+                "private": {
+                    "type": "boolean",
+                    "description": "If true, read from the private memory store."
+                }
+            }
         })
     }
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
@@ -82,7 +92,15 @@ impl Tool for ListMemories {
         "List all stored memory topics for the active project."
     }
     fn input_schema(&self) -> Value {
-        json!({ "type": "object", "properties": {} })
+        json!({
+            "type": "object",
+            "properties": {
+                "include_private": {
+                    "type": "boolean",
+                    "description": "If true, also list private memory topics. Returns { shared, private } instead of { topics }."
+                }
+            }
+        })
     }
     async fn call(&self, _input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
         ctx.agent
@@ -110,7 +128,13 @@ impl Tool for DeleteMemory {
         json!({
             "type": "object",
             "required": ["topic"],
-            "properties": { "topic": { "type": "string" } }
+            "properties": {
+                "topic": { "type": "string" },
+                "private": {
+                    "type": "boolean",
+                    "description": "If true, delete from the private memory store."
+                }
+            }
         })
     }
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
@@ -294,5 +318,33 @@ mod tests {
         let r = json!({ "topics": ["a", "b", "c"] });
         let t = tool.format_for_user(&r).unwrap();
         assert!(t.contains("3"), "got: {t}");
+    }
+
+    #[test]
+    fn write_memory_schema_has_private_field() {
+        let schema = WriteMemory.input_schema();
+        assert!(schema["properties"]["private"].is_object());
+        assert_eq!(schema["properties"]["private"]["type"], "boolean");
+    }
+
+    #[test]
+    fn read_memory_schema_has_private_field() {
+        let schema = ReadMemory.input_schema();
+        assert!(schema["properties"]["private"].is_object());
+        assert_eq!(schema["properties"]["private"]["type"], "boolean");
+    }
+
+    #[test]
+    fn delete_memory_schema_has_private_field() {
+        let schema = DeleteMemory.input_schema();
+        assert!(schema["properties"]["private"].is_object());
+        assert_eq!(schema["properties"]["private"]["type"], "boolean");
+    }
+
+    #[test]
+    fn list_memories_schema_has_include_private_field() {
+        let schema = ListMemories.input_schema();
+        assert!(schema["properties"]["include_private"].is_object());
+        assert_eq!(schema["properties"]["include_private"]["type"], "boolean");
     }
 }
