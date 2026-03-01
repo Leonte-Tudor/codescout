@@ -3,11 +3,12 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 
 use anyhow::Result;
 use tokio::sync::Mutex;
 
-use super::client::LspClient;
+use super::client::{LspClient, LspServerConfig};
 use super::servers;
 
 /// Manages LSP client instances, one per language.
@@ -20,7 +21,11 @@ pub struct LspManager {
     /// Per-language startup barrier: concurrent callers for the same language
     /// wait on a `watch` channel. The first caller sends `true` on success or
     /// `false` on failure; late arrivals always see the final value.
-    starting: Mutex<HashMap<String, tokio::sync::watch::Receiver<Option<bool>>>>,
+    ///
+    /// Uses `std::sync::Mutex` (not tokio) so it can be locked in `Drop`
+    /// guards, which are synchronous. The lock is never held across `await`
+    /// points — only for brief HashMap insert/remove operations.
+    starting: StdMutex<HashMap<String, tokio::sync::watch::Receiver<Option<bool>>>>,
 }
 
 impl Default for LspManager {
@@ -29,11 +34,36 @@ impl Default for LspManager {
     }
 }
 
+/// RAII guard that removes a language entry from the `starting` barrier map
+/// when dropped, regardless of how the enclosing scope exits (success, error,
+/// or async cancellation).
+///
+/// This prevents a stale closed-channel entry from accumulating in the map
+/// when `do_start` is cancelled mid-flight by a tool timeout.
+struct StartingCleanup<'a> {
+    starting: &'a StdMutex<HashMap<String, tokio::sync::watch::Receiver<Option<bool>>>>,
+    language: String,
+}
+
+impl Drop for StartingCleanup<'_> {
+    fn drop(&mut self) {
+        // best-effort: if another task won the race and re-inserted a live
+        // entry while this guard was cancellation-dropped, we leave it alone.
+        // In tokio's cooperative scheduling, the cancellation drop runs
+        // synchronously inside the current poll — no other task can interleave
+        // between the timeout firing and this Drop executing, so in practice
+        // this always removes the stale entry and never removes a live one.
+        if let Ok(mut map) = self.starting.lock() {
+            map.remove(&self.language);
+        }
+    }
+}
+
 impl LspManager {
     pub fn new() -> Self {
         Self {
             clients: Mutex::new(HashMap::new()),
-            starting: Mutex::new(HashMap::new()),
+            starting: StdMutex::new(HashMap::new()),
         }
     }
 
@@ -60,6 +90,12 @@ impl LspManager {
             }
         }
 
+        // Resolve the server config early — fail fast for unknown languages
+        // before touching the barrier map at all.
+        let config = servers::default_config(language, workspace_root).ok_or_else(|| {
+            anyhow::anyhow!("No LSP server configured for language: {}", language)
+        })?;
+
         // Slow path: need to start (or wait for someone else starting).
         // Use a per-language watch channel: the first caller creates a sender,
         // concurrent callers clone the receiver and wait. Unlike Notify, watch
@@ -67,7 +103,7 @@ impl LspManager {
         let mut rx_opt = None;
         let tx_opt;
         {
-            let mut starting = self.starting.lock().await;
+            let mut starting = self.starting.lock().unwrap();
             if let Some(existing_rx) = starting.get(language) {
                 // Someone else is already starting this language — grab a receiver.
                 rx_opt = Some(existing_rx.clone());
@@ -100,24 +136,36 @@ impl LspManager {
             // Clean up the old barrier and register as a new starter.
             let (tx, rx) = tokio::sync::watch::channel(None);
             {
-                let mut starting = self.starting.lock().await;
+                let mut starting = self.starting.lock().unwrap();
                 starting.insert(language.to_string(), rx);
             }
-            return self.do_start(language, workspace_root, tx).await;
+            return self.do_start(language, workspace_root, config, tx).await;
         }
 
         // We're the starter.
-        self.do_start(language, workspace_root, tx_opt.unwrap())
+        self.do_start(language, workspace_root, config, tx_opt.unwrap())
             .await
     }
 
     /// Internal: actually start the LSP, update cache, and signal waiters.
+    ///
+    /// The `StartingCleanup` guard ensures the barrier entry is removed from
+    /// `self.starting` on every exit path: success, error, **and async
+    /// cancellation** (tool timeout dropping the future mid-flight).
     async fn do_start(
         &self,
         language: &str,
         workspace_root: &Path,
+        config: LspServerConfig,
         tx: tokio::sync::watch::Sender<Option<bool>>,
     ) -> Result<Arc<LspClient>> {
+        // Register the cleanup guard first. It removes the `starting` entry
+        // when this function returns or is cancelled.
+        let _cleanup = StartingCleanup {
+            starting: &self.starting,
+            language: language.to_string(),
+        };
+
         // Evict dead/stale client if present.
         // Remove from map first and release the lock, THEN shut down.
         // Calling shutdown().await while holding the clients lock would block
@@ -138,13 +186,7 @@ impl LspManager {
             let _ = old.shutdown().await;
         }
 
-        let config = servers::default_config(language, workspace_root)
-            .ok_or_else(|| anyhow::anyhow!("No LSP server configured for language: {}", language));
-
-        let result = match config {
-            Ok(config) => LspClient::start(config).await.map(Arc::new),
-            Err(e) => Err(e),
-        };
+        let result = LspClient::start(config).await.map(Arc::new);
 
         match result {
             Ok(new_client) => {
@@ -153,21 +195,15 @@ impl LspManager {
                     let mut clients = self.clients.lock().await;
                     clients.insert(language.to_string(), new_client.clone());
                 }
-                // Signal success and clean up barrier.
+                // Signal success. The `starting` entry is removed by _cleanup
+                // when this function returns.
                 let _ = tx.send(Some(true));
-                {
-                    let mut starting = self.starting.lock().await;
-                    starting.remove(language);
-                }
                 Ok(new_client)
             }
             Err(e) => {
-                // Signal failure and clean up barrier.
+                // Signal failure. The `starting` entry is removed by _cleanup
+                // when this function returns.
                 let _ = tx.send(Some(false));
-                {
-                    let mut starting = self.starting.lock().await;
-                    starting.remove(language);
-                }
                 Err(e)
             }
         }
@@ -209,6 +245,71 @@ impl LspManager {
             }
         }
     }
+
+    /// Return the number of in-progress language starts. Should be 0 after any
+    /// `get_or_start` call completes (success, failure, or cancellation).
+    #[cfg(test)]
+    pub fn starting_count_sync(&self) -> usize {
+        self.starting.lock().unwrap().len()
+    }
+
+    /// Like `get_or_start` but accepts a custom `LspServerConfig`, bypassing
+    /// `servers::default_config`. Used in tests to inject fake (e.g. `sleep`)
+    /// servers so the startup can be cancelled or timed out on demand.
+    #[cfg(test)]
+    pub async fn get_or_start_for_test(
+        &self,
+        language: &str,
+        config: LspServerConfig,
+    ) -> Result<Arc<LspClient>> {
+        let workspace_root = config.workspace_root.clone();
+
+        // Fast path
+        {
+            let clients = self.clients.lock().await;
+            if let Some(client) = clients.get(language) {
+                if client.is_alive() && client.workspace_root == workspace_root {
+                    return Ok(client.clone());
+                }
+            }
+        }
+
+        // Barrier
+        let mut rx_opt = None;
+        let tx_opt;
+        {
+            let mut starting = self.starting.lock().unwrap();
+            if let Some(existing_rx) = starting.get(language) {
+                rx_opt = Some(existing_rx.clone());
+                tx_opt = None;
+            } else {
+                let (tx, rx) = tokio::sync::watch::channel(None);
+                starting.insert(language.to_string(), rx);
+                tx_opt = Some(tx);
+            }
+        }
+
+        if let Some(mut rx) = rx_opt {
+            let _ = rx.wait_for(|v| v.is_some()).await;
+            {
+                let clients = self.clients.lock().await;
+                if let Some(client) = clients.get(language) {
+                    if client.is_alive() && client.workspace_root == workspace_root {
+                        return Ok(client.clone());
+                    }
+                }
+            }
+            let (tx, rx) = tokio::sync::watch::channel(None);
+            {
+                let mut starting = self.starting.lock().unwrap();
+                starting.insert(language.to_string(), rx);
+            }
+            return self.do_start(language, &workspace_root, config, tx).await;
+        }
+
+        self.do_start(language, &workspace_root, config, tx_opt.unwrap())
+            .await
+    }
 }
 
 #[async_trait::async_trait]
@@ -232,9 +333,7 @@ impl crate::lsp::ops::LspProvider for LspManager {
 }
 
 impl LspManager {
-    /// Convenience constructor returning `Arc<dyn LspProvider>`.
-    /// Use this everywhere `ToolContext` is constructed instead of `Arc::new(LspManager::new())`.
-    pub fn new_arc() -> Arc<dyn crate::lsp::ops::LspProvider> {
+    pub fn new_arc() -> Arc<Self> {
         Arc::new(Self::new())
     }
 }
@@ -262,6 +361,70 @@ mod tests {
     async fn manager_shutdown_all_empty() {
         let mgr = LspManager::new();
         mgr.shutdown_all().await; // Should not panic
+    }
+
+    /// After a failed start (unknown language), the barrier map must be empty.
+    /// This is the three-query sandwich for the StartingCleanup guard:
+    ///   1. starting_count == 0 (baseline)
+    ///   2. get_or_start for unknown language fails quickly
+    ///   3. starting_count == 0 (guard cleaned up on normal failure exit)
+    #[tokio::test]
+    async fn failed_start_cleans_up_starting_map() {
+        let mgr = LspManager::new();
+        let dir = tempfile::tempdir().unwrap();
+
+        // Step 1 — baseline
+        assert_eq!(mgr.starting_count_sync(), 0, "map should start empty");
+
+        // Step 2 — unknown language fails immediately (no config exists)
+        let result = mgr.get_or_start("brainfuck", dir.path()).await;
+        assert!(result.is_err());
+
+        // Step 3 — cleanup guard fired on failure exit
+        assert_eq!(
+            mgr.starting_count_sync(),
+            0,
+            "map should be clean after failed start"
+        );
+    }
+
+    /// After a cancelled start (tool timeout mid-initialize), the barrier map
+    /// must be empty. Without the StartingCleanup guard the stale closed-channel
+    /// entry would remain in `starting` until the next caller overwrote it.
+    ///
+    /// Uses `sleep 99999` as a fake LSP: it starts immediately but never writes
+    /// to stdout, so `initialize()` blocks until the external timeout fires.
+    #[tokio::test]
+    async fn cancelled_get_or_start_cleans_up_starting_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = LspManager::new();
+
+        // Step 1 — baseline
+        assert_eq!(mgr.starting_count_sync(), 0, "map should start empty");
+
+        let config = LspServerConfig {
+            command: "sleep".into(),
+            args: vec!["99999".into()],
+            workspace_root: dir.path().to_path_buf(),
+            // Short init timeout so the LSP-level request also fails fast,
+            // but the outer tokio::time::timeout fires first.
+            init_timeout: Some(std::time::Duration::from_secs(30)),
+        };
+
+        // Step 2 — cancel the future after 100 ms (before initialize responds)
+        let cancelled = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            mgr.get_or_start_for_test("fake-slow-lsp", config),
+        )
+        .await;
+        assert!(cancelled.is_err(), "expected outer timeout");
+
+        // Step 3 — cleanup guard must have fired during the cancellation drop
+        assert_eq!(
+            mgr.starting_count_sync(),
+            0,
+            "stale starting entry leaked after cancellation"
+        );
     }
 
     #[tokio::test]

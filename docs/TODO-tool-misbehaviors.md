@@ -265,40 +265,41 @@ New tests: `list_symbols_flat_cap_triggers_on_symbol_with_many_children`,
 
 ---
 
-### BUG-009 — `find_symbol`: LspManager leaks zombie kotlin-lsp process on tool timeout
+### BUG-009 — `find_symbol`: LspManager `starting` map not cleaned up on async cancellation
 
 **Date:** 2026-03-01
-**Severity:** Medium — resource leak; repeated LSP cold-start failures accumulate processes
-**Status:** Open
+**Severity:** Low — stale entry self-heals on next call, but can cause spurious re-start attempts
+**Status:** ✅ FIXED — `StartingCleanup` RAII guard in `do_start` + `std::sync::Mutex` for `starting`
 
 **What happened:**
 `find_symbol("User", kind: "class", path: "src/main/kotlin/edu/planner/domain/models/")` in
 backend-kotlin project timed out after 60s. A subsequent call with a specific file path
 returned 0 results instead of also timing out.
 
-**Root cause:**
-`tool_timeout_secs = 60` (project.toml) < Kotlin LSP cold-start time (~90-120s for JVM
-IntelliJ-based kotlin-lsp). `server.rs:call_tool` wraps the tool in `tokio::time::timeout`,
-which cancels the future mid-`LspClient::start()`. Because the kotlin-lsp child process and
-its reader task are `tokio::spawn`-ed (independent of the `start()` future), they survive
-cancellation. The `LspManager.starting` map is left with a closed watch channel (the `tx`
-sender is dropped when `do_start` is cancelled, but `starting.remove()` never runs). The
-next `get_or_start` call sees the closed channel, falls through to become a new starter, and
-spawns a **second** kotlin-lsp process alongside the still-running first.
+**Root cause (two distinct issues):**
 
-**Reproduction hint:**
-1. Set `tool_timeout_secs = 60` on a Kotlin project with a JVM-based kotlin-lsp
-2. Call `find_symbol` on a directory with `.kt` files → timeout after 60s
-3. Immediately call `find_symbol` on a specific `.kt` file → 0 results (not another timeout)
-4. Check running processes: two kotlin-lsp processes exist
+1. **Primary: `tool_timeout_secs = 60` < Kotlin LSP cold-start time.**
+   `server.rs:call_tool` wraps every tool call in `tokio::time::timeout(tool_timeout_secs)`.
+   Kotlin LSP (JVM/IntelliJ-based) takes ~90-120s to complete `initialize`. The tool times
+   out first. Fixed by raising `tool_timeout_secs = 300` in `backend-kotlin/project.toml`.
 
-**Fix ideas:**
-- Wrap `do_start` in a drop guard (using `scopeguard::defer!`) that calls `starting.remove()`
-  on cancellation, so the map is always cleaned up.
-- Separately: kill the spawned child on `start()` cancellation by detecting the orphaned
-  reader task (e.g., abort the reader `JoinHandle` before returning from `start()`).
-- Immediate user-facing fix: raise `tool_timeout_secs` to ≥300 in project config so the
-  tool doesn't time out before kotlin-lsp initializes. **Applied to backend-kotlin.**
+2. **Secondary: `starting` map not cleaned up on async cancellation.**
+   When the tool timeout fires and drops the `do_start` future, `starting.remove(language)`
+   never runs (it was only in the success/failure arms, not on cancellation). The stale
+   closed-channel entry stays in `starting`. The next caller sees it, falls through to the
+   "starter failed" branch, and unnecessarily attempts a second start.
+   NOTE: The child process is NOT a zombie — `Drop for LspClient` already aborts the reader
+   task and SIGTERMs the child. The only leaked resource was the stale map entry.
+
+**Fix applied (secondary issue):**
+- Changed `starting: tokio::sync::Mutex<...>` → `starting: std::sync::Mutex<...>` (safe
+  since the lock is never held across `await` points).
+- Added `StartingCleanup` RAII guard in `do_start` that calls `starting.remove()` in its
+  `Drop` impl, covering success, failure, and async cancellation paths uniformly.
+- Also refactored: config resolution (`servers::default_config`) moved before the barrier in
+  `get_or_start`, so unknown languages fail fast without touching `starting` at all.
+- Regression tests: `failed_start_cleans_up_starting_map` and
+  `cancelled_get_or_start_cleans_up_starting_map` in `src/lsp/manager.rs`.
 
 ---
 
