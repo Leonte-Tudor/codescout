@@ -125,6 +125,7 @@ Each tool implements the `Tool` trait (`name`, `description`, `input_schema`, `a
 
 - `fs.rs` — `find_ancestor_with()`, `detect_project_root()`, `read_utf8()`, `write_utf8()`
 - `text.rs` — `truncate()`, `count_lines()`, `extract_lines()`
+- `path_security.rs` — `PathSecurityConfig`, `validate_read_path()`, `validate_write_path()`. Enforces the permission model: reads are permissive (deny-list only), writes are sandboxed to the project root. All write tools call `validate_write_path()` before any I/O; violations return `RecoverableError` so agents recover without user interruption. See [Security & Permissions](manual/src/concepts/security.md).
 
 ## Tech Stack
 
@@ -155,3 +156,4 @@ Each tool implements the `Tool` trait (`name`, `description`, `input_schema`, `a
 - **Composable tools**: Small focused tools that combine well
 - **Fail gracefully**: LSP down → tree-sitter → text fallback
 - **Token-efficient**: Return minimal context; let the agent request more
+- **Safe by default**: Writes are sandboxed to the project root; shell execution is off by default; credential paths are unconditionally blocked. Violations are recoverable errors, not crashes — agents continue uninterrupted. See [Security & Permissions](manual/src/concepts/security.md).

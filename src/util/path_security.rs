@@ -1,9 +1,36 @@
 //! Path security: read deny-list and write sandboxing.
 //!
-//! - **Reads** are allowed anywhere *except* a configurable deny-list of
-//!   sensitive paths (~/.ssh, ~/.aws, etc.).
-//! - **Writes** are restricted to the active project root (plus optional
-//!   extra roots from configuration).
+//! # Permission Model
+//!
+//! The model is intentionally asymmetric:
+//!
+//! - **Reads** are allowed anywhere on disk *except* a built-in deny-list of
+//!   sensitive credential paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, etc.) plus
+//!   any user-configured `denied_read_patterns`. Use [`validate_read_path`].
+//!
+//! - **Writes** are restricted to the active project root by default. The
+//!   caller may extend this with `extra_write_roots` in [`PathSecurityConfig`],
+//!   but the deny-list always applies first — `extra_write_roots` cannot unlock
+//!   credential paths. Use [`validate_write_path`].
+//!
+//! # Write Validation Flow
+//!
+//! [`validate_write_path`] runs three sequential checks:
+//!
+//! 1. **Null/empty rejection** — malformed paths fail immediately.
+//! 2. **Deny-list** — checked before the root boundary so it cannot be
+//!    bypassed by configuration.
+//! 3. **Workspace boundary** — the path's parent directory is canonicalized
+//!    (not the target file, which may not exist yet) and checked against
+//!    `project_root` and each `extra_write_roots` entry. This catches
+//!    symlink escapes.
+//!
+//! # Agent Safety
+//!
+//! Violations return [`anyhow::Error`] wrapping a [`crate::tools::RecoverableError`],
+//! which the MCP layer surfaces as `isError: false` with a corrective hint.
+//! This means a write-boundary violation does **not** abort sibling parallel
+//! tool calls — the agent can recover and continue without user intervention.
 
 use anyhow::{bail, Result};
 use regex::Regex;
