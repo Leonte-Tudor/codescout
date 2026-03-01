@@ -254,6 +254,24 @@ pub fn count_lines(s: &str) -> usize {
     }
 }
 
+/// Truncate `text` to at most `max_lines` lines.
+///
+/// Returns `(truncated_text, lines_shown, lines_total)`.
+/// When `lines_total <= max_lines`, `text` is returned unchanged and
+/// `lines_shown == lines_total`.
+pub(crate) fn truncate_lines(text: &str, max_lines: usize) -> (String, usize, usize) {
+    let total = count_lines(text);
+    if total <= max_lines {
+        return (text.to_string(), total, total);
+    }
+    let truncated = text
+        .lines()
+        .take(max_lines)
+        .collect::<Vec<_>>()
+        .join("\n");
+    (truncated, max_lines, total)
+}
+
 /// Extract text between the first `failures:` section markers in cargo test output.
 fn extract_test_failures(output: &str) -> Option<String> {
     // Cargo test outputs failures between two "failures:" markers.
@@ -494,5 +512,43 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
     #[test]
     fn count_lines_normal() {
         assert_eq!(count_lines("a\nb\nc"), 3);
+    }
+
+    #[test]
+    fn truncate_lines_short_returns_unchanged() {
+        let text = "a\nb\nc";
+        let (out, shown, total) = truncate_lines(text, 10);
+        assert_eq!(out, text);
+        assert_eq!(shown, 3);
+        assert_eq!(total, 3);
+    }
+
+    #[test]
+    fn truncate_lines_exact_limit_not_truncated() {
+        let text: String = (1..=5).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let (out, shown, total) = truncate_lines(&text, 5);
+        assert_eq!(shown, 5);
+        assert_eq!(total, 5);
+        assert_eq!(out, text);
+    }
+
+    #[test]
+    fn truncate_lines_long_truncates_correctly() {
+        let text: String = (1..=10).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let (out, shown, total) = truncate_lines(&text, 3);
+        assert_eq!(shown, 3);
+        assert_eq!(total, 10);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "line 1");
+        assert_eq!(lines[2], "line 3");
+    }
+
+    #[test]
+    fn truncate_lines_empty_string() {
+        let (out, shown, total) = truncate_lines("", 10);
+        assert_eq!(out, "");
+        assert_eq!(shown, 0);
+        assert_eq!(total, 0);
     }
 }

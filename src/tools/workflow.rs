@@ -602,8 +602,7 @@ async fn run_command_inner(
                 // Break the cycle by returning an error that guides the agent
                 // toward a more targeted query instead.
                 if buffer_only {
-                    let total_lines =
-                        count_lines(&raw_stdout) + count_lines(&raw_stderr);
+                    let total_lines = count_lines(&raw_stdout) + count_lines(&raw_stderr);
                     return Err(super::RecoverableError::with_hint(
                         format!(
                             "Command output is still {total_lines} lines — too large to return inline."
@@ -1420,12 +1419,18 @@ mod tests {
     async fn run_command_buffer_only_above_threshold_returns_error() {
         // SUMMARY_LINE_THRESHOLD + 1 lines — strictly above the limit, must error.
         let (_dir, ctx) = project_ctx().await;
-        let content: String = (1..=SUMMARY_LINE_THRESHOLD + 1).map(|i| format!("{i}\n")).collect();
+        let content: String = (1..=SUMMARY_LINE_THRESHOLD + 1)
+            .map(|i| format!("{i}\n"))
+            .collect();
         let id = ctx.output_buffer.store("cmd".into(), content, "".into(), 0);
         let result = RunCommand
             .call(json!({ "command": format!("cat {}", id) }), &ctx)
             .await;
-        assert!(result.is_err(), "expected error above threshold, got Ok: {:?}", result.ok());
+        assert!(
+            result.is_err(),
+            "expected error above threshold, got Ok: {:?}",
+            result.ok()
+        );
     }
 
     #[cfg(unix)]
@@ -1434,14 +1439,24 @@ mod tests {
         // Exactly SUMMARY_LINE_THRESHOLD lines — the check is `>` not `>=`, so this
         // must return content inline, not error.
         let (_dir, ctx) = project_ctx().await;
-        let content: String = (1..=SUMMARY_LINE_THRESHOLD).map(|i| format!("{i}\n")).collect();
+        let content: String = (1..=SUMMARY_LINE_THRESHOLD)
+            .map(|i| format!("{i}\n"))
+            .collect();
         let id = ctx.output_buffer.store("cmd".into(), content, "".into(), 0);
         let result = RunCommand
             .call(json!({ "command": format!("cat {}", id) }), &ctx)
             .await
             .expect("expected inline output at threshold");
-        assert!(result.get("stdout").is_some(), "expected stdout field: {:?}", result);
-        assert!(result.get("output_id").is_none(), "should not be buffered: {:?}", result);
+        assert!(
+            result.get("stdout").is_some(),
+            "expected stdout field: {:?}",
+            result
+        );
+        assert!(
+            result.get("output_id").is_none(),
+            "should not be buffered: {:?}",
+            result
+        );
     }
 
     #[cfg(unix)]
