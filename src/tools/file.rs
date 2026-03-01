@@ -18,9 +18,7 @@ impl Tool for ReadFile {
     }
 
     fn description(&self) -> &str {
-        "Read the contents of a file. Optionally restrict to a line range. \
-         Source code files (.rs, .py, .ts, etc.) require start_line + end_line — \
-         use symbol tools for whole-file reads."
+        "Read the contents of a file. Optionally restrict to a line range. Source code files (.rs, .py, .ts, etc.) require start_line + end_line — use symbol tools for whole-file reads."
     }
 
     fn input_schema(&self) -> Value {
@@ -56,30 +54,9 @@ impl Tool for ReadFile {
             &security,
         )?;
 
-        // Extract line range early — a targeted read unlocks source code files
+        // Extract line range (both must be present for a targeted read)
         let start_line = input["start_line"].as_u64();
         let end_line = input["end_line"].as_u64();
-        let has_range = start_line.is_some() && end_line.is_some();
-
-        // Block source code files — unless a targeted line range is provided
-        if !has_range {
-            if let Some(lang) = crate::ast::detect_language(&resolved) {
-                if lang != "markdown" {
-                    return Err(RecoverableError::with_hint(
-                        "read_file is not available for source code files without a line range \
-                         (use start_line + end_line for targeted reads)",
-                        "For targeted reads: provide start_line + end_line.\n\
-                         For whole-file reads, use symbol tools:\n  \
-                         list_symbols(path) — see all symbols + line numbers\n  \
-                         find_symbol(name, include_body=true) — read a specific symbol body\n  \
-                         list_functions(path) — quick function signatures\n  \
-                         search_pattern(\".\", path) — read raw lines (e.g. imports); \
-                         then edit_file(path, old_string, new_string) to modify",
-                    )
-                    .into());
-                }
-            }
-        }
 
         // Determine source tag
         let source_tag = {
@@ -107,10 +84,44 @@ impl Tool for ReadFile {
             }
         })?;
 
-        // If explicit line range given, use it directly (no capping)
+        // If explicit line range given, use it directly (no capping, no buffering)
         if let (Some(start), Some(end)) = (start_line, end_line) {
             let content = extract_lines(&text, start as usize, end as usize);
             return Ok(json!({ "content": content, "source": source_tag }));
+        }
+
+        // No explicit range: buffer large files instead of truncating or erroring
+        let has_explicit_range = start_line.is_some() || end_line.is_some();
+        let line_count = text.lines().count();
+        if !has_explicit_range && line_count > crate::tools::file_summary::FILE_BUFFER_THRESHOLD {
+            let file_id = ctx
+                .output_buffer
+                .store_file(resolved.to_string_lossy().to_string(), text.clone());
+            let summary =
+                match crate::tools::file_summary::detect_file_type(&resolved.to_string_lossy()) {
+                    crate::tools::file_summary::FileSummaryType::Source => {
+                        crate::tools::file_summary::summarize_source(
+                            &resolved.to_string_lossy(),
+                            &text,
+                        )
+                    }
+                    crate::tools::file_summary::FileSummaryType::Markdown => {
+                        crate::tools::file_summary::summarize_markdown(&text)
+                    }
+                    crate::tools::file_summary::FileSummaryType::Config => {
+                        crate::tools::file_summary::summarize_config(&text)
+                    }
+                    crate::tools::file_summary::FileSummaryType::Generic => {
+                        crate::tools::file_summary::summarize_generic_file(&text)
+                    }
+                };
+            let mut result = summary;
+            result["file_id"] = json!(file_id);
+            result["hint"] = json!(format!(
+                "Full file stored as {}. Query with: run_command(\"grep/sed/awk {}\")",
+                file_id, file_id
+            ));
+            return Ok(result);
         }
 
         // No line range: cap in exploring mode
@@ -769,25 +780,30 @@ mod tests {
 
     #[tokio::test]
     async fn read_file_caps_large_file_in_exploring_mode() {
+        // Files > FILE_BUFFER_THRESHOLD (200) lines are now buffered, not capped+overflowed.
+        // This test verifies the buffer path for a large plain-text file.
         let ctx = test_ctx().await;
         let dir = tempdir().unwrap();
         let file = dir.path().join("big.txt");
         let content: String = (1..=300).map(|i| format!("line {}\n", i)).collect();
         std::fs::write(&file, &content).unwrap();
 
-        // Default (exploring) mode: should cap at 200 lines
         let result = ReadFile
             .call(json!({ "path": file.to_str().unwrap() }), &ctx)
             .await
             .unwrap();
 
-        let returned = result["content"].as_str().unwrap();
-        assert_eq!(returned.lines().count(), 200);
-        assert!(returned.starts_with("line 1\n"));
-        assert_eq!(result["total_lines"], 300);
-        assert!(result["overflow"].is_object());
-        assert_eq!(result["overflow"]["shown"], 200);
-        assert_eq!(result["overflow"]["total"], 300);
+        // Large file should be buffered with a file_id
+        assert!(
+            result.get("file_id").is_some(),
+            "300-line file should be buffered; got: {}",
+            result
+        );
+        let file_id = result["file_id"].as_str().unwrap();
+        assert!(file_id.starts_with("@file_"));
+        // Full content is stored in the buffer
+        let entry = ctx.output_buffer.get(file_id).unwrap();
+        assert!(entry.stdout.contains("line 150"));
     }
 
     #[tokio::test]
@@ -1550,7 +1566,9 @@ mod tests {
     // ── ReadFile source code gate ────────────────────────────────────────────
 
     #[tokio::test]
-    async fn read_file_blocks_source_code_files() {
+    async fn read_file_allows_source_code_files() {
+        // Source files are no longer blocked — small ones return content directly,
+        // large ones are buffered. This replaces the old read_file_blocks_source_code_files test.
         let (dir, ctx) = project_ctx().await;
         let rs_file = dir.path().join("main.rs");
         std::fs::write(&rs_file, "fn main() {}\n").unwrap();
@@ -1558,11 +1576,17 @@ mod tests {
         let result = ReadFile
             .call(json!({ "path": rs_file.to_str().unwrap() }), &ctx)
             .await;
-        assert!(result.is_err(), "read_file should block .rs files");
-        let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("source code"),
-            "error should mention source code: {err_msg}"
+            result.is_ok(),
+            "read_file should now allow .rs files: {:?}",
+            result.err()
+        );
+        assert!(
+            result.unwrap()["content"]
+                .as_str()
+                .unwrap()
+                .contains("fn main"),
+            "content should be returned"
         );
     }
 
@@ -1600,6 +1624,88 @@ mod tests {
             .call(json!({ "path": csv_file.to_str().unwrap() }), &ctx)
             .await;
         assert!(result.is_ok(), "read_file should allow unknown extensions");
+    }
+
+    // ── ReadFile buffering ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn read_file_small_file_returns_content_directly() {
+        let (dir, ctx) = project_ctx().await;
+        let path = dir.path().join("small.md");
+        std::fs::write(&path, "# Hello\nWorld\n").unwrap();
+        let result = ReadFile
+            .call(json!({"file_path": path.to_str().unwrap()}), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            result.get("file_id").is_none(),
+            "small file should not buffer"
+        );
+        assert!(result["content"].as_str().unwrap().contains("Hello"));
+    }
+
+    #[tokio::test]
+    async fn read_file_large_file_returns_buffer_ref() {
+        let (dir, ctx) = project_ctx().await;
+        let path = dir.path().join("big.md");
+        let content: String = (1..=210).map(|i| format!("line {}\n", i)).collect();
+        std::fs::write(&path, &content).unwrap();
+        let result = ReadFile
+            .call(json!({"file_path": path.to_str().unwrap()}), &ctx)
+            .await
+            .unwrap();
+        let file_id = result["file_id"]
+            .as_str()
+            .expect("large file should have file_id");
+        assert!(
+            file_id.starts_with("@file_"),
+            "file_id should start with @file_, got: {file_id}"
+        );
+        assert!(
+            result["hint"].as_str().unwrap().contains("@file_"),
+            "hint should reference file_id"
+        );
+        let entry = ctx.output_buffer.get(file_id).unwrap();
+        assert!(entry.stdout.contains("line 100"));
+    }
+
+    #[tokio::test]
+    async fn read_file_explicit_range_always_returns_directly() {
+        let (dir, ctx) = project_ctx().await;
+        let path = dir.path().join("big.rs");
+        let content: String = (1..=300).map(|i| format!("// line {}\n", i)).collect();
+        std::fs::write(&path, &content).unwrap();
+        let result = ReadFile
+            .call(
+                json!({"file_path": path.to_str().unwrap(), "start_line": 1, "end_line": 5}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            result.get("file_id").is_none(),
+            "explicit range should never buffer"
+        );
+        assert!(result["content"].as_str().unwrap().contains("line 1"));
+    }
+
+    #[tokio::test]
+    async fn read_file_large_source_file_no_longer_errors() {
+        let (dir, ctx) = project_ctx().await;
+        let path = dir.path().join("lib.rs");
+        let content: String = (0..105)
+            .map(|i| format!("fn fn_{}() {{}}\n\n", i))
+            .collect();
+        std::fs::write(&path, &content).unwrap();
+        let result = ReadFile
+            .call(json!({"file_path": path.to_str().unwrap()}), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            result.get("file_id").is_some() || result.get("content").is_some(),
+            "should buffer or return content, not error; got: {}",
+            result
+        );
     }
 
     // ── search_pattern: regex and string pattern tests ────────────────────────
@@ -1806,7 +1912,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_file_source_without_range_still_blocked() {
+    async fn read_file_source_without_range_now_works() {
+        // Source files are no longer blocked — small ones return content directly,
+        // large ones are buffered. Renamed from read_file_source_without_range_still_blocked.
         let (dir, ctx) = project_ctx().await;
         let rs_file = dir.path().join("lib.rs");
         std::fs::write(&rs_file, "fn main() {}\n").unwrap();
@@ -1815,11 +1923,17 @@ mod tests {
             .call(json!({ "path": rs_file.to_str().unwrap() }), &ctx)
             .await;
 
-        assert!(result.is_err(), "should still block source without range");
-        let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("start_line") || err.contains("line range"),
-            "error hint should mention range option: {err}"
+            result.is_ok(),
+            "source files should now be readable: {:?}",
+            result.err()
+        );
+        assert!(
+            result.unwrap()["content"]
+                .as_str()
+                .unwrap()
+                .contains("fn main"),
+            "content should contain source"
         );
     }
 
