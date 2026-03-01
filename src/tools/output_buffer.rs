@@ -177,7 +177,7 @@ impl OutputBuffer {
     ///   command is one of our temp files (i.e., the command operates solely on
     ///   buffered output, not real filesystem paths)
     pub fn resolve_refs(&self, command: &str) -> Result<(String, Vec<PathBuf>, bool)> {
-        let re = Regex::new(r"@(?:cmd|file)_[0-9a-f]{8}(\.err)?").expect("valid regex");
+        let re = Regex::new(r"@(?:cmd|file|tool)_[0-9a-f]{8}(\.err)?").expect("valid regex");
 
         let refs: Vec<&str> = re.find_iter(command).map(|m| m.as_str()).collect();
         if refs.is_empty() {
@@ -553,5 +553,19 @@ mod tests {
         assert_eq!(entry.stderr, "");
         assert_eq!(entry.exit_code, 0);
         assert_eq!(entry.command, "list_symbols");
+    }
+
+    #[test]
+    fn resolve_refs_substitutes_tool_ref() {
+        let buf = OutputBuffer::new(10);
+        let json = "{\"symbols\":[]}".to_string();
+        let id = buf.store_tool("list_symbols", json);
+        let cmd = format!("jq '.symbols' {}", id);
+        let (resolved, _paths, _is_buf_only) = buf.resolve_refs(&cmd).unwrap();
+        assert!(
+            !resolved.contains("@tool_"),
+            "ref should be substituted, got: {}",
+            resolved
+        );
     }
 }
