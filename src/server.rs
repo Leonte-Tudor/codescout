@@ -117,6 +117,17 @@ impl CodeExplorerServer {
     }
 }
 
+/// Returns true for tools that manage their own timeout internally and must not
+/// be wrapped by the server-level `tool_timeout_secs` guard.
+///
+/// - `index_project` / `index_library`: embedding loops that run for many minutes.
+/// - `run_command`: the caller supplies `timeout_secs` in the request params; the
+///   server-level timeout is unaware of that value and would fire first, making
+///   the per-request `timeout_secs` parameter effectively ignored.
+fn tool_skips_server_timeout(name: &str) -> bool {
+    matches!(name, "index_project" | "index_library" | "run_command")
+}
+
 impl ServerHandler for CodeExplorerServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
@@ -177,11 +188,7 @@ impl ServerHandler for CodeExplorerServer {
             output_buffer: self.output_buffer.clone(),
         };
 
-        // Indexing tools run embedding loops that can legitimately take minutes;
-        // skip the per-call timeout for them.
-        let is_long_running = matches!(req.name.as_ref(), "index_project" | "index_library");
-
-        let timeout_secs = if is_long_running {
+        let timeout_secs = if tool_skips_server_timeout(&req.name) {
             None
         } else {
             self.agent
@@ -665,5 +672,41 @@ mod tests {
         let err = anyhow::anyhow!("LSP error (code -32603): internal error");
         let result = route_tool_error(err);
         assert_eq!(result.is_error, Some(true));
+    }
+
+    // ── timeout dispatch ───────────────────────────────────────────────────
+
+    #[test]
+    fn run_command_skips_server_timeout() {
+        // Regression: run_command accepts a per-request timeout_secs parameter.
+        // The server-level tool_timeout_secs (default 60s) must not wrap it,
+        // otherwise the server fires first and the per-request value is ignored.
+        assert!(
+            tool_skips_server_timeout("run_command"),
+            "run_command must not be wrapped by the server-level timeout"
+        );
+    }
+
+    #[test]
+    fn indexing_tools_skip_server_timeout() {
+        assert!(tool_skips_server_timeout("index_project"));
+        assert!(tool_skips_server_timeout("index_library"));
+    }
+
+    #[test]
+    fn other_tools_do_not_skip_server_timeout() {
+        for name in &[
+            "read_file",
+            "edit_file",
+            "find_symbol",
+            "git_blame",
+            "semantic_search",
+        ] {
+            assert!(
+                !tool_skips_server_timeout(name),
+                "tool '{}' should be subject to the server-level timeout",
+                name
+            );
+        }
     }
 }
