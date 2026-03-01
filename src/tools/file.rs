@@ -484,25 +484,19 @@ impl Tool for CreateFile {
     }
 
     async fn call_content(&self, input: Value, ctx: &ToolContext) -> Result<Vec<Content>> {
-        // Write the file (same guards as call())
         super::guard_worktree_write(ctx).await?;
         let path_str = super::require_str_param(&input, "path")?;
         let content = super::require_str_param(&input, "content")?;
         let root = ctx.agent.require_project_root().await?;
         let security = ctx.agent.security_config().await;
-        let resolved = crate::util::path_security::validate_write_path(path_str, &root, &security)?;
+        let resolved =
+            crate::util::path_security::validate_write_path(path_str, &root, &security)?;
         crate::util::fs::write_utf8(&resolved, content)?;
         ctx.lsp.notify_file_changed(&resolved).await;
 
-        // Build user-facing preview
-        let lang = crate::ast::detect_language(&resolved);
-        let line_count = content.lines().count();
-        let user_md = render_create_header(&resolved, lang, line_count, content);
+        let user_md = super::user_format::format_create_file(&resolved, content);
 
-        Ok(vec![
-            Content::text("ok").with_audience(vec![Role::Assistant]),
-            Content::text(user_md).with_audience(vec![Role::User]),
-        ])
+        Ok(vec![Content::text(user_md).with_audience(vec![Role::User])])
     }
 }
 
@@ -737,37 +731,6 @@ impl Tool for EditFile {
             Content::text(user_text).with_audience(vec![Role::User]),
         ])
     }
-}
-
-fn render_create_header(
-    path: &std::path::Path,
-    lang: Option<&str>,
-    line_count: usize,
-    content: &str,
-) -> String {
-    const PREVIEW_LINES: usize = 30;
-    let display = path.display();
-    let lang_label = lang
-        .map(|l| {
-            let mut s = l.to_string();
-            if let Some(c) = s.get_mut(0..1) {
-                c.make_ascii_uppercase();
-            }
-            format!(" — {s}")
-        })
-        .unwrap_or_default();
-    let mut out = format!("**Created** `{display}`{lang_label} · {line_count} lines");
-    if let Some(fence_lang) = lang {
-        let lines: Vec<&str> = content.lines().take(PREVIEW_LINES).collect();
-        let preview = lines.join("\n");
-        out.push_str(&format!("\n\n```{fence_lang}\n{preview}\n```"));
-        if line_count > PREVIEW_LINES {
-            out.push_str(&format!(
-                "\n*(showing {PREVIEW_LINES} of {line_count} lines)*"
-            ));
-        }
-    }
-    out
 }
 
 #[cfg(test)]
