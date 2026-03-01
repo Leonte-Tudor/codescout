@@ -102,7 +102,8 @@ impl Tool for ListMemories {
         "list_memories"
     }
     fn description(&self) -> &str {
-        "List all stored memory topics for the active project."
+        "List all stored memory topics for the active project. \
+         Pass include_private: true to also see private topics."
     }
     fn input_schema(&self) -> Value {
         json!({
