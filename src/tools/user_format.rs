@@ -1002,16 +1002,24 @@ pub fn format_find_references(result: &Value) -> String {
         return "No references found.".to_string();
     }
 
-    let files: std::collections::HashSet<&str> = result["references"]
-        .as_array()
-        .map(|refs| refs.iter().filter_map(|r| r["file"].as_str()).collect())
-        .unwrap_or_default();
-    let file_count = files.len();
-    if file_count > 1 {
-        format!("{total} refs · {file_count} files")
-    } else {
-        format!("{total} refs")
+    let refs = match result["references"].as_array() {
+        Some(r) => r,
+        None => return format!("{total} refs"),
+    };
+
+    const MAX_SHOW: usize = 5;
+    let mut out = format!("{total} refs");
+    for r in refs.iter().take(MAX_SHOW) {
+        let file = r["file"].as_str().unwrap_or("?");
+        let line = r["line"].as_u64().unwrap_or(0);
+        out.push_str(&format!("\n  {file}:{line}"));
     }
+    let shown = refs.len().min(MAX_SHOW);
+    let hidden = (total as usize).saturating_sub(shown);
+    if hidden > 0 {
+        out.push_str(&format!("\n  … +{hidden} more"));
+    }
+    out
 }
 
 pub fn format_rename_symbol(result: &Value) -> String {
@@ -2418,6 +2426,42 @@ mod tests {
     }
 
     #[test]
+    fn format_find_references_shows_locations() {
+        let result = serde_json::json!({
+            "total": 8,
+            "references": [
+                {"file": "src/tools/symbol.rs", "line": 142},
+                {"file": "src/tools/symbol.rs", "line": 198},
+                {"file": "src/server.rs", "line": 87},
+                {"file": "src/agent.rs", "line": 210},
+                {"file": "src/main.rs", "line": 45},
+                {"file": "src/config.rs", "line": 12}
+            ]
+        });
+        let out = format_find_references(&result);
+        assert!(out.contains("8 refs"), "should show total");
+        assert!(out.contains("src/tools/symbol.rs:142"), "should show locations");
+        assert!(out.contains("src/server.rs:87"), "should show locations");
+        assert!(out.contains("more"), "should show trailer for hidden refs");
+        assert!(!out.contains("src/config.rs"), "should cap at 5");
+    }
+
+    #[test]
+    fn format_find_references_five_or_fewer_no_trailer() {
+        let result = serde_json::json!({
+            "total": 3,
+            "references": [
+                {"file": "src/a.rs", "line": 1},
+                {"file": "src/b.rs", "line": 2},
+                {"file": "src/c.rs", "line": 3}
+            ]
+        });
+        let out = format_find_references(&result);
+        assert!(out.contains("src/a.rs:1"));
+        assert!(!out.contains("more"), "no trailer when all fit");
+    }
+
+    #[test]
     fn format_list_libraries_shows_names_and_status() {
         let result = serde_json::json!({
             "libraries": [
@@ -2426,8 +2470,14 @@ mod tests {
             ]
         });
         let out = format_list_libraries(&result);
-        assert!(out.contains("serde"), "should show library name, got: {out}");
-        assert!(out.contains("tokio"), "should show library name, got: {out}");
+        assert!(
+            out.contains("serde"),
+            "should show library name, got: {out}"
+        );
+        assert!(
+            out.contains("tokio"),
+            "should show library name, got: {out}"
+        );
         assert!(
             out.contains("indexed"),
             "should show index status, got: {out}"
@@ -2505,7 +2555,10 @@ mod diff_tests {
         let out = format_read_memory(&result);
         assert!(out.contains("architecture"), "should show topic");
         assert!(out.contains("Layers"), "should show content");
-        assert!(out.contains("Agent → Server → Tools"), "should show full content");
+        assert!(
+            out.contains("Agent → Server → Tools"),
+            "should show full content"
+        );
     }
 
     #[test]
