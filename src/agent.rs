@@ -13,12 +13,31 @@ use crate::memory::MemoryStore;
 /// Cached embedder: `(model_name, embedder)` — invalidated on model change.
 type CachedEmbedder = Arc<tokio::sync::Mutex<Option<(String, Arc<dyn crate::embed::Embedder>)>>>;
 
+/// State of the background index-build task spawned by `index_project`.
+#[derive(Default)]
+pub enum IndexingState {
+    #[default]
+    Idle,
+    Running,
+    Done {
+        files_indexed: usize,
+        files_deleted: usize,
+        detail: String,
+        total_files: usize,
+        total_chunks: usize,
+    },
+    Failed(String),
+}
+
 #[derive(Clone)]
 pub struct Agent {
     pub inner: Arc<RwLock<AgentInner>>,
     /// Stored outside the RwLock so creation doesn't block agent reads.
     /// Mutex deduplicates concurrent creation: second caller waits and reuses.
     cached_embedder: CachedEmbedder,
+    /// Tracks the background index-build task. Stored outside AgentInner
+    /// so callers only need a brief std::sync lock, not an async RwLock.
+    pub indexing: Arc<std::sync::Mutex<IndexingState>>,
 }
 
 pub struct AgentInner {
@@ -60,6 +79,7 @@ impl Agent {
                 project_explicitly_activated,
             })),
             cached_embedder: Arc::new(tokio::sync::Mutex::new(None)),
+            indexing: Arc::new(std::sync::Mutex::new(IndexingState::Idle)),
         })
     }
 

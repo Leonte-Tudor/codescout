@@ -608,7 +608,7 @@ async fn run_command_inner(
                         format!(
                             "Command output is still {total_lines} lines — too large to return inline."
                         ),
-                        &format!(
+                        format!(
                             "Your query didn't filter enough. Use a targeted command that produces \
                              fewer than {SUMMARY_LINE_THRESHOLD} lines, e.g.:\n\
                              • grep 'keyword' @ref\n\

@@ -158,45 +158,50 @@ impl Tool for IndexProject {
         })
     }
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
+        use crate::agent::IndexingState;
+
         let force = input["force"].as_bool().unwrap_or(false);
         let root = ctx.agent.require_project_root().await?;
 
-        let report = crate::embed::index::build_index(&root, force).await?;
-
-        let conn = crate::embed::index::open_db(&root)?;
-        let stats = crate::embed::index::index_stats(&conn)?;
-
-        // Top 5 most-drifted files
-        let drift_summary: Vec<Value> = report
-            .drift
-            .iter()
-            .filter(|d| d.avg_drift > 0.05)
-            .take(5)
-            .map(|d| {
-                json!({
-                    "file": d.file_path,
-                    "avg_drift": format!("{:.2}", d.avg_drift),
-                    "max_drift": format!("{:.2}", d.max_drift),
-                    "added": d.chunks_added,
-                    "removed": d.chunks_removed,
-                })
-            })
-            .collect();
-
-        let mut result = json!({
-            "status": "ok",
-            "files_indexed": report.indexed,
-            "files_deleted": report.deleted,
-            "detail": report.skipped_msg,
-            "total_files": stats.file_count,
-            "total_chunks": stats.chunk_count,
-        });
-
-        if !drift_summary.is_empty() {
-            result["drift_summary"] = json!(drift_summary);
+        // Guard against concurrent runs.
+        {
+            let mut state = ctx.agent.indexing.lock().unwrap();
+            if matches!(*state, IndexingState::Running) {
+                return Ok(json!({
+                    "status": "already_running",
+                    "hint": "Use index_status() to check progress."
+                }));
+            }
+            *state = IndexingState::Running;
         }
 
-        Ok(result)
+        let state_arc = ctx.agent.indexing.clone();
+        tokio::spawn(async move {
+            let result = crate::embed::index::build_index(&root, force).await;
+            let mut state = state_arc.lock().unwrap();
+            *state = match result {
+                Ok(report) => {
+                    let (total_files, total_chunks) =
+                        crate::embed::index::open_db(&root)
+                            .and_then(|conn| crate::embed::index::index_stats(&conn))
+                            .map(|s| (s.file_count, s.chunk_count))
+                            .unwrap_or((0, 0));
+                    IndexingState::Done {
+                        files_indexed: report.indexed,
+                        files_deleted: report.deleted,
+                        detail: report.skipped_msg,
+                        total_files,
+                        total_chunks,
+                    }
+                }
+                Err(e) => IndexingState::Failed(e.to_string()),
+            };
+        });
+
+        Ok(json!({
+            "status": "started",
+            "hint": "Indexing is running in the background. Use index_status() to check when complete."
+        }))
     }
 }
 
@@ -355,6 +360,37 @@ impl Tool for IndexStatus {
                     drift_result["overflow"] = OutputGuard::overflow_json(&ov);
                 }
                 result["drift"] = drift_result;
+            }
+        }
+
+        // Append background indexing state if not idle.
+        {
+            use crate::agent::IndexingState;
+            let state = ctx.agent.indexing.lock().unwrap();
+            match &*state {
+                IndexingState::Idle => {}
+                IndexingState::Running => {
+                    result["indexing"] = json!("running");
+                }
+                IndexingState::Done {
+                    files_indexed,
+                    files_deleted,
+                    detail,
+                    total_files,
+                    total_chunks,
+                } => {
+                    result["indexing"] = json!({
+                        "status": "done",
+                        "files_indexed": files_indexed,
+                        "files_deleted": files_deleted,
+                        "detail": detail,
+                        "total_files": total_files,
+                        "total_chunks": total_chunks,
+                    });
+                }
+                IndexingState::Failed(e) => {
+                    result["indexing"] = json!({ "status": "failed", "error": e });
+                }
             }
         }
 
