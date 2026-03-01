@@ -15,18 +15,28 @@ See the detailed implementation plan: [`plans/2026-02-25-v1-implementation-plan.
 
 ## What's Built
 
-- 31 tools across 10 categories (file, workflow, symbol, AST, git, semantic, memory, config, library, usage)
-- LSP client with transport, lifecycle, document symbols, references, definition, hover, rename
-- Tree-sitter symbol extraction + docstrings for Rust, Python, TypeScript, Go, Java, Kotlin
-- Embedding pipeline: chunker, SQLite index, remote + local embedders
-- Git integration: blame via git2
-- Persistent memory store with markdown-based topics
-- Progressive disclosure output (exploring/focused modes via OutputGuard)
-- MCP server over stdio (rmcp)
-- Library search: navigate third-party dependency source via LSP-inferred discovery and semantic search
-- Usage recorder: per-tool call stats in `.code-explorer/usage.db`, surfaced via `get_usage_stats`
-- Dashboard: `code-explorer dashboard` web UI with tool stats charts and project health views
-- 487 tests passing
+See [`FEATURES.md`](FEATURES.md) for the full feature reference. Summary:
+
+- **31 tools** across 10 categories (file, workflow, symbol, AST, git, semantic, memory, config, library, usage)
+- **LSP client** — transport, lifecycle, document symbols, references, definition, hover, rename + text sweep
+- **Tree-sitter AST** — symbol extraction + docstrings for Rust, Python, TypeScript, Go, Java, Kotlin
+- **Semantic search** — embedding pipeline with sqlite-vec ANN-indexed KNN, incremental rebuilds, drift detection
+- **Library search** — navigate third-party deps via LSP-inferred discovery, scoped symbol nav + semantic search
+- **OutputBuffer** — `@cmd_*` / `@file_*` handles; large output stored, queried with Unix tools
+- **run_command** — cwd, acknowledge_risk, dangerous-cmd speed bump, smart summaries per command type
+- **read_file** — smart buffering with per-type summarizers; source files require symbol tools or start/end lines
+- **Dual-audience output** — 8 tools emit structured JSON for agents + readable preview for humans
+- **Progressive discoverability** — overflow responses include `by_file` breakdown + narrowing hints; `kind` filter
+- **edit_file / remove_symbol** — find-and-replace and symbol deletion with security gating
+- **Worktree write guard** — advisory `worktree_hint` field prevents silent cross-worktree corruption
+- **Symbol signatures** — LSP `detail` field captured; `signature` synthesized for display
+- **Project customization** — `.code-explorer/system-prompt.md` injects project-specific agent guidance
+- **Onboarding** — language-specific nav hints, system-prompt draft generation
+- **RecoverableError** — non-fatal tool failures don't abort sibling parallel calls
+- **Dashboard** — `code-explorer dashboard` web UI with tool stats and project health
+- **Usage monitor** — per-tool call stats in `usage.db`, surfaced via `get_usage_stats`
+- **Git blame** via git2; persistent memory store (markdown topics)
+- **MCP over stdio** (rmcp); 733 tests passing
 
 ## What's Next
 
@@ -35,82 +45,10 @@ See the detailed implementation plan: [`plans/2026-02-25-v1-implementation-plan.
 - sqlite-vec integration for vector similarity (currently pure-Rust cosine)
 - HTTP/SSE transport for non-Claude Code agents
 - Companion Claude Code plugin: `code-explorer-routing` (live at [mareurs/claude-plugins](https://github.com/mareurs/claude-plugins))
-- Companion Claude Code plugin: `code-explorer-routing` (live at [mareurs/claude-plugins](https://github.com/mareurs/claude-plugins))
 
 ## Future Improvements
 
-### Library Search — **Implemented**
-
-Search and navigate third-party library/dependency source code. Read-only access via LSP-inferred discovery, symbol navigation, and semantic search. See [`plans/2026-02-26-library-search-design.md`](plans/2026-02-26-library-search-design.md) for the full design.
-
-**Progressive rollout:**
-
-| Level | Name | What it enables |
-|-------|------|-----------------|
-| A | Follow-through reads | Read files LSP points to outside project root |
-| B | Symbol navigation | `find_symbol` / `list_symbols` on library code with `scope` parameter |
-| C | Semantic search | Explicit `index_library` + scoped `semantic_search` on dependency source |
-| D | LSP-inferred discovery | Auto-register libraries from `goto_definition` responses |
-
-**Key concepts:** `LibraryRegistry` (`.code-explorer/libraries.json`) tracks known library paths. All library access is read-only. Results tagged `"source": "lib:<name>"` to distinguish from project code.
-
----
-
-### Project Dashboard — **Implemented**
-
-A unified view of project health, configuration, and activity — surfaced via a `dashboard` CLI subcommand and/or a `get_dashboard` MCP tool.
-
-**Motivation:** As projects grow, project state is scattered across multiple sources: `project.toml` for config, `embeddings.db` for index state, LSP lifecycle logs for language server health, and (once implemented) `usage.db` for tool statistics. The dashboard aggregates these into a single, scannable snapshot.
-
-**What to show:**
-
-| Section | Data |
-|---------|------|
-| **Project** | Name, root path, detected languages, active LSP servers |
-| **Settings** | Embedding model, chunk size, ignored paths, enabled features |
-| **Index** | File count, chunk count, last indexed commit/timestamp, staleness status |
-| **Drift** | Drift report summary (files changed, avg/max drift score) — if enabled |
-| **Tool calls** | Per-tool call counts, error rates, p50/p99 latency — from `usage.db` |
-| **Errors** | Recent errors by tool (last N, with timestamps) |
-| **LSP** | Active language servers, health status, pending requests |
-
-**Implementation sketch:**
-- `cargo run -- dashboard --project .` CLI subcommand: reads all sources, renders a terminal table/summary
-- `get_dashboard` MCP tool: same data as structured JSON — lets the LLM report project status without running shell commands
-- Both are read-only aggregations; no new storage needed beyond what Tool Usage Monitor and existing modules already track
-
-**Phasing:**
-1. **Phase 1** (no dependencies): project config + index status + language detection — useful immediately
-2. **Phase 2** (depends on Tool Usage Monitor): tool call statistics + error log
-3. **Phase 3** (optional): LSP health, drift summary, realtime refresh via `--watch`
-
----
-
-### Tool Usage Monitor / Statistics — **Implemented**
-
-Track tool call patterns to surface bugs, usage drift, and performance regressions over time.
-
-**Motivation:** As the tool set grows and agents evolve, subtle behavioral shifts are hard to detect without data — e.g. semantic_search being called on every query instead of symbol tools, rising error rates on a specific tool, or LSP timeouts clustering around large files.
-
-**What to capture per call:**
-- Tool name, input shape (key names, not values), timestamp
-- Outcome: success / error / overflow
-- Latency (ms)
-- Output mode (exploring vs focused), result count
-
-**Storage:** Append-only SQLite table in `.code-explorer/usage.db` — same pattern as `embeddings.db`. Lightweight, local, no external dependencies.
-
-**Surfacing:**
-- `get_usage_stats` tool: per-tool call counts, error rates, p50/p99 latency, top error messages
-- Time-bucketed view (last hour / day / week) to detect drift
-- Overflow rate per tool (high overflow = agent is asking too broadly)
-
-**Implementation sketch:**
-- `UsageRecorder` wraps the dispatch loop in `server.rs` — transparent to individual tools
-- Periodic rollup into summary rows to keep the table small
-- Optional: emit structured logs for external aggregation (Prometheus, etc.)
-
----
+Implemented features have been moved to [`FEATURES.md`](FEATURES.md).
 
 ### Multi-Agent Support (Generalize Beyond Claude Code)
 
@@ -133,49 +71,6 @@ Make code-explorer usable by any MCP-capable agent — Copilot, Cursor, Cline, c
 4. **Tool description quality** — every tool's `description()` should embed just enough routing guidance to work even without a system prompt (one-sentence "prefer this over X when Y" hint).
 
 5. **Benchmark routing quality** — extend the live benchmark to test tool selection accuracy across agent backends, not just result quality.
-
----
-
-### Incremental Index Rebuilding (Hash-Based Change Detection) — **Implemented**
-
-Smart change detection for the embedding index — avoid re-hashing and re-embedding unchanged files. See [`plans/2026-02-26-incremental-index-design.md`](plans/2026-02-26-incremental-index-design.md) for the full design.
-
-**Status:** Layers 0 (smart explicit) and staleness detection are implemented. Layer 1 (hook-driven) is ready to use via git hooks or Claude Code hooks. Layer 2 (filesystem watcher) is deferred.
-
-**Layered trigger model:**
-
-| Layer | Trigger | What it does |
-|-------|---------|--------------|
-| 0 — Smart explicit | `index_project` call | Git-diff + mtime hybrid detection, deleted-file cleanup |
-| 1 — Hook-driven | Commit / pre-push hook | Same code path as Layer 0, triggered automatically |
-| 2 — Watcher (deferred) | Filesystem events | Background `notify` crate watcher, debounced, opt-in |
-
-**Key concepts:** `diff_and_reindex` is a single code path called by all triggers. Change detection fallback chain: git diff (cheapest) → mtime comparison → SHA-256 hash (always correct). `semantic_search` gains a staleness warning when the index is behind HEAD. Schema adds `mtime` column to `files` table and `last_indexed_commit` to `meta` table.
-
-**Coordination:** Designed alongside Library Search — no schema conflicts. Library indexing can adopt the same pattern once `build_library_index` is implemented.
-
----
-
-### Semantic Drift Detection — **Implemented**
-
-Detect *how much* code changed in meaning, not just *that* it changed. SHA-256 is the gatekeeper (cheap, per-file); semantic comparison is the intelligent filter that tells you which differences actually matter. See [`plans/2026-02-26-semantic-drift-detection-design.md`](plans/2026-02-26-semantic-drift-detection-design.md) for the full design.
-
-**Architecture:** Computed inside `build_index` Phase 3 — before `delete_file_chunks`, read old embeddings; after inserting new chunks, compare old vs new using a content-hash-first matching algorithm with greedy cosine fallback. Results persisted in a `drift_report` table (cleared each build).
-
-**Use cases:**
-- **Smart doc staleness filtering** — SHA-256 flags 20 files, drift scores show only 3 had meaningful changes
-- **Drift-aware re-indexing feedback** — `IndexReport` gains drift summary so the agent knows *what kind* of changes happened
-- **On-demand query** — `index_status` with threshold parameter reads `drift_report` with threshold/path filters
-
-**Scoring:** Per-file `avg_drift` + `max_drift` (captures both broad-but-shallow and narrow-but-deep changes). Chunk matching: exact content match first (drift 0.0), then greedy cosine pairing on remainder, with unmatched chunks as added/removed (drift 1.0).
-
-**Configuration:** Opt-in via `.code-explorer/project.toml` (defaults to `false` — reads old embeddings before deletion, adding memory/DB overhead):
-```toml
-[embeddings]
-drift_detection_enabled = true
-```
-
-**Future improvement:** File-level semantic fingerprints (mean of chunk embeddings per file) for codebase evolution tracking across git tags/releases. Deferred until the transient comparison proves useful.
 
 ---
 

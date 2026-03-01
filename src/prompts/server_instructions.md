@@ -108,7 +108,7 @@ don't probe the same `@ref` multiple times for overlapping information.
 
 ## Project Management
 
-- `onboarding` — initial project discovery: detect languages, read key files, create config. Use `force: true` to re-scan.
+- `onboarding` — initial project discovery: detect languages, read key files (README, CLAUDE.md, build file), create config, generate `system_prompt_draft`. Returns `features_md` path if found, or `features_suggestion` if not. Use `force: true` to re-scan.
 - `activate_project(path)` — switch the active project root. Required after `EnterWorktree`.
 - `get_config` — show active project config and server settings
 - `index_project` — build or incrementally update the semantic search index
@@ -137,6 +137,7 @@ To clean up: `git worktree prune` from the main repo root, then start a new sess
 ## Rules
 
 1. **PREFER symbol tools over `read_file` for source code.** `list_symbols` + `find_symbol(include_body=true)` beats reading entire files. `read_file` on a large source file returns a summary + `@file_*` ref, not raw content — use `start_line` + `end_line` when you need a targeted excerpt.
+2. **Check `features_md` from `onboarding` before suggesting features.** If the project has a FEATURES.md, read it first — don't propose work that's already done.
 3. **Semantic search for "how does X work?"** Then drill into results with symbol tools.
 4. **Exploring mode first.** Only `detail_level: "full"` after you know what you need.
 5. **Respect overflow hints.** Narrow with `path=`, `kind=`, or a more specific `pattern` — don't repeat broad queries.

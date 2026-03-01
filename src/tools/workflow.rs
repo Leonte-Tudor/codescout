@@ -18,6 +18,8 @@ struct GatheredContext {
     ci_files: Vec<String>,
     entry_points: Vec<String>,
     test_dirs: Vec<String>,
+    /// Path to FEATURES.md if found (relative to project root)
+    features_md: Option<String>,
 }
 
 const MAX_GATHERED_FILE_BYTES: u64 = 32_000;
@@ -128,6 +130,14 @@ fn gather_project_context(root: &std::path::Path) -> GatheredContext {
     ] {
         if root.join(candidate).is_dir() {
             ctx.test_dirs.push(candidate.to_string());
+        }
+    }
+
+    // FEATURES.md — documents implemented capabilities
+    for candidate in &["docs/FEATURES.md", "FEATURES.md", "docs/features.md"] {
+        if root.join(candidate).exists() {
+            ctx.features_md = Some(candidate.to_string());
+            break;
         }
     }
 
@@ -387,6 +397,12 @@ impl Tool for Onboarding {
         // Build the system prompt draft scaffold
         let system_prompt_draft = build_system_prompt_draft(&lang_list, &gathered.entry_points);
 
+        let features_suggestion = gathered.features_md.is_none().then(|| {
+            "No FEATURES.md found. Consider creating docs/FEATURES.md to document \
+             implemented capabilities — helps agents understand what's already built \
+             and avoid re-suggesting existing features."
+        });
+
         Ok(json!({
             "languages": lang_list,
             "top_level": top_level,
@@ -397,6 +413,8 @@ impl Tool for Onboarding {
             "entry_points": gathered.entry_points,
             "test_dirs": gathered.test_dirs,
             "ci_files": gathered.ci_files,
+            "features_md": gathered.features_md,
+            "features_suggestion": features_suggestion,
             "instructions": prompt,
             "system_prompt_draft": system_prompt_draft,
         }))
