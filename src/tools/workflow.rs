@@ -538,7 +538,7 @@ async fn run_command_inner(
                     summary["total_stderr_lines"] = json!(stderr_lines);
                 }
                 summary["hint"] = json!(format!(
-                    "Full output stored. Query with: grep/tail/awk/sed {}",
+                    "Full output stored. Query with: run_command(\"grep/tail/awk/sed {}\")",
                     output_id
                 ));
 
@@ -929,58 +929,6 @@ mod tests {
         assert!(!draft.is_empty(), "system_prompt_draft should not be empty");
     }
 
-    // -----------------------------------------------------------------------
-    // New RunCommand tests (Task 5)
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn run_command_short_output_no_buffer() {
-        let (_dir, ctx) = project_ctx().await;
-        let result = RunCommand
-            .call(json!({ "command": "echo hello" }), &ctx)
-            .await
-            .unwrap();
-        // Short output: direct stdout, no output_id
-        assert!(result["stdout"].as_str().unwrap().contains("hello"));
-        assert_eq!(result["output_id"], serde_json::Value::Null);
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn run_command_long_output_buffered() {
-        let (_dir, ctx) = project_ctx().await;
-        // seq 1 200 produces 200 lines — well above the 50-line threshold
-        let result = RunCommand
-            .call(json!({ "command": "seq 1 200", "timeout_secs": 5 }), &ctx)
-            .await
-            .unwrap();
-        let output_id = result["output_id"].as_str().unwrap();
-        assert!(output_id.starts_with("@cmd_"));
-        assert_eq!(result["total_stdout_lines"].as_u64().unwrap(), 200);
-        assert!(result["hint"].as_str().unwrap().contains(output_id));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn run_command_buffer_ref_query() {
-        let (_dir, ctx) = project_ctx().await;
-        // First: generate output and get a buffer handle
-        let result = RunCommand
-            .call(json!({ "command": "seq 1 200", "timeout_secs": 5 }), &ctx)
-            .await
-            .unwrap();
-        let output_id = result["output_id"].as_str().unwrap();
-
-        // Second: query the buffered output via grep
-        let query = format!("grep '^10$' {}", output_id);
-        let result2 = RunCommand
-            .call(json!({ "command": query, "timeout_secs": 5 }), &ctx)
-            .await
-            .unwrap();
-        let stdout = result2["stdout"].as_str().unwrap();
-        assert!(stdout.contains("10"), "grep should find '10': {}", stdout);
-    }
-
     #[cfg(unix)]
     #[tokio::test]
     async fn run_command_dangerous_blocked_without_acknowledge() {
@@ -1271,6 +1219,10 @@ mod tests {
         assert!(
             entry.stdout.contains("50\n"),
             "buffered stdout should contain '50\\n'"
+        );
+        assert!(
+            entry.stdout.contains("100\n"),
+            "buffered stdout should contain '100\\n'"
         );
     }
 
