@@ -90,6 +90,47 @@ Pass `acknowledge_risk: true` to bypass when you genuinely need raw access.
 
 The `cwd` parameter lets the AI run commands in project subdirectories, but any path that escapes the project root — via `../`, symlinks, or absolute paths — is rejected before the command runs. Output Buffer refs (`@cmd_id`, `@file_id`) are resolved within the session and never expose paths outside it.
 
+## Git Worktree Support
+
+Claude Code's `EnterWorktree` creates an isolated branch for feature work — but there's a subtle trap: the MCP server's active project root is **decoupled from the shell's working directory**. When the agent enters a worktree, the shell moves, but code-explorer doesn't know. Write tools keep pointing at the main repo. Files land in the wrong tree, silently, with no error.
+
+code-explorer has three layers to catch and prevent this:
+
+### `activate_project` — explicit project switching
+
+`activate_project(path)` tells the MCP server which tree to work in. After `EnterWorktree`, this must be called before any writes:
+
+```
+activate_project("/abs/path/to/.claude/worktrees/my-feature")
+```
+
+All subsequent symbol navigation, file writes, and shell commands then target that tree. Switch back by calling `activate_project` with the main repo root.
+
+### Worktree Hint on Write Responses
+
+After every successful write, if git linked worktrees exist under the active project root, the response includes an advisory `"worktree_hint"` field:
+
+```json
+{
+  "worktree_hint": "This repo has linked worktrees: [/repo/.claude/worktrees/my-feature].
+                    If you meant to edit a worktree, call activate_project first."
+}
+```
+
+The AI sees this immediately after the write and can self-correct before the mistake compounds. Zero overhead when no worktrees exist — it's a single `.git/worktrees/` directory check.
+
+### Write Guard
+
+If the agent enters a worktree but hasn't called `activate_project`, write tools raise a hard block rather than silently writing to the wrong place. The error message names the detected worktrees and the exact `activate_project` call needed to unblock.
+
+### `.worktrees/` Excluded from Navigation
+
+Worktree directories (`.claude/worktrees/`, `.worktrees/`) are excluded from `find_file` and `list_dir` results so they don't pollute symbol navigation or file listings in the main project.
+
+---
+
+> **Cleanup gotcha:** `git worktree remove <path>` requires the directory to still exist. If the worktree directory was already deleted, use `git worktree prune` from the main repo root instead.
+
 ## Platform Support
 
 Tested on **Linux**. macOS and Windows may work but have not been verified. Contributions welcome.
