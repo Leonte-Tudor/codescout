@@ -697,49 +697,43 @@ impl Tool for EditFile {
     }
 
     async fn call_content(&self, input: Value, ctx: &ToolContext) -> Result<Vec<Content>> {
-        // Clone strings before moving `input` into self.call()
         let path = super::require_str_param(&input, "path")?.to_owned();
-        let old_string = super::require_str_param(&input, "old_string")?.to_owned();
-        let new_string = input["new_string"].as_str().unwrap_or("").to_owned();
-
-        // Find line position of old_string before the write
-        let start_line: Option<usize> = async {
-            let root = ctx.agent.require_project_root().await.ok()?;
-            let security = ctx.agent.security_config().await;
-            let resolved =
-                crate::util::path_security::validate_write_path(&path, &root, &security).ok()?;
-            let content = std::fs::read_to_string(&resolved).ok()?;
-            let byte_pos = content.find(old_string.as_str())?;
-            Some(content[..byte_pos].lines().count() + 1)
-        }
-        .await;
 
         // Execute the write
         let result = self.call(input, ctx).await?;
+        let assistant_json = serde_json::to_string(&result).unwrap_or_else(|_| "\"ok\"".into());
 
-        // Build compact summary line
-        let old_line_count = old_string.lines().count();
-        let new_line_count = new_string.lines().count();
-        let diff_note = if old_line_count == new_line_count {
-            format!("{old_line_count} lines replaced")
-        } else {
-            let delta = new_line_count as i64 - old_line_count as i64;
-            let sign = if delta >= 0 { "+" } else { "" };
-            format!("-{old_line_count} +{new_line_count} ({sign}{delta})")
+        // Run `git diff HEAD -- <path>` and store in output buffer
+        let diff_id: Option<String> = async {
+            let root = ctx.agent.require_project_root().await.ok()?;
+            let output = tokio::process::Command::new("git")
+                .args(["diff", "HEAD", "--", &path])
+                .current_dir(&root)
+                .output()
+                .await
+                .ok()?;
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            if stdout.is_empty() && stderr.is_empty() {
+                return None;
+            }
+            let exit_code = output.status.code().unwrap_or(0);
+            Some(ctx.output_buffer.store(
+                format!("git diff HEAD -- {path}"),
+                stdout,
+                stderr,
+                exit_code,
+            ))
+        }
+        .await;
+
+        let user_text = match &diff_id {
+            Some(id) => format!("{path}  (diff {id})"),
+            None => path.clone(),
         };
-        let summary = match start_line {
-            Some(l) => format!("{path} → L{l} · {diff_note}"),
-            None => format!("{path} → {diff_note}"),
-        };
 
-        // Build ANSI diff viewer
-        let header = user_format::render_diff_header("edit_file", &path);
-        let diff = user_format::render_edit_diff(&path, &old_string, &new_string, start_line);
-        let user_text = format!("{summary}\n\n{header}\n{diff}");
-
-        let json_str = serde_json::to_string(&result).unwrap_or_else(|_| "\"ok\"".into());
         Ok(vec![
-            Content::text(json_str).with_audience(vec![Role::Assistant]),
+            Content::text(assistant_json).with_audience(vec![Role::Assistant]),
             Content::text(user_text).with_audience(vec![Role::User]),
         ])
     }
@@ -2499,13 +2493,39 @@ mod tests {
         assert!(text.contains("2 files"), "got: {text}");
     }
 
-    #[test]
-    fn edit_file_call_content_user_block_contains_diff() {
-        let header = user_format::render_diff_header("edit_file", "src/a.rs");
-        let diff = user_format::render_edit_diff("src/a.rs", "old text", "new text", Some(5));
-        let user_block = format!("{header}\n{diff}");
-        assert!(user_block.contains("old text"), "got: {user_block}");
-        assert!(user_block.contains("new text"), "got: {user_block}");
-        assert!(user_block.contains("\x1b["), "no ANSI: {user_block}");
+    #[tokio::test]
+    async fn edit_file_call_content_shows_path_no_inline_diff() {
+        let (dir, ctx) = project_ctx().await;
+        let file = dir.path().join("edit_me.txt");
+        std::fs::write(&file, "hello\nworld\n").unwrap();
+
+        let blocks = EditFile
+            .call_content(
+                json!({
+                    "path": file.to_str().unwrap(),
+                    "old_string": "hello",
+                    "new_string": "goodbye"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(blocks.len(), 2, "expected two content blocks");
+
+        let user_block = &blocks[1];
+        assert_eq!(user_block.audience(), Some(&vec![Role::User]));
+        let user_text = format!("{:?}", user_block);
+        // Must contain the file name
+        assert!(user_text.contains("edit_me.txt"), "got: {user_text}");
+        // Must NOT contain ANSI escape codes (no inline diff)
+        assert!(
+            !user_text.contains("\\x1b["),
+            "unexpected ANSI in: {user_text}"
+        );
+        assert!(
+            !user_text.contains("\\u001b"),
+            "unexpected ANSI in: {user_text}"
+        );
     }
 }
