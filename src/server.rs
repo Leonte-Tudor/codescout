@@ -20,7 +20,7 @@ use crate::agent::Agent;
 use crate::tools::{
     ast::{ListDocs, ListFunctions},
     config::{ActivateProject, GetConfig},
-    file::{CreateFile, EditLines, FindFile, ListDir, ReadFile, SearchPattern},
+    file::{CreateFile, EditFile, FindFile, ListDir, ReadFile, SearchPattern},
     git::GitBlame,
     library::{IndexLibrary, ListLibraries},
     memory::{DeleteMemory, ListMemories, ReadMemory, WriteMemory},
@@ -65,7 +65,7 @@ impl CodeExplorerServer {
             Arc::new(SearchPattern),
             Arc::new(CreateFile),
             Arc::new(FindFile),
-            Arc::new(EditLines),
+            Arc::new(EditFile),
             // Workflow tools
             Arc::new(RunCommand),
             Arc::new(Onboarding),
@@ -438,7 +438,7 @@ mod tests {
             "search_pattern",
             "create_file",
             "find_file",
-            "edit_lines",
+            "edit_file",
             "run_command",
             "onboarding",
             "find_symbol",
