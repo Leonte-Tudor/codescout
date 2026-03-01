@@ -73,15 +73,27 @@ impl Tool for ReadFile {
             }
         };
 
+        if resolved.is_dir() {
+            return Err(RecoverableError::with_hint(
+                format!("'{}' is a directory, not a file", path),
+                "Use list_dir to browse directory contents, or provide a specific file path",
+            )
+            .into());
+        }
+
         let text = std::fs::read_to_string(&resolved).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::InvalidData {
-                RecoverableError::with_hint(
+            match e.kind() {
+                std::io::ErrorKind::NotFound => RecoverableError::with_hint(
+                    format!("file not found: '{}'", path),
+                    "Check the path with list_dir, or use find_file to locate the file",
+                )
+                .into(),
+                std::io::ErrorKind::InvalidData => RecoverableError::with_hint(
                     "file contains non-UTF-8 data (binary file?)",
                     "read_file only works with text files. Use list_dir to check file types.",
                 )
-                .into()
-            } else {
-                anyhow::anyhow!("failed to read {}: {}", resolved.display(), e)
+                .into(),
+                _ => anyhow::anyhow!("failed to read {}: {}", resolved.display(), e),
             }
         })?;
 

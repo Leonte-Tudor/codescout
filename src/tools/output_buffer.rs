@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
+use crate::tools::RecoverableError;
 use regex::Regex;
 use tempfile::NamedTempFile;
 
@@ -170,7 +171,10 @@ impl OutputBuffer {
 
             let entry = self
                 .get(base_id)
-                .ok_or_else(|| anyhow::anyhow!("buffer reference not found: {}", token))?;
+                .ok_or_else(|| RecoverableError::with_hint(
+                    format!("buffer reference not found: {}", token),
+                    "Buffer refs expire when the session resets. Re-run the command to get a fresh ref.",
+                ))?;
 
             let content = if is_stderr {
                 &entry.stderr

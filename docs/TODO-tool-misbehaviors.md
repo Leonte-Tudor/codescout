@@ -145,6 +145,29 @@ Could also be a name-path resolution issue — the tool may have matched the wro
 
 ---
 
+### BUG-005 — `read_file`: directory path returns hard error instead of RecoverableError
+
+**Date:** 2026-03-01
+**Severity:** Medium — aborts parallel tool calls in Claude Code
+**Status:** ✅ FIXED
+
+**What happened:**
+Called `read_file(path: "src/config")` where `src/config` is a directory. Got:
+`Error: failed to read …/src/config: Is a directory (os error 21)` — a hard `anyhow`
+error. Claude Code treats `isError: true` responses as fatal, aborting sibling parallel
+calls. Should have been a `RecoverableError` with a hint to use `list_dir` instead.
+
+**Root cause:**
+The `map_err` on `std::fs::read_to_string` only converts `InvalidData` (binary file) to
+`RecoverableError`; all other IO errors fell through to `anyhow::anyhow!()`. No pre-check
+for `is_dir()` or `NotFound` was in place.
+
+**Fix applied:**
+Added `is_dir()` guard before `read_to_string`. Also converted `NotFound` to
+`RecoverableError` in the `map_err` closure.
+
+---
+
 ## Template for new entries
 
 ```

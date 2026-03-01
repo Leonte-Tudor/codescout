@@ -89,8 +89,8 @@ pub struct SecuritySection {
     /// Max bytes for shell command stdout/stderr (default 100KB)
     #[serde(default = "default_shell_output_limit")]
     pub shell_output_limit_bytes: usize,
-    /// Enable shell command execution (default: false — disabled for safety)
-    #[serde(default)]
+    /// Enable shell command execution (default: true)
+    #[serde(default = "default_true")]
     pub shell_enabled: bool,
     /// Enable file write tools: create_file, edit_file, symbol write tools (default: true)
     #[serde(default = "default_true")]
@@ -116,7 +116,7 @@ impl Default for SecuritySection {
             extra_write_roots: Vec::new(),
             shell_command_mode: default_shell_mode(),
             shell_output_limit_bytes: default_shell_output_limit(),
-            shell_enabled: false,
+            shell_enabled: true,
             file_write_enabled: true,
             git_enabled: true,
             indexing_enabled: true,
@@ -273,7 +273,7 @@ mod tests {
             sec.indexing_enabled,
             "indexing_enabled should default to true"
         );
-        assert!(!sec.shell_enabled, "shell_enabled should default to false");
+        assert!(sec.shell_enabled, "shell_enabled should default to true");
     }
 
     #[test]
@@ -283,7 +283,7 @@ mod tests {
         assert!(cfg.security.file_write_enabled);
         assert!(cfg.security.git_enabled);
         assert!(cfg.security.indexing_enabled);
-        assert!(!cfg.security.shell_enabled);
+        assert!(cfg.security.shell_enabled);
     }
 
     #[test]
@@ -295,7 +295,7 @@ mod tests {
         assert!(cfg.security.file_write_enabled);
         assert!(cfg.security.git_enabled);
         assert!(cfg.security.indexing_enabled);
-        assert!(!cfg.security.shell_enabled);
+        assert!(cfg.security.shell_enabled);
     }
 
     #[test]
