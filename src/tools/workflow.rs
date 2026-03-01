@@ -1952,7 +1952,7 @@ mod tests {
     }
 
     #[test]
-    fn run_command_format_for_user_test_result() {
+    fn run_command_format_compact_test_result() {
         let tool = RunCommand;
         let result = json!({
             "type": "test", "exit_code": 0,
@@ -1965,7 +1965,7 @@ mod tests {
     }
 
     #[test]
-    fn run_command_format_for_user_short_output() {
+    fn run_command_format_compact_short_output() {
         let tool = RunCommand;
         let result = json!({ "stdout": "hello\nworld", "stderr": "", "exit_code": 0 });
         let text = tool.format_compact(&result).unwrap();

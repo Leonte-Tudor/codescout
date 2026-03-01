@@ -2499,7 +2499,7 @@ mod tests {
     }
 
     #[test]
-    fn find_file_format_for_user_shows_count() {
+    fn find_file_format_compact_shows_count() {
         use serde_json::json;
         let tool = FindFile;
         let result = json!({ "files": ["src/a.rs", "src/b.rs"], "total": 2 });

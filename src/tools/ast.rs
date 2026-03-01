@@ -376,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn list_functions_format_for_user_shows_count() {
+    fn list_functions_format_compact_shows_count() {
         use serde_json::json;
         let tool = ListFunctions;
         let result = json!({ "functions": [{"name":"foo"}, {"name":"bar"}], "file": "src/a.rs" });
@@ -385,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn list_docs_format_for_user_shows_count() {
+    fn list_docs_format_compact_shows_count() {
         use serde_json::json;
         let tool = ListDocs;
         let result = json!({ "docstrings": [{"symbol":"Foo"}], "file": "src/a.rs" });

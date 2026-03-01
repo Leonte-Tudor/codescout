@@ -208,12 +208,6 @@ pub trait Tool: Send + Sync {
 
     /// Returns MCP content blocks for this tool call.
     ///
-    /// If format_for_user() returns Some, emits dual-audience blocks:
-    /// compact JSON for the assistant, formatted text for the user.
-    /// Otherwise, falls back to pretty-printed JSON for both.
-    /// Override directly for full control over content blocks.
-    /// Returns MCP content blocks for this tool call.
-    ///
     /// Large output (> threshold) is stored in the output buffer and a compact
     /// summary is returned. Small output is returned as pretty-printed JSON.
     /// Override directly for full control over content blocks.
@@ -373,9 +367,18 @@ mod tests {
             .call_content(serde_json::json!({}), &ctx)
             .await
             .unwrap();
-        assert_eq!(content.len(), 1, "small output must produce exactly 1 block, got: {:?}", content);
+        assert_eq!(
+            content.len(),
+            1,
+            "small output must produce exactly 1 block, got: {:?}",
+            content
+        );
         let text = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
-        assert!(text.contains("key"), "block must contain the JSON key, got: {}", text);
+        assert!(
+            text.contains("key"),
+            "block must contain the JSON key, got: {}",
+            text
+        );
         assert!(
             !text.contains("compact summary"),
             "compact summary must NOT appear in small-output block, got: {}",

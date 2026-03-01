@@ -323,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn list_memories_format_for_user() {
+    fn list_memories_format_compact() {
         use serde_json::json;
         let tool = ListMemories;
         let r = json!({ "topics": ["a", "b", "c"] });

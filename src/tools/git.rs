@@ -211,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn git_blame_format_for_user_shows_lines() {
+    fn git_blame_format_compact_shows_lines() {
         let tool = GitBlame;
         let result = json!({ "lines": [{"line":1},{"line":2}], "file": "src/a.rs" });
         let text = tool.format_compact(&result).unwrap();

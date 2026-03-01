@@ -4167,7 +4167,7 @@ fn main() {
     }
 
     #[test]
-    fn find_references_format_for_user_shows_count() {
+    fn find_references_format_compact_shows_count() {
         use serde_json::json;
         let tool = FindReferences;
         let result = json!({ "references": [{"file":"a.rs","line":10}], "total": 1 });
@@ -4176,7 +4176,7 @@ fn main() {
     }
 
     #[test]
-    fn rename_symbol_format_for_user_shows_sites() {
+    fn rename_symbol_format_compact_shows_sites() {
         use serde_json::json;
         let tool = RenameSymbol;
         let result = json!({ "total_edits": 5, "textual_match_count": 1, "files_changed": 2, "new_name": "bar" });
@@ -4185,7 +4185,7 @@ fn main() {
     }
 
     #[test]
-    fn insert_code_format_for_user_shows_location() {
+    fn insert_code_format_compact_shows_location() {
         use serde_json::json;
         let tool = InsertCode;
         let result = json!({ "status": "ok", "inserted_at_line": 42, "position": "after" });
@@ -4194,7 +4194,7 @@ fn main() {
     }
 
     #[test]
-    fn replace_symbol_format_for_user_shows_range() {
+    fn replace_symbol_format_compact_shows_range() {
         let tool = ReplaceSymbol;
         let r = json!({ "status": "ok", "replaced_lines": "124-145" });
         let t = tool.format_compact(&r).unwrap();
@@ -4202,7 +4202,7 @@ fn main() {
     }
 
     #[test]
-    fn remove_symbol_format_for_user_shows_range() {
+    fn remove_symbol_format_compact_shows_range() {
         let tool = RemoveSymbol;
         let r = json!({ "status": "ok", "removed_lines": "201-215", "line_count": 14 });
         let t = tool.format_compact(&r).unwrap();
