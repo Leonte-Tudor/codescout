@@ -36,13 +36,15 @@ git blame, semantic search (embeddings), and project memory.
 - `list_dir(path)` — list files and directories. Pass `recursive=true` for a full tree.
 
 **Run shell commands:**
-- `run_command(command)` — execute a shell command. **Already runs from the project root by default** — never prefix commands with `cd /path/to/project &&`. Large output is stored in a
-  buffer and a smart summary is returned (test pass/fail, build errors, etc.).
-  Query stored output using Unix tools with `@output_id` references:
-  `grep FAILED @cmd_a1b2c3`, `tail -20 @cmd_a1b2c3`, `diff @cmd_x @cmd_y`.
+- `run_command(command)` — execute a shell command. **Runs from the project root automatically** — no `cd` prefix needed. Stderr is captured automatically — no `2>&1` needed. Large output is stored in a buffer with a smart summary (test pass/fail, build errors, etc.); query it in a follow-up call via `@output_id` — **do not pipe inline**.
   - `cwd` — run from a subdirectory (relative to project root)
   - `acknowledge_risk` — bypass safety check for destructive commands
   - `timeout_secs` — max execution time (default 30)
+
+Anti-patterns (never do these):
+- ❌ `cd /home/user/proj && cargo test` → ✅ `cargo test`
+- ❌ `cargo test 2>&1 | tail -20` → ✅ `cargo test` then `tail -20 @cmd_id`
+- ❌ `cargo test 2>&1 | grep FAILED | head -20` → ✅ `cargo test` then `grep FAILED @cmd_id`
 
 ### Edit code
 
@@ -111,4 +113,5 @@ To clean up: `git worktree prune` from the main repo root, then start a new sess
 4. **Exploring mode first.** Only `detail_level: "full"` after you know what you need.
 5. **Respect overflow hints.** Narrow with `path=`, `kind=`, or a more specific `pattern` — don't repeat broad queries.
 6. **Prefer symbol edits** (`replace_symbol`, `insert_code`, `remove_symbol`, `rename_symbol`) for code. Use `edit_file` when symbol tools don't fit.
-7. **Never `cd` before `run_command`.** Commands run from the project root automatically. Use `cwd` param only to target a subdirectory.
+7. **`run_command` is already in the project root.** Never prefix with `cd /abs/path &&`. Use `cwd` param for subdirectories only.
+8. **Don't inline-pipe `run_command` output.** Run the command bare, then query the buffer in a follow-up: `cargo test` → `grep FAILED @cmd_id`. Never `cargo test 2>&1 | grep FAILED`.
