@@ -1072,4 +1072,15 @@ mod tests {
             err_msg
         );
     }
+
+    #[test]
+    fn run_command_schema_has_cwd_and_acknowledge_risk() {
+        let schema = RunCommand.input_schema();
+        let props = &schema["properties"];
+        assert!(props.get("cwd").is_some(), "missing cwd");
+        assert!(
+            props.get("acknowledge_risk").is_some(),
+            "missing acknowledge_risk"
+        );
+    }
 }
