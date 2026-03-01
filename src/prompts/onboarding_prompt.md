@@ -223,3 +223,12 @@ After confirming all 6 memories and the system prompt with the user, deliver thi
 ## Gathered Project Data
 
 The data below was collected automatically. Use it as your starting point, then explore with code-explorer tools to fill gaps.
+
+---
+
+## Optional: Private Memories
+
+After creating the 6 shared memories above, check if any personal context is worth
+capturing now. Use `write_memory(topic, content, private=true)` for anything specific
+to your setup — local machine config, personal workflow preferences, or current WIP
+context. This is optional; skip if nothing personal applies yet.
