@@ -454,6 +454,7 @@ dependencies = [
  "axum",
  "clap",
  "fastembed",
+ "filetime",
  "git2",
  "globset",
  "hex",

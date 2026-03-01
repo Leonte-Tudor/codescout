@@ -855,10 +855,7 @@ mod tests {
         fs::write(&file_path, "hello").unwrap();
 
         let buf = OutputBuffer::new(10);
-        let id = buf.store_file(
-            file_path.to_string_lossy().to_string(),
-            "hello".to_string(),
-        );
+        let id = buf.store_file(file_path.to_string_lossy().to_string(), "hello".to_string());
 
         assert!(buf.get(&id).is_some());
 

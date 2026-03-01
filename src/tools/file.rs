@@ -633,27 +633,32 @@ impl Tool for EditFile {
     }
 
     fn description(&self) -> &str {
-        "Replace an exact string in a file. old_string must match the file content exactly (including whitespace/indentation). Use replace_all: true to replace every occurrence."
+        "Replace an exact string in a file. old_string must match the file content exactly (including whitespace/indentation). Use replace_all: true to replace every occurrence. Alternatively, use insert: \"prepend\" or \"append\" to add text at the start or end of the file without a string match."
     }
 
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
-            "required": ["path", "old_string", "new_string"],
+            "required": ["path", "new_string"],
             "properties": {
                 "path": { "type": "string", "description": "File path" },
                 "old_string": {
                     "type": "string",
-                    "description": "Exact text to find (must match file content including whitespace/indentation)"
+                    "description": "Exact text to find (must match file content including whitespace/indentation). Required unless insert is set."
                 },
                 "new_string": {
                     "type": "string",
-                    "description": "Replacement text. Empty string deletes the match."
+                    "description": "Replacement text. Empty string deletes the match when using old_string. The text to insert when using insert mode."
                 },
                 "replace_all": {
                     "type": "boolean",
                     "default": false,
                     "description": "Replace all occurrences (default: first unique match only)"
+                },
+                "insert": {
+                    "type": "string",
+                    "enum": ["prepend", "append"],
+                    "description": "Insert new_string at the start (prepend) or end (append) of the file. When set, old_string is not required."
                 }
             }
         })
@@ -662,14 +667,41 @@ impl Tool for EditFile {
     async fn call(&self, input: Value, ctx: &ToolContext) -> Result<Value> {
         super::guard_worktree_write(ctx).await?;
         let path = super::require_str_param(&input, "path")?;
-        let old_string = super::require_str_param(&input, "old_string")?;
         let new_string = input["new_string"].as_str().unwrap_or("");
+
+        // Prepend/append mode — no string match needed.
+        if let Some(insert) = input["insert"].as_str() {
+            let root = ctx.agent.require_project_root().await?;
+            let security = ctx.agent.security_config().await;
+            let resolved = crate::util::path_security::validate_write_path(path, &root, &security)?;
+            let content = std::fs::read_to_string(&resolved)?;
+            let new_content = match insert {
+                "prepend" => format!("{}{}", new_string, content),
+                "append" => format!("{}{}", content, new_string),
+                _ => {
+                    return Err(super::RecoverableError::with_hint(
+                        format!("invalid insert value: {insert:?}"),
+                        "insert must be \"prepend\" or \"append\"",
+                    )
+                    .into())
+                }
+            };
+            std::fs::write(&resolved, &new_content)?;
+            ctx.lsp.notify_file_changed(&resolved).await;
+            let hint = crate::util::path_security::worktree_hint(&root);
+            return Ok(match hint {
+                None => json!("ok"),
+                Some(h) => json!({ "worktree_hint": h }),
+            });
+        }
+
+        let old_string = super::require_str_param(&input, "old_string")?;
         let replace_all = input["replace_all"].as_bool().unwrap_or(false);
 
         if old_string.is_empty() {
             return Err(super::RecoverableError::with_hint(
                 "old_string must not be empty",
-                "To create a new file use create_file. To insert at a specific line use insert_code.",
+                "To create a new file use create_file. To insert at a specific line use insert_code. To prepend or append to a file use insert: \"prepend\" or \"append\".",
             )
             .into());
         }
@@ -2673,5 +2705,60 @@ mod tests {
             "got: {:?}",
             rec.hint
         );
+    }
+
+    #[tokio::test]
+    async fn edit_file_prepend_adds_text_at_start() {
+        let (dir, ctx) = project_ctx().await;
+        let file = dir.path().join("test.txt");
+        std::fs::write(&file, "line two\n").unwrap();
+
+        let result = EditFile
+            .call(
+                json!({"path": "test.txt", "insert": "prepend", "new_string": "line one\n"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, json!("ok"));
+        let content = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(content, "line one\nline two\n");
+    }
+
+    #[tokio::test]
+    async fn edit_file_append_adds_text_at_end() {
+        let (dir, ctx) = project_ctx().await;
+        let file = dir.path().join("test.txt");
+        std::fs::write(&file, "line one\n").unwrap();
+
+        let result = EditFile
+            .call(
+                json!({"path": "test.txt", "insert": "append", "new_string": "line two\n"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, json!("ok"));
+        let content = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(content, "line one\nline two\n");
+    }
+
+    #[tokio::test]
+    async fn edit_file_insert_without_old_string_ok() {
+        // insert mode should not require old_string
+        let (dir, ctx) = project_ctx().await;
+        let file = dir.path().join("test.txt");
+        std::fs::write(&file, "existing\n").unwrap();
+
+        let result = EditFile
+            .call(
+                json!({"path": "test.txt", "insert": "prepend", "new_string": "header\n"}),
+                &ctx,
+            )
+            .await;
+
+        assert!(result.is_ok(), "should succeed without old_string");
     }
 }
