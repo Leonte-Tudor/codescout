@@ -445,6 +445,66 @@ Unknown. Possibly:
 
 ---
 
+### BUG-016 — `remove_symbol`: freezes and corrupts file when targeting a `const` item
+
+**Date:** 2026-03-02
+**Severity:** High — tool hangs (never returns), partial corrupt write left on disk
+**Status:** Open
+
+**What happened:**
+Called `remove_symbol(name_path="USER_OUTPUT_ENABLED", path="src/server.rs")` to delete a
+module-level `const` (with its preceding 3-line doc comment):
+
+```rust
+/// When false, user-audience content blocks are stripped before sending to the
+/// MCP client. Flip to `true` once Claude Code implements proper audience
+/// filtering (i.e. LLM context no longer receives Role::User-only blocks).
+const USER_OUTPUT_ENABLED: bool = false;
+```
+
+Expected: the 4 lines above deleted, surrounding code intact.
+Actual:
+1. The tool **froze** — it never returned and had to be interrupted by the user.
+2. A **duplicate `use` import** appeared in the file:
+   ```diff
+   +use crate::usage::UsageRecorder;
+    use crate::usage::UsageRecorder;
+   ```
+3. The constant was **not removed**.
+
+**Reproduction hint:**
+```
+// src/server.rs (around line 37-43 before this session's edits):
+use crate::usage::UsageRecorder;   // line 37
+
+/// When false, ...                // line 39
+/// ...                            // line 40
+/// ...                            // line 41
+const USER_OUTPUT_ENABLED: bool = false;  // line 42
+```
+Call: `remove_symbol(name_path="USER_OUTPUT_ENABLED", path="src/server.rs")`
+Observe: tool hangs, `git diff` shows duplicate import on line 37, constant untouched.
+
+**Root cause hypothesis:**
+`rust-analyzer` may not surface module-level `const` declarations as top-level
+`DocumentSymbol` entries (or surfaces them at a different location). `remove_symbol`
+may have resolved the name to the wrong range (the import on line 37 instead of the
+const on line 42), then performed a corrupt "delete-and-rewrite" of that line, then
+blocked waiting for an LSP notification or response that never came.
+
+**Fix ideas:**
+- Before deleting, validate that the resolved `start_line` contains a Rust item keyword
+  (`const`, `fn`, `struct`, `impl`, etc.) — reject with `RecoverableError` if not (same
+  guard added for BUG-013).
+- Confirm whether `rust-analyzer` exposes `const` items as `DocumentSymbol`; if not,
+  fall back to `search_pattern` text-based location for `const`/`static` targets.
+- Add a timeout on the LSP call inside `remove_symbol` so it fails fast rather than
+  hanging the MCP client.
+- Regression test: create a temp `.rs` file with a `const FOO: bool = false;`, call
+  `remove_symbol("FOO", ...)`, assert the line is gone and siblings are intact.
+
+---
+
 ## Template for new entries
 
 ```
