@@ -36,7 +36,13 @@ git blame, semantic search (embeddings), and project memory.
 - `list_dir(path)` — list files and directories. Pass `recursive=true` for a full tree.
 
 **Run shell commands:**
-- `run_command(command)` — run a shell command in the active project root and return stdout/stderr.
+- `run_command(command)` — execute a shell command. Large output is stored in a
+  buffer and a smart summary is returned (test pass/fail, build errors, etc.).
+  Query stored output using Unix tools with `@output_id` references:
+  `grep FAILED @cmd_a1b2c3`, `tail -20 @cmd_a1b2c3`, `diff @cmd_x @cmd_y`.
+  - `cwd` — run from a subdirectory (relative to project root)
+  - `acknowledge_risk` — bypass safety check for destructive commands
+  - `timeout_secs` — max execution time (default 30)
 
 ### Edit code
 
