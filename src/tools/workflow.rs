@@ -584,10 +584,12 @@ async fn run_command_inner(
             )
         })?;
         let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        if !canonical.starts_with(canonical_root.as_path()) {
+        let under_project = canonical.starts_with(canonical_root.as_path());
+        let under_tmp = canonical.starts_with("/tmp");
+        if !under_project && !under_tmp {
             return Err(super::RecoverableError::with_hint(
                 format!("cwd '{}' escapes project root", rel),
-                "The cwd must be a subdirectory within the project.",
+                "The cwd must be a subdirectory within the project, or a path under /tmp.",
             )
             .into());
         }
@@ -1344,11 +1346,10 @@ mod tests {
     #[tokio::test]
     async fn run_command_cwd_rejects_path_escaping_root() {
         let (_dir, ctx) = project_ctx().await;
-        // Use /tmp directly — it always exists and is outside any temp project root.
-        // On Linux, PathBuf::join("/tmp") ignores the existing path and gives /tmp,
-        // so root.join("/tmp") canonicalizes to /tmp, which fails starts_with(root).
+        // Use /var — it always exists, is outside any temp project root, and is
+        // not under /tmp (which is now an allowed cwd root).
         let result = RunCommand
-            .call(json!({"command": "ls", "cwd": "/tmp"}), &ctx)
+            .call(json!({"command": "ls", "cwd": "/var"}), &ctx)
             .await;
         assert!(
             result.is_err(),

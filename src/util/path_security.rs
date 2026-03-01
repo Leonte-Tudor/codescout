@@ -233,6 +233,10 @@ pub fn validate_write_path(
 
     // Check that the path is under an allowed root.
     let mut allowed = vec![project_root];
+    // System temp directory is always writable — useful for scratch files,
+    // intermediate output, and cross-process coordination without polluting
+    // the project root.
+    allowed.push(PathBuf::from("/tmp"));
     for extra in &config.extra_write_roots {
         allowed.push(best_effort_canonicalize(extra));
     }
@@ -584,11 +588,11 @@ mod tests {
     #[test]
     fn write_outside_project_rejected() {
         let project = tempdir().unwrap();
-        let outside = tempdir().unwrap();
-        let target = outside.path().join("evil.rs");
+        // Use a hardcoded path outside both the project root and /tmp so the
+        // test remains valid now that /tmp is an allowed write root.
+        let target = "/var/outside_ce_test/evil.rs";
 
-        let result =
-            validate_write_path(target.to_str().unwrap(), project.path(), &default_config());
+        let result = validate_write_path(target, project.path(), &default_config());
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -601,7 +605,9 @@ mod tests {
         let project = tempdir().unwrap();
         std::fs::create_dir_all(project.path().join("src")).unwrap();
 
-        let result = validate_write_path("../../../tmp/evil.rs", project.path(), &default_config());
+        // Traverse to /var (not /tmp) so the result lands outside both the
+        // project root and the /tmp allowed root.
+        let result = validate_write_path("../../../var/evil.rs", project.path(), &default_config());
         assert!(result.is_err());
     }
 
@@ -620,6 +626,30 @@ mod tests {
         let target = extra.path().join("sub/file.rs");
         let result = validate_write_path(target.to_str().unwrap(), project.path(), &config);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn write_to_tmp_allowed() {
+        let project = tempdir().unwrap();
+        // /tmp itself must exist on the system for this test to be meaningful
+        let target = PathBuf::from("/tmp/code-explorer-test-write.txt");
+        let result = validate_write_path(target.to_str().unwrap(), project.path(), &default_config());
+        assert!(result.is_ok(), "writes to /tmp should be allowed: {:?}", result.err());
+        assert_eq!(result.unwrap(), target);
+    }
+
+    #[test]
+    fn write_to_tmp_denied_even_in_deny_list() {
+        // If someone adds /tmp/secret to the deny-list, it should still be blocked
+        // (deny-list runs before the allowed-roots check).
+        let project = tempdir().unwrap();
+        let config = PathSecurityConfig {
+            denied_read_patterns: vec!["/tmp/secret".to_string()],
+            ..Default::default()
+        };
+        let result = validate_write_path("/tmp/secret/key", project.path(), &config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("protected location"));
     }
 
     #[test]
@@ -685,18 +715,18 @@ mod tests {
     #[test]
     fn symlink_write_escape_caught() {
         let project = tempdir().unwrap();
-        let outside = tempdir().unwrap();
-        let escape_target = outside.path().join("escaped.txt");
-        std::fs::write(&escape_target, "").unwrap();
 
-        // Create symlink inside project pointing outside
+        // Create symlink inside the project pointing to /var/tmp — a real
+        // directory that is outside both the project root and /tmp, so the
+        // path-security check should still block the write.
         let link = project.path().join("sneaky");
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+            std::os::unix::fs::symlink("/var/tmp", &link).unwrap();
             let result =
                 validate_write_path("sneaky/escaped.txt", project.path(), &default_config());
-            // After canonicalization, this resolves outside the project
+            // After canonicalization the symlink resolves to /var/tmp/escaped.txt
+            // which is outside both the project root and /tmp.
             assert!(result.is_err());
         }
     }

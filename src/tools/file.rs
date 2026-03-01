@@ -1559,12 +1559,12 @@ mod tests {
     #[tokio::test]
     async fn create_file_outside_project_rejected() {
         let (_dir, ctx) = project_ctx().await;
-        let outside = tempdir().unwrap();
-        let target = outside.path().join("evil.rs");
+        // Use a hardcoded path outside both the project root and /tmp (which is
+        // now an allowed write root).
         let result = CreateFile
             .call(
                 json!({
-                    "path": target.to_str().unwrap(),
+                    "path": "/var/outside_ce_test/evil.rs",
                     "content": "evil code"
                 }),
                 &ctx,
