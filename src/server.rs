@@ -26,8 +26,8 @@ use crate::tools::{
     memory::{DeleteMemory, ListMemories, ReadMemory, WriteMemory},
     semantic::{IndexProject, IndexStatus, SemanticSearch},
     symbol::{
-        FindReferences, FindSymbol, GotoDefinition, Hover, InsertCode, ListSymbols, RenameSymbol,
-        RemoveSymbol, ReplaceSymbol,
+        FindReferences, FindSymbol, GotoDefinition, Hover, InsertCode, ListSymbols, RemoveSymbol,
+        RenameSymbol, ReplaceSymbol,
     },
     usage::GetUsageStats,
     workflow::{Onboarding, RunCommand},
