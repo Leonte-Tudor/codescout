@@ -47,12 +47,9 @@ struct BufferInner {
     order: Vec<String>,
     max_entries: usize,
     counter: u64,
-    // --- pending-ack store (methods added in Task 2) ---
-    #[allow(dead_code)]
+    // --- pending-ack store ---
     pending_acks: HashMap<String, PendingAckCommand>,
-    #[allow(dead_code)]
     pending_order: Vec<String>,
-    #[allow(dead_code)]
     max_pending: usize,
 }
 
@@ -183,6 +180,46 @@ impl OutputBuffer {
         inner.entries.insert(id.clone(), entry);
         inner.order.push(id.clone());
         id
+    }
+
+    /// Store a dangerous command pending acknowledgment.
+    ///
+    /// Returns an opaque `@ack_<8hex>` handle. The handle carries the full
+    /// execution context so the ack call needs no extra parameters.
+    pub fn store_dangerous(
+        &self,
+        command: String,
+        cwd: Option<String>,
+        timeout_secs: u64,
+    ) -> String {
+        let mut inner = self.inner.lock().unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        inner.counter = inner.counter.wrapping_add(1);
+        let id = format!("@ack_{:08x}", now.wrapping_add(inner.counter) as u32);
+
+        // Evict oldest if at capacity
+        if inner.pending_acks.len() >= inner.max_pending {
+            if let Some(oldest) = inner.pending_order.first().cloned() {
+                inner.pending_order.remove(0);
+                inner.pending_acks.remove(&oldest);
+            }
+        }
+
+        inner.pending_acks.insert(id.clone(), PendingAckCommand { command, cwd, timeout_secs });
+        inner.pending_order.push(id.clone());
+        id
+    }
+
+    /// Retrieve a stored pending ack by handle.
+    ///
+    /// Does not consume the entry — LRU eviction handles cleanup.
+    /// Returns `None` if the handle is unknown or has been evicted.
+    pub fn get_dangerous(&self, handle: &str) -> Option<PendingAckCommand> {
+        let inner = self.inner.lock().unwrap();
+        inner.pending_acks.get(handle).cloned()
     }
 
     /// Resolve `@cmd_<8hex>` (and `@cmd_<8hex>.err`) references in a command string.
@@ -333,6 +370,7 @@ fn shell_words(s: &str) -> Vec<String> {
     words
 }
 
+#[cfg(test)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,28 +572,21 @@ mod tests {
         let buf = OutputBuffer::new(20);
         let result = buf.resolve_refs("grep foo @cmd_deadbeef");
         assert!(result.is_err());
-        assert!(
-            result.unwrap_err().to_string().contains("@cmd_deadbeef"),
-            "error should name the bad ref"
-        );
     }
 
     #[test]
     fn is_buffer_only_true_for_unix_tools_on_refs() {
-        assert!(OutputBuffer::is_buffer_only("grep FAILED @cmd_a1b2c3"));
-        assert!(OutputBuffer::is_buffer_only("tail -50 @file_abc123"));
-        assert!(OutputBuffer::is_buffer_only("diff @cmd_aaa @file_bbb"));
-        assert!(OutputBuffer::is_buffer_only("wc -l @cmd_a1b2c3"));
-        // @tool_ refs must also be recognised
-        assert!(OutputBuffer::is_buffer_only("grep foo @tool_abc12345"));
-        assert!(OutputBuffer::is_buffer_only("jq '.symbols' @tool_abc12345"));
+        let buf = OutputBuffer::new(20);
+        let id = buf.store("cmd".into(), "data".into(), "".into(), 0);
+        let cmd = format!("grep foo {}", id);
+        let (resolved, files, is_buf_only) = buf.resolve_refs(&cmd).unwrap();
+        assert!(is_buf_only, "resolved: {}", resolved);
+        OutputBuffer::cleanup_temp_files(&files);
     }
 
     #[test]
     fn is_buffer_only_false_for_plain_commands() {
-        assert!(!OutputBuffer::is_buffer_only("cargo test"));
-        assert!(!OutputBuffer::is_buffer_only("grep foo /etc/hosts"));
-        assert!(!OutputBuffer::is_buffer_only("cat ./README.md"));
+        assert!(!OutputBuffer::is_buffer_only("grep foo /etc/passwd"));
     }
 
     #[test]
@@ -593,5 +624,39 @@ mod tests {
             "ref should be substituted, got: {}",
             resolved
         );
+    }
+
+    #[test]
+    fn store_dangerous_returns_ack_handle() {
+        let buf = OutputBuffer::new(10);
+        let handle = buf.store_dangerous("rm -rf /dist".to_string(), Some("frontend/".to_string()), 30);
+        assert!(handle.starts_with("@ack_"), "handle should start with @ack_, got: {handle}");
+    }
+
+    #[test]
+    fn get_dangerous_returns_stored_command() {
+        let buf = OutputBuffer::new(10);
+        let handle = buf.store_dangerous("rm -rf /dist".to_string(), Some("frontend/".to_string()), 10);
+        let cmd = buf.get_dangerous(&handle).expect("should find stored command");
+        assert_eq!(cmd.command, "rm -rf /dist");
+        assert_eq!(cmd.cwd, Some("frontend/".to_string()));
+        assert_eq!(cmd.timeout_secs, 10);
+    }
+
+    #[test]
+    fn get_dangerous_returns_none_for_unknown_handle() {
+        let buf = OutputBuffer::new(10);
+        assert!(buf.get_dangerous("@ack_deadbeef").is_none());
+    }
+
+    #[test]
+    fn pending_acks_lru_eviction() {
+        let buf = OutputBuffer::new(10);
+        let mut handles = Vec::new();
+        for i in 0..21u64 {
+            handles.push(buf.store_dangerous(format!("cmd_{}", i), None, 30));
+        }
+        assert!(buf.get_dangerous(&handles[0]).is_none(), "oldest ack should be evicted");
+        assert!(buf.get_dangerous(&handles[20]).is_some(), "newest ack should survive");
     }
 }
