@@ -418,7 +418,7 @@ uses the un-trimmed end, consuming more lines than intended.
 
 **Date:** 2026-03-02
 **Severity:** High — data loss; agent believes changes were applied when they were not
-**Status:** Open
+**Status:** ✅ FIXED — `route_tool_error` now includes `"ok": false` in every `RecoverableError` body
 
 **What happened:**
 Multiple `edit_file` calls on `.rs` and `.md` files returned `"ok"` with no error, but the changes

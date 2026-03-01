@@ -251,7 +251,7 @@ impl ServerHandler for CodeExplorerServer {
 /// [`RecoverableError`]: crate::tools::RecoverableError
 fn route_tool_error(e: anyhow::Error) -> CallToolResult {
     if let Some(rec) = e.downcast_ref::<crate::tools::RecoverableError>() {
-        let mut body = serde_json::json!({ "error": rec.message });
+        let mut body = serde_json::json!({ "ok": false, "error": rec.message });
         if let Some(hint) = &rec.hint {
             body["hint"] = serde_json::json!(hint);
         }
@@ -623,6 +623,19 @@ mod tests {
         assert!(
             result.is_error != Some(true),
             "RecoverableError must not set isError:true"
+        );
+    }
+
+    #[test]
+    fn recoverable_error_body_has_ok_false() {
+        let err = anyhow::Error::new(crate::tools::RecoverableError::new("old_string not found"));
+        let result = route_tool_error(err);
+        let text = &result.content[0].as_text().unwrap().text;
+        let body: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(
+            body["ok"],
+            serde_json::Value::Bool(false),
+            "RecoverableError body must include ok:false so models cannot confuse it with the success string \"ok\""
         );
     }
 
