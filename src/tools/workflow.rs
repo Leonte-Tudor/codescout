@@ -596,6 +596,27 @@ async fn run_command_inner(
 
             // --- Step 6: Decide whether to buffer + summarize ---
             if needs_summary(&raw_stdout, &raw_stderr) {
+                // When the command was querying a buffer ref (e.g. `sed @cmd_A`),
+                // creating a *new* buffer causes an infinite loop: the agent sees
+                // a fresh ref, queries it again, gets another ref, and so on.
+                // Break the cycle by returning an error that guides the agent
+                // toward a more targeted query instead.
+                if buffer_only {
+                    let total_lines =
+                        count_lines(&raw_stdout) + count_lines(&raw_stderr);
+                    return Err(super::RecoverableError::with_hint(
+                        format!(
+                            "Command output is still {total_lines} lines — too large to return inline."
+                        ),
+                        "Your query didn't filter enough. Use a targeted command that produces \
+                         fewer than 50 lines, e.g.:\n\
+                         • grep 'keyword' @ref\n\
+                         • sed -n '1,50p' @ref\n\
+                         • head -50 @ref  /  tail -50 @ref",
+                    )
+                    .into());
+                }
+
                 let output_id = ctx.output_buffer.store(
                     original_command.to_string(),
                     raw_stdout.clone(),
@@ -1387,6 +1408,43 @@ mod tests {
             r2["stdout"].as_str().unwrap().trim(),
             "50",
             "stdout should be exactly '50'"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_command_buffer_only_large_output_returns_error_not_new_ref() {
+        // Regression test: `sed @cmd_A` that reproduces the full large buffer must
+        // return a RecoverableError rather than a new @cmd_B reference.  The old
+        // behaviour caused an infinite loop where the agent kept querying new refs
+        // that were identical copies of the original buffer.
+        let (_dir, ctx) = project_ctx().await;
+
+        // Seed the buffer with 100 lines (above the 50-line threshold).
+        let large_content: String = (1..=100).map(|i| format!("{i}\n")).collect();
+        let id = ctx
+            .output_buffer
+            .store("original_cmd".into(), large_content, "".into(), 0);
+
+        // Pass-through query — reproduces all 100 lines, still above threshold.
+        let result = RunCommand
+            .call(
+                json!({ "command": format!("sed -n '1,100p' {}", id) }),
+                &ctx,
+            )
+            .await;
+
+        // Must be an Err wrapping a RecoverableError, not Ok with a new output_id.
+        assert!(
+            result.is_err(),
+            "expected RecoverableError for buffer-only large output, got Ok: {:?}",
+            result.ok()
+        );
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("too large to return inline"),
+            "error should explain the output is too large: {msg}"
         );
     }
 
