@@ -1223,4 +1223,78 @@ mod tests {
             "command must remain required"
         );
     }
+
+    // Task 4 TDD regression tests — buffer-backed smart summaries + buffer ref execution
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn run_command_short_output_returned_directly() {
+        let (_dir, ctx) = project_ctx().await;
+        let result = RunCommand
+            .call(json!({"command": "echo hello"}), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            result.get("output_id").is_none(),
+            "short output should not buffer: got output_id {:?}",
+            result.get("output_id")
+        );
+        assert!(
+            result["stdout"].as_str().unwrap().contains("hello"),
+            "stdout should contain 'hello': {:?}",
+            result["stdout"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_command_large_output_stored_in_buffer() {
+        let (_dir, ctx) = project_ctx().await;
+        let result = RunCommand
+            .call(json!({"command": "seq 1 100"}), &ctx)
+            .await
+            .unwrap();
+        let output_id = result["output_id"]
+            .as_str()
+            .expect("large output should have output_id");
+        assert!(
+            output_id.starts_with("@cmd_"),
+            "output_id should start with @cmd_: {}",
+            output_id
+        );
+        assert!(
+            result["total_stdout_lines"].as_u64().unwrap() >= 100,
+            "total_stdout_lines should be >= 100: {}",
+            result["total_stdout_lines"]
+        );
+        let entry = ctx.output_buffer.get(output_id).unwrap();
+        assert!(
+            entry.stdout.contains("50\n"),
+            "buffered stdout should contain '50\\n'"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_command_buffer_ref_executes_correctly() {
+        let (_dir, ctx) = project_ctx().await;
+        let r1 = RunCommand
+            .call(json!({"command": "seq 1 100"}), &ctx)
+            .await
+            .unwrap();
+        let output_id = r1["output_id"].as_str().unwrap();
+        let r2 = RunCommand
+            .call(
+                json!({"command": format!("grep '^50$' {}", output_id)}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(r2["exit_code"], 0, "grep should find '50': {:?}", r2);
+        assert_eq!(
+            r2["stdout"].as_str().unwrap().trim(),
+            "50",
+            "stdout should be exactly '50'"
+        );
+    }
 }
