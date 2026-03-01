@@ -495,6 +495,21 @@ impl Tool for RunCommand {
     }
 }
 
+/// Returns true when `command` looks like a plain file read (`cat`, `head`, `tail`)
+/// on a real filesystem path (not a `@ref` buffer handle). Used to suggest
+/// `read_file` as a more efficient alternative in the buffer-creation hint.
+fn looks_like_file_read(command: &str) -> bool {
+    let mut words = command.split_whitespace();
+    let Some(cmd) = words.next() else {
+        return false;
+    };
+    if !matches!(cmd, "cat" | "head" | "tail") {
+        return false;
+    }
+    // At least one argument must look like a file path (not a flag or @ref)
+    words.any(|w| !w.starts_with('-') && !w.starts_with('@'))
+}
+
 /// Inner logic for `RunCommand::call`, extracted so temp-file cleanup
 /// always happens in the caller regardless of early returns.
 #[allow(clippy::too_many_arguments)]
@@ -511,7 +526,7 @@ async fn run_command_inner(
 ) -> anyhow::Result<Value> {
     use super::command_summary::{
         count_lines, detect_command_type, needs_summary, summarize_build_output, summarize_generic,
-        summarize_test_output, truncate_lines, CommandType, SUMMARY_LINE_THRESHOLD,
+        summarize_test_output, truncate_lines, CommandType, BUFFER_QUERY_INLINE_CAP,
     };
     use crate::util::path_security::is_dangerous_command;
 
@@ -629,7 +644,7 @@ async fn run_command_inner(
                 // Break the cycle by returning an error that guides the agent
                 // toward a more targeted query instead.
                 if buffer_only {
-                    // Truncate to SUMMARY_LINE_THRESHOLD lines total (stderr priority: up to 20,
+                    // Truncate to BUFFER_QUERY_INLINE_CAP lines total (stderr priority: up to 20,
                     // remainder goes to stdout) and return inline. Do NOT create a new buffer
                     // ref — that would cause an infinite query loop.
                     const STDERR_BUDGET: usize = 20;
@@ -652,7 +667,7 @@ async fn run_command_inner(
                         raw_stderr.clone()
                     };
                     let stderr_budget = STDERR_BUDGET.min(count_lines(&buffer_stderr));
-                    let stdout_budget = SUMMARY_LINE_THRESHOLD - stderr_budget;
+                    let stdout_budget = BUFFER_QUERY_INLINE_CAP - stderr_budget;
 
                     let (stdout_out, stdout_shown, stdout_total) =
                         truncate_lines(&raw_stdout, stdout_budget);
@@ -679,12 +694,13 @@ async fn run_command_inner(
                         } else {
                             String::new()
                         };
+                        let next_start = stdout_shown + 1;
+                        let next_end = stdout_shown + BUFFER_QUERY_INLINE_CAP;
                         result["hint"] = json!(format!(
-                            "Output capped at {SUMMARY_LINE_THRESHOLD} lines \
+                            "Output capped at {BUFFER_QUERY_INLINE_CAP} lines \
                              (stdout {stdout_shown}/{stdout_total}{stderr_note}). \
-                             Narrow with: grep 'keyword' @ref, \
-                             sed -n '1,{}p' @ref",
-                            SUMMARY_LINE_THRESHOLD - 1,
+                             Next page: sed -n '{next_start},{next_end}p' @ref. \
+                             Or grep 'keyword' @ref for targeted search.",
                         ));
                     }
                     return Ok(result);
@@ -713,10 +729,17 @@ async fn run_command_inner(
                 if stderr_lines > 0 {
                     summary["total_stderr_lines"] = json!(stderr_lines);
                 }
-                summary["hint"] = json!(format!(
-                    "Full output stored. Query with: run_command(\"grep/tail/awk/sed {}\")",
-                    output_id
-                ));
+                let hint_text = if looks_like_file_read(original_command) {
+                    format!(
+                        "Full output stored. Query with: run_command(\"grep/tail/awk/sed {output_id}\"). \
+                         For text/markdown files, read_file(path, start_line, end_line) is more efficient.",
+                    )
+                } else {
+                    format!(
+                        "Full output stored. Query with: run_command(\"grep/tail/awk/sed {output_id}\")",
+                    )
+                };
+                summary["hint"] = json!(hint_text);
 
                 // Add warning in warn mode
                 if !buffer_only
@@ -790,7 +813,7 @@ fn truncate_output(output: &str, limit: usize) -> (String, bool) {
 mod tests {
     use super::*;
     use crate::agent::Agent;
-    use crate::tools::command_summary::SUMMARY_LINE_THRESHOLD;
+    use crate::tools::command_summary::{BUFFER_QUERY_INLINE_CAP, SUMMARY_LINE_THRESHOLD};
     use std::sync::Arc;
     use tempfile::tempdir;
 
@@ -1492,10 +1515,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn run_command_buffer_only_above_threshold_truncates_inline() {
-        // SUMMARY_LINE_THRESHOLD + 1 lines — strictly above the limit.
-        // Must now return Ok with truncated content, NOT an error.
+        // BUFFER_QUERY_INLINE_CAP + 1 lines — strictly above the inline cap.
+        // Must return Ok with truncated content, NOT an error or a new buffer ref.
         let (_dir, ctx) = project_ctx().await;
-        let content: String = (1..=SUMMARY_LINE_THRESHOLD + 1)
+        let content: String = (1..=BUFFER_QUERY_INLINE_CAP + 1)
             .map(|i| format!("{i}\n"))
             .collect();
         let id = ctx.output_buffer.store("cmd".into(), content, "".into(), 0);
@@ -1509,13 +1532,13 @@ mod tests {
             result
         );
         assert_eq!(
-            result["stdout_shown"], SUMMARY_LINE_THRESHOLD,
-            "stdout_shown should equal threshold: {:?}",
+            result["stdout_shown"], BUFFER_QUERY_INLINE_CAP,
+            "stdout_shown should equal inline cap: {:?}",
             result
         );
         assert_eq!(
             result["stdout_total"],
-            SUMMARY_LINE_THRESHOLD + 1,
+            BUFFER_QUERY_INLINE_CAP + 1,
             "stdout_total should be full count: {:?}",
             result
         );
@@ -1555,18 +1578,19 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn run_command_buffer_only_large_output_no_new_ref() {
-        // Regression: `sed @cmd_A` that reproduces the full large buffer must
+        // Regression: `sed @cmd_A` that reproduces a large buffer must
         // return truncated inline content, NOT a new @cmd_B reference.
+        // Use 250 lines (> BUFFER_QUERY_INLINE_CAP=200) to trigger truncation.
         let (_dir, ctx) = project_ctx().await;
 
-        let large_content: String = (1..=100).map(|i| format!("{i}\n")).collect();
+        let large_content: String = (1..=250).map(|i| format!("{i}\n")).collect();
         let id = ctx
             .output_buffer
             .store("original_cmd".into(), large_content, "".into(), 0);
 
         let result = RunCommand
             .call(
-                json!({ "command": format!("sed -n '1,100p' {}", id) }),
+                json!({ "command": format!("sed -n '1,250p' {}", id) }),
                 &ctx,
             )
             .await
@@ -1583,7 +1607,7 @@ mod tests {
             result
         );
         assert_eq!(
-            result["stdout_total"], 100usize,
+            result["stdout_total"], 250usize,
             "stdout_total: {:?}",
             result
         );
@@ -1592,10 +1616,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn run_command_buffer_only_stderr_gets_priority() {
-        // stderr = 25 lines (> 20 cap) + stdout = 60 lines.
-        // Expected: stderr_shown = 20, stdout_shown = 30 (50 - 20).
+        // stderr = 25 lines (> 20 cap) + stdout = 250 lines (> remaining budget).
+        // Expected: stderr_shown = 20, stdout_shown = 180 (BUFFER_QUERY_INLINE_CAP - 20).
         let (_dir, ctx) = project_ctx().await;
-        let stdout: String = (1..=60).map(|i| format!("out{i}\n")).collect();
+        let stdout: String = (1..=250).map(|i| format!("out{i}\n")).collect();
         let stderr: String = (1..=25).map(|i| format!("err{i}\n")).collect();
         let id = ctx.output_buffer.store("cmd".into(), stdout, stderr, 0);
         let result = RunCommand
@@ -1613,12 +1637,13 @@ mod tests {
             result
         );
         assert_eq!(
-            result["stdout_shown"], 30usize,
+            result["stdout_shown"],
+            BUFFER_QUERY_INLINE_CAP - 20,
             "stdout_shown: {:?}",
             result
         );
         assert_eq!(
-            result["stdout_total"], 60usize,
+            result["stdout_total"], 250usize,
             "stdout_total: {:?}",
             result
         );
@@ -1628,10 +1653,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn run_command_buffer_only_short_stderr_gives_budget_to_stdout() {
-        // stderr = 10 lines (< 20 cap) + stdout = 60 lines.
-        // Expected: stderr_shown = 10, stdout_shown = 40 (50 - 10).
+        // stderr = 10 lines (< 20 cap) + stdout = 250 lines (> remaining budget).
+        // Expected: stderr_shown = 10, stdout_shown = 190 (BUFFER_QUERY_INLINE_CAP - 10).
         let (_dir, ctx) = project_ctx().await;
-        let stdout: String = (1..=60).map(|i| format!("out{i}\n")).collect();
+        let stdout: String = (1..=250).map(|i| format!("out{i}\n")).collect();
         let stderr: String = (1..=10).map(|i| format!("err{i}\n")).collect();
         let id = ctx.output_buffer.store("cmd".into(), stdout, stderr, 0);
         let result = RunCommand
@@ -1639,12 +1664,13 @@ mod tests {
             .await
             .expect("expected Ok");
         assert_eq!(
-            result["stdout_shown"], 40usize,
+            result["stdout_shown"],
+            BUFFER_QUERY_INLINE_CAP - 10,
             "stdout_shown: {:?}",
             result
         );
         assert_eq!(
-            result["stdout_total"], 60usize,
+            result["stdout_total"], 250usize,
             "stdout_total: {:?}",
             result
         );
@@ -1768,5 +1794,89 @@ mod tests {
         let result = json!({ "stdout": "hello\nworld", "stderr": "", "exit_code": 0 });
         let text = tool.format_for_user(&result).unwrap();
         assert!(text.contains("exit 0"), "got: {text}");
+    }
+
+    // Fix A: buffer-only queries should use BUFFER_QUERY_INLINE_CAP (200), not
+    // SUMMARY_LINE_THRESHOLD (50). A 100-line result should be returned fully inline.
+    #[tokio::test]
+    async fn buffer_query_returns_up_to_200_lines_inline() {
+        let (_dir, ctx) = project_ctx().await;
+        // Create a buffer with 100 lines (> SUMMARY_LINE_THRESHOLD=50, so it buffers)
+        let result = RunCommand
+            .call(json!({ "command": "seq 1 100", "timeout_secs": 5 }), &ctx)
+            .await
+            .unwrap();
+        let output_id = result["output_id"].as_str().unwrap().to_string();
+
+        // Query the buffer — 100 lines is within the 200-line inline cap
+        let query = format!("cat {output_id}");
+        let result2 = RunCommand
+            .call(json!({ "command": query, "timeout_secs": 5 }), &ctx)
+            .await
+            .unwrap();
+        let stdout = result2["stdout"].as_str().unwrap_or("");
+        let line_count = stdout.lines().count();
+        assert_eq!(
+            line_count, 100,
+            "buffer query of 100 lines should return all 100 inline (got {line_count})"
+        );
+        assert!(
+            result2["truncated"].is_null(),
+            "should not be truncated when within 200-line cap"
+        );
+    }
+
+    // Fix B: the truncation hint for buffer queries should show the *next* page range,
+    // not always start from line 1.
+    #[tokio::test]
+    async fn buffer_query_truncation_hint_shows_next_page() {
+        let (_dir, ctx) = project_ctx().await;
+        // Create a buffer with 300 lines (> BUFFER_QUERY_INLINE_CAP=200)
+        let result = RunCommand
+            .call(json!({ "command": "seq 1 300", "timeout_secs": 5 }), &ctx)
+            .await
+            .unwrap();
+        let output_id = result["output_id"].as_str().unwrap().to_string();
+
+        // Query it — output exceeds 200-line cap, so hint should show next-page command
+        let query = format!("cat {output_id}");
+        let result2 = RunCommand
+            .call(json!({ "command": query, "timeout_secs": 5 }), &ctx)
+            .await
+            .unwrap();
+        let hint = result2["hint"].as_str().unwrap_or("");
+        // Hint must guide to the NEXT page (line 201 onwards), not back to line 1
+        assert!(
+            hint.contains("201"),
+            "hint should show next-page start (201), got: {hint}"
+        );
+        assert!(
+            !hint.contains("'1,"),
+            "hint must not restart from line 1, got: {hint}"
+        );
+    }
+
+    // Fix C: when the first run_command looks like a plain file read (cat file),
+    // the buffer creation hint should suggest read_file as an alternative.
+    #[tokio::test]
+    async fn cat_file_buffer_hint_suggests_read_file() {
+        let (dir, ctx) = project_ctx().await;
+        // Write a markdown file with > 50 lines
+        let md_path = dir.path().join("big_plan.md");
+        let content: String = (1..=60).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(&md_path, content).unwrap();
+
+        let result = RunCommand
+            .call(
+                json!({ "command": "cat big_plan.md", "timeout_secs": 5 }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let hint = result["hint"].as_str().unwrap_or("");
+        assert!(
+            hint.contains("read_file"),
+            "cat on a text file should suggest read_file in the hint, got: {hint}"
+        );
     }
 }

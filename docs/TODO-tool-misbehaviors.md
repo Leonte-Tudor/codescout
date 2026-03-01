@@ -265,6 +265,43 @@ New tests: `list_symbols_flat_cap_triggers_on_symbol_with_many_children`,
 
 ---
 
+### BUG-009 — `find_symbol`: LspManager leaks zombie kotlin-lsp process on tool timeout
+
+**Date:** 2026-03-01
+**Severity:** Medium — resource leak; repeated LSP cold-start failures accumulate processes
+**Status:** Open
+
+**What happened:**
+`find_symbol("User", kind: "class", path: "src/main/kotlin/edu/planner/domain/models/")` in
+backend-kotlin project timed out after 60s. A subsequent call with a specific file path
+returned 0 results instead of also timing out.
+
+**Root cause:**
+`tool_timeout_secs = 60` (project.toml) < Kotlin LSP cold-start time (~90-120s for JVM
+IntelliJ-based kotlin-lsp). `server.rs:call_tool` wraps the tool in `tokio::time::timeout`,
+which cancels the future mid-`LspClient::start()`. Because the kotlin-lsp child process and
+its reader task are `tokio::spawn`-ed (independent of the `start()` future), they survive
+cancellation. The `LspManager.starting` map is left with a closed watch channel (the `tx`
+sender is dropped when `do_start` is cancelled, but `starting.remove()` never runs). The
+next `get_or_start` call sees the closed channel, falls through to become a new starter, and
+spawns a **second** kotlin-lsp process alongside the still-running first.
+
+**Reproduction hint:**
+1. Set `tool_timeout_secs = 60` on a Kotlin project with a JVM-based kotlin-lsp
+2. Call `find_symbol` on a directory with `.kt` files → timeout after 60s
+3. Immediately call `find_symbol` on a specific `.kt` file → 0 results (not another timeout)
+4. Check running processes: two kotlin-lsp processes exist
+
+**Fix ideas:**
+- Wrap `do_start` in a drop guard (using `scopeguard::defer!`) that calls `starting.remove()`
+  on cancellation, so the map is always cleaned up.
+- Separately: kill the spawned child on `start()` cancellation by detecting the orphaned
+  reader task (e.g., abort the reader `JoinHandle` before returning from `start()`).
+- Immediate user-facing fix: raise `tool_timeout_secs` to ≥300 in project config so the
+  tool doesn't time out before kotlin-lsp initializes. **Applied to backend-kotlin.**
+
+---
+
 ## Template for new entries
 
 ```
