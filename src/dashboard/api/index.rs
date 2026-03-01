@@ -32,6 +32,7 @@ pub async fn get_index(State(state): State<DashboardState>) -> Json<Value> {
         chunk_count: 0,
         embedding_count: 0,
         model: None,
+        indexed_at: None,
     });
 
     let staleness = embed_index::check_index_staleness(&conn, &state.project_root).unwrap_or(

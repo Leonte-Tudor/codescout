@@ -49,6 +49,7 @@ pub struct ActiveProject {
     pub root: PathBuf,
     pub config: ProjectConfig,
     pub memory: MemoryStore,
+    pub private_memory: MemoryStore,
     pub library_registry: LibraryRegistry,
 }
 
@@ -57,12 +58,14 @@ impl Agent {
         let active_project = if let Some(root) = project {
             let config = ProjectConfig::load_or_default(&root)?;
             let memory = MemoryStore::open(&root)?;
+            let private_memory = MemoryStore::open_private(&root)?;
             let registry_path = root.join(".code-explorer").join("libraries.json");
             let library_registry = LibraryRegistry::load(&registry_path).unwrap_or_default();
             Some(ActiveProject {
                 root,
                 config,
                 memory,
+                private_memory,
                 library_registry,
             })
         } else {
@@ -89,6 +92,7 @@ impl Agent {
     pub async fn activate(&self, root: PathBuf) -> Result<()> {
         let config = ProjectConfig::load_or_default(&root)?;
         let memory = MemoryStore::open(&root)?;
+        let private_memory = MemoryStore::open_private(&root)?;
         let registry_path = root.join(".code-explorer").join("libraries.json");
         let library_registry = LibraryRegistry::load(&registry_path).unwrap_or_default();
         let mut inner = self.inner.write().await;
@@ -96,6 +100,7 @@ impl Agent {
             root,
             config,
             memory,
+            private_memory,
             library_registry,
         });
         inner.project_explicitly_activated = true;
@@ -428,5 +433,21 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".code-explorer")).unwrap();
         let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
         assert!(agent.is_project_explicitly_activated().await);
+    }
+
+    #[tokio::test]
+    async fn active_project_has_private_memory() {
+        let dir = tempdir().unwrap();
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        agent
+            .with_project(|p| {
+                p.private_memory.write("pref", "verbose")?;
+                assert_eq!(p.private_memory.read("pref")?, Some("verbose".to_string()));
+                // private is isolated from shared
+                assert_eq!(p.memory.read("pref")?, None);
+                Ok(())
+            })
+            .await
+            .unwrap();
     }
 }
