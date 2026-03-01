@@ -7,6 +7,7 @@ You have just onboarded this project. Below you'll find pre-gathered context fro
 3. **Be concise** — Each memory should be 15–40 lines. Longer means too much detail.
 4. **Explore before writing** — The gathered data gives you a head start, but use code-explorer tools to verify and fill gaps: `get_symbols_overview("src")` for architecture, `find_symbol` for key abstractions, `list_functions` for API surface.
 5. **Confirm with the user** — After creating all 6 memories, summarize what you wrote and ask if anything needs correction.
+6. **Private memories** — Use `write_memory(topic, content, private=true)` for project-local notes that should not appear in system instructions (e.g. personal debugging notes, temporary state). Standard `write_memory` creates shared memories visible to all agents.
 
 ## Memories to Create
 
