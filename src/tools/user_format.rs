@@ -965,6 +965,11 @@ pub fn format_find_references(result: &Value) -> String {
             .map(|a| a.len() as u64)
             .unwrap_or(0)
     });
+
+    if total == 0 {
+        return "No references found.".to_string();
+    }
+
     let files: std::collections::HashSet<&str> = result["references"]
         .as_array()
         .map(|refs| refs.iter().filter_map(|r| r["file"].as_str()).collect())
@@ -2370,7 +2375,7 @@ mod tests {
     fn find_references_empty() {
         let result = serde_json::json!({ "references": [], "total": 0 });
         let text = format_find_references(&result);
-        assert!(text.contains("0") || text.contains("No"), "should indicate no refs");
+        assert!(text.contains("No"), "should say 'No references found.', got: {}", text);
     }
 }
 
