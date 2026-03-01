@@ -21,6 +21,36 @@ impl MemoryStore {
         Ok(Self { memories_dir })
     }
 
+    /// Open (or create) the private memory store for a project root.
+    /// Private memories are gitignored — not shared with teammates.
+    /// Automatically adds `.code-explorer/private-memories/` to `.gitignore`.
+    pub fn open_private(project_root: &Path) -> Result<Self> {
+        let memories_dir = project_root.join(".code-explorer").join("private-memories");
+        std::fs::create_dir_all(&memories_dir)?;
+        Self::ensure_gitignored(project_root, ".code-explorer/private-memories/")?;
+        Ok(Self { memories_dir })
+    }
+
+    fn ensure_gitignored(project_root: &Path, entry: &str) -> Result<()> {
+        let gitignore_path = project_root.join(".gitignore");
+        let existing = if gitignore_path.exists() {
+            std::fs::read_to_string(&gitignore_path)?
+        } else {
+            String::new()
+        };
+        if existing.lines().any(|l| l.trim() == entry) {
+            return Ok(());
+        }
+        let mut content = existing;
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        content.push_str(entry);
+        content.push('\n');
+        std::fs::write(&gitignore_path, content)?;
+        Ok(())
+    }
+
     /// Write or overwrite a memory entry.
     pub fn write(&self, topic: &str, content: &str) -> Result<()> {
         let path = self.topic_path(topic);
@@ -93,6 +123,44 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = MemoryStore::open(dir.path()).unwrap();
         (dir, store)
+    }
+
+    #[test]
+    fn open_private_creates_private_memories_dir() {
+        let dir = tempdir().unwrap();
+        let _store = MemoryStore::open_private(dir.path()).unwrap();
+        assert!(dir.path().join(".code-explorer/private-memories").exists());
+    }
+
+    #[test]
+    fn open_private_adds_to_gitignore() {
+        let dir = tempdir().unwrap();
+        MemoryStore::open_private(dir.path()).unwrap();
+        let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(content.contains(".code-explorer/private-memories/"));
+    }
+
+    #[test]
+    fn open_private_does_not_duplicate_gitignore_entry() {
+        let dir = tempdir().unwrap();
+        MemoryStore::open_private(dir.path()).unwrap();
+        MemoryStore::open_private(dir.path()).unwrap();
+        let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        let count = content
+            .lines()
+            .filter(|l| l.trim() == ".code-explorer/private-memories/")
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn open_private_appends_to_existing_gitignore() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "target/\n").unwrap();
+        MemoryStore::open_private(dir.path()).unwrap();
+        let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(content.contains("target/\n"));
+        assert!(content.contains(".code-explorer/private-memories/"));
     }
 
     #[test]
