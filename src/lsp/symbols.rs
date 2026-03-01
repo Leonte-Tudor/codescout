@@ -20,6 +20,11 @@ pub struct SymbolInfo {
     pub start_col: u32,
     /// Children symbols (e.g. methods of a class)
     pub children: Vec<SymbolInfo>,
+    /// LSP DocumentSymbol.detail — function signature or type annotation.
+    /// None when the LSP does not provide it (tree-sitter fallback, flat
+    /// SymbolInformation path, or symbols with no natural signature like structs).
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

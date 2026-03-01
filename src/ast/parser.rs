@@ -159,6 +159,7 @@ fn extract_rust_symbols(node: Node, source: &str, file: &PathBuf, prefix: &str) 
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -174,6 +175,7 @@ fn extract_rust_symbols(node: Node, source: &str, file: &PathBuf, prefix: &str) 
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -191,6 +193,7 @@ fn extract_rust_symbols(node: Node, source: &str, file: &PathBuf, prefix: &str) 
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children,
+                        detail: None,
                     });
                 }
             }
@@ -210,6 +213,7 @@ fn extract_rust_symbols(node: Node, source: &str, file: &PathBuf, prefix: &str) 
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children,
+                        detail: None,
                     });
                 }
             }
@@ -252,6 +256,7 @@ fn extract_rust_symbols(node: Node, source: &str, file: &PathBuf, prefix: &str) 
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children,
+                        detail: None,
                     });
                 }
             }
@@ -266,6 +271,7 @@ fn extract_rust_symbols(node: Node, source: &str, file: &PathBuf, prefix: &str) 
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -280,6 +286,7 @@ fn extract_rust_symbols(node: Node, source: &str, file: &PathBuf, prefix: &str) 
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -294,6 +301,7 @@ fn extract_rust_symbols(node: Node, source: &str, file: &PathBuf, prefix: &str) 
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -309,6 +317,7 @@ fn extract_rust_symbols(node: Node, source: &str, file: &PathBuf, prefix: &str) 
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -340,6 +349,7 @@ fn extract_rust_impl_methods(
                     end_line: child.end_position().row as u32,
                     start_col: child.start_position().column as u32,
                     children: vec![],
+                    detail: None,
                 });
             }
         }
@@ -367,6 +377,7 @@ fn extract_enum_variants(node: Node, source: &str, file: &Path, prefix: &str) ->
                     end_line: child.end_position().row as u32,
                     start_col: child.start_position().column as u32,
                     children: vec![],
+                    detail: None,
                 });
             }
         }
@@ -406,6 +417,7 @@ fn extract_python_symbols(
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -425,6 +437,7 @@ fn extract_python_symbols(
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children,
+                        detail: None,
                     });
                 }
             }
@@ -498,6 +511,7 @@ fn extract_go_symbols(node: Node, source: &str, file: &Path, prefix: &str) -> Ve
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -520,6 +534,7 @@ fn extract_go_symbols(node: Node, source: &str, file: &Path, prefix: &str) -> Ve
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -550,6 +565,7 @@ fn extract_go_symbols(node: Node, source: &str, file: &Path, prefix: &str) -> Ve
                                 end_line: spec.end_position().row as u32,
                                 start_col: spec.start_position().column as u32,
                                 children,
+                                detail: None,
                             });
                         }
                     }
@@ -590,6 +606,7 @@ fn extract_go_type_children(
                                 end_line: field.end_position().row as u32,
                                 start_col: field.start_position().column as u32,
                                 children: vec![],
+                                detail: None,
                             });
                         }
                     }
@@ -611,6 +628,7 @@ fn extract_go_type_children(
                             end_line: child.end_position().row as u32,
                             start_col: child.start_position().column as u32,
                             children: vec![],
+                            detail: None,
                         });
                     }
                 }
@@ -648,6 +666,7 @@ fn extract_java_symbols(node: Node, source: &str, file: &PathBuf, prefix: &str) 
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children,
+                        detail: None,
                     });
                 }
             }
@@ -667,6 +686,7 @@ fn extract_java_symbols(node: Node, source: &str, file: &PathBuf, prefix: &str) 
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children,
+                        detail: None,
                     });
                 }
             }
@@ -683,6 +703,7 @@ fn extract_java_symbols(node: Node, source: &str, file: &PathBuf, prefix: &str) 
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children,
+                        detail: None,
                     });
                 }
             }
@@ -702,6 +723,7 @@ fn extract_java_symbols(node: Node, source: &str, file: &PathBuf, prefix: &str) 
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children,
+                        detail: None,
                     });
                 }
             }
@@ -734,6 +756,7 @@ fn extract_java_class_members(
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -748,6 +771,7 @@ fn extract_java_class_members(
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -764,6 +788,7 @@ fn extract_java_class_members(
                             end_line: child.end_position().row as u32,
                             start_col: child.start_position().column as u32,
                             children: vec![],
+                            detail: None,
                         });
                     }
                 }
@@ -807,6 +832,7 @@ fn extract_java_enum_constants(
                     end_line: child.end_position().row as u32,
                     start_col: child.start_position().column as u32,
                     children: vec![],
+                    detail: None,
                 });
             }
         }
@@ -848,6 +874,7 @@ fn extract_kotlin_symbols(
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children,
+                        detail: None,
                     });
                 }
             }
@@ -867,6 +894,7 @@ fn extract_kotlin_symbols(
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children,
+                        detail: None,
                     });
                 }
             }
@@ -881,6 +909,7 @@ fn extract_kotlin_symbols(
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -897,6 +926,7 @@ fn extract_kotlin_symbols(
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -911,6 +941,7 @@ fn extract_kotlin_symbols(
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -982,6 +1013,7 @@ fn extract_kotlin_class_members(
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -997,6 +1029,7 @@ fn extract_kotlin_class_members(
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -1010,6 +1043,7 @@ fn extract_kotlin_class_members(
                     end_line: child.end_position().row as u32,
                     start_col: child.start_position().column as u32,
                     children: vec![],
+                    detail: None,
                 });
             }
             "companion_object" => {
@@ -1029,6 +1063,7 @@ fn extract_kotlin_class_members(
                     end_line: child.end_position().row as u32,
                     start_col: child.start_position().column as u32,
                     children,
+                    detail: None,
                 });
             }
             // Nested class/object declarations
@@ -1058,6 +1093,7 @@ fn extract_kotlin_class_members(
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -1089,6 +1125,7 @@ fn extract_ts_symbols(node: Node, source: &str, file: &PathBuf, prefix: &str) ->
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -1108,6 +1145,7 @@ fn extract_ts_symbols(node: Node, source: &str, file: &PathBuf, prefix: &str) ->
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children,
+                        detail: None,
                     });
                 }
             }
@@ -1123,6 +1161,7 @@ fn extract_ts_symbols(node: Node, source: &str, file: &PathBuf, prefix: &str) ->
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -1138,6 +1177,7 @@ fn extract_ts_symbols(node: Node, source: &str, file: &PathBuf, prefix: &str) ->
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -1152,6 +1192,7 @@ fn extract_ts_symbols(node: Node, source: &str, file: &PathBuf, prefix: &str) ->
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -1189,6 +1230,7 @@ fn extract_ts_class_members(
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }
@@ -1203,6 +1245,7 @@ fn extract_ts_class_members(
                         end_line: child.end_position().row as u32,
                         start_col: child.start_position().column as u32,
                         children: vec![],
+                        detail: None,
                     });
                 }
             }

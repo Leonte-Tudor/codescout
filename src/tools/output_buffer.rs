@@ -104,6 +104,37 @@ impl OutputBuffer {
         }
     }
 
+    /// Store file content under a `@file_*` handle.
+    ///
+    /// Content goes in `stdout`; `stderr` is empty; `exit_code` is 0.
+    /// The `command` field holds the source path for diagnostics.
+    pub fn store_file(&self, path: String, content: String) -> String {
+        let mut inner = self.inner.lock().unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        inner.counter = inner.counter.wrapping_add(1);
+        let id = format!("@file_{:08x}", now.wrapping_add(inner.counter) as u32);
+
+        if inner.entries.len() >= inner.max_entries {
+            if let Some(oldest_id) = inner.order.first().cloned() {
+                inner.order.remove(0);
+                inner.entries.remove(&oldest_id);
+            }
+        }
+        let entry = BufferEntry {
+            command: path,
+            stdout: content,
+            stderr: String::new(),
+            exit_code: 0,
+            timestamp: now,
+        };
+        inner.entries.insert(id.clone(), entry);
+        inner.order.push(id.clone());
+        id
+    }
+
     /// Resolve `@cmd_<8hex>` (and `@cmd_<8hex>.err`) references in a command string.
     ///
     /// Each reference is replaced with a path to a read-only temp file containing
@@ -114,7 +145,7 @@ impl OutputBuffer {
     ///   command is one of our temp files (i.e., the command operates solely on
     ///   buffered output, not real filesystem paths)
     pub fn resolve_refs(&self, command: &str) -> Result<(String, Vec<PathBuf>, bool)> {
-        let re = Regex::new(r"@cmd_[0-9a-f]{8}(\.err)?").expect("valid regex");
+        let re = Regex::new(r"@(?:cmd|file)_[0-9a-f]{8}(\.err)?").expect("valid regex");
 
         let refs: Vec<&str> = re.find_iter(command).map(|m| m.as_str()).collect();
         if refs.is_empty() {
@@ -193,6 +224,25 @@ impl OutputBuffer {
         for path in paths {
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    /// True when the command operates only on buffer refs (no bare filesystem paths).
+    ///
+    /// Buffer-only commands skip shell_command_mode checks and the
+    /// dangerous-command speed bump because they cannot modify the real
+    /// filesystem — they only read from in-memory output buffers materialized
+    /// as read-only temp files.
+    pub fn is_buffer_only(command: &str) -> bool {
+        if !command.contains("@cmd_") && !command.contains("@file_") {
+            return false;
+        }
+        // Reject if any whitespace-separated word looks like a bare path.
+        for word in command.split_whitespace() {
+            if word.starts_with('/') || word.starts_with("./") || word.starts_with("../") {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -382,5 +432,72 @@ mod tests {
             assert_eq!(perms.mode() & 0o777, 0o444);
         }
         OutputBuffer::cleanup_temp_files(&files);
+    }
+
+    #[test]
+    fn store_file_uses_file_prefix() {
+        let buf = OutputBuffer::new(20);
+        let id = buf.store_file("src/main.rs".into(), "fn main() {}\n".into());
+        assert!(id.starts_with("@file_"), "got: {}", id);
+        let entry = buf.get(&id).unwrap();
+        assert_eq!(entry.stdout, "fn main() {}\n");
+        assert_eq!(entry.stderr, "");
+    }
+
+    #[test]
+    fn resolve_refs_substitutes_cmd_ref() {
+        let buf = OutputBuffer::new(20);
+        let id = buf.store("echo hi".into(), "hello\n".into(), "".into(), 0);
+        let (resolved, files, _) = buf.resolve_refs(&format!("grep hello {}", id)).unwrap();
+        assert!(!resolved.contains('@'), "got: {}", resolved);
+        assert!(resolved.starts_with("grep hello /"));
+        OutputBuffer::cleanup_temp_files(&files);
+    }
+
+    #[test]
+    fn resolve_refs_substitutes_file_ref() {
+        let buf = OutputBuffer::new(20);
+        let id = buf.store_file("README.md".into(), "# Hello\n".into());
+        let (resolved, files, _) = buf.resolve_refs(&format!("wc -l {}", id)).unwrap();
+        assert!(!resolved.contains('@'), "got: {}", resolved);
+        OutputBuffer::cleanup_temp_files(&files);
+    }
+
+    #[test]
+    fn resolve_refs_err_suffix_writes_stderr() {
+        let buf = OutputBuffer::new(20);
+        let id = buf.store("cmd".into(), "out".into(), "err_text".into(), 0);
+        let err_ref = format!("{}.err", id);
+        let (resolved, files, _) = buf.resolve_refs(&format!("grep x {}", err_ref)).unwrap();
+        let tmp_path = resolved.split_whitespace().last().unwrap();
+        let content = std::fs::read_to_string(tmp_path).unwrap();
+        assert_eq!(content, "err_text");
+        OutputBuffer::cleanup_temp_files(&files);
+    }
+
+    #[test]
+    fn resolve_refs_unknown_ref_returns_error() {
+        let buf = OutputBuffer::new(20);
+        let result = buf.resolve_refs("grep foo @cmd_deadbeef");
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("@cmd_deadbeef"),
+            "error should name the bad ref"
+        );
+    }
+
+    #[test]
+    fn is_buffer_only_true_for_unix_tools_on_refs() {
+        assert!(OutputBuffer::is_buffer_only("grep FAILED @cmd_a1b2c3"));
+        assert!(OutputBuffer::is_buffer_only("tail -50 @file_abc123"));
+        assert!(OutputBuffer::is_buffer_only("diff @cmd_aaa @file_bbb"));
+        assert!(OutputBuffer::is_buffer_only("wc -l @cmd_a1b2c3"));
+    }
+
+    #[test]
+    fn is_buffer_only_false_for_plain_commands() {
+        assert!(!OutputBuffer::is_buffer_only("cargo test"));
+        assert!(!OutputBuffer::is_buffer_only("grep foo /etc/hosts"));
+        assert!(!OutputBuffer::is_buffer_only("cat ./README.md"));
     }
 }

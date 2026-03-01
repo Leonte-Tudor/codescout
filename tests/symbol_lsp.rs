@@ -58,6 +58,7 @@ fn sym(
         end_line,
         start_col: 0,
         children: vec![],
+        detail: None,
     }
 }
 

@@ -74,6 +74,7 @@ fn convert_document_symbols(
                 end_line: ds.range.end.line,
                 start_col: ds.selection_range.start.character,
                 children,
+                detail: None,
             }
         })
         .collect()
@@ -459,6 +460,7 @@ impl LspClient {
                     end_line: si.location.range.end.line,
                     start_col: si.location.range.start.character,
                     children: vec![],
+                    detail: None,
                 }
             })
             .collect())
@@ -551,6 +553,7 @@ impl LspClient {
                         end_line: si.location.range.end.line,
                         start_col: si.location.range.start.character,
                         children: vec![],
+                        detail: None,
                     }
                 })
                 .collect());
@@ -1138,6 +1141,7 @@ struct Point {
                     end_line: si.location.range.end.line,
                     start_col: si.location.range.start.character,
                     children: vec![],
+                    detail: None,
                 }
             })
             .collect();
