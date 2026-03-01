@@ -79,7 +79,6 @@ fn collect_functions(symbols: &[crate::lsp::symbols::SymbolInfo], out: &mut Vec<
                     "kind": sym.kind,
                     "start_line": sym.start_line + 1,
                     "end_line": sym.end_line + 1,
-                    "source": "project",
                 }));
             }
             _ => {}
@@ -191,6 +190,33 @@ mod tests {
         assert!(names.contains(&"world"));
         assert!(names.contains(&"bar"));
         drop(dir);
+    }
+
+    #[test]
+    fn list_functions_omits_source_field() {
+        use crate::lsp::{SymbolInfo, SymbolKind};
+        use std::path::PathBuf;
+
+        let syms = vec![SymbolInfo {
+            name: "my_fn".to_string(),
+            name_path: "my_fn".to_string(),
+            kind: SymbolKind::Function,
+            file: PathBuf::from("src/lib.rs"),
+            start_line: 0,
+            end_line: 5,
+            start_col: 0,
+            children: vec![],
+            detail: None,
+        }];
+
+        let mut out = vec![];
+        collect_functions(&syms, &mut out);
+
+        assert_eq!(out.len(), 1);
+        assert!(
+            out[0].get("source").is_none(),
+            "collect_functions must not emit 'source' field"
+        );
     }
 
     #[tokio::test]
