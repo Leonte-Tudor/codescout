@@ -2796,17 +2796,11 @@ mod tests {
 }
 
 /// ANSI-formatted header + 5-line numbered preview for create_file user output.
-pub fn format_create_file(path: &std::path::Path, content: &str) -> String {
+pub fn format_create_file(content: &str) -> String {
     const PREVIEW_LINES: usize = 5;
-    let filename = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("(unknown)");
     let line_count = content.lines().count();
 
-    let mut out = render_diff_header("create_file", filename);
-    out.push('\n');
-
+    let mut out = String::new();
     let lines: Vec<&str> = content.lines().take(PREVIEW_LINES).collect();
     let lineno_width = line_count.to_string().len();
     for (i, line) in lines.iter().enumerate() {

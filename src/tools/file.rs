@@ -493,7 +493,7 @@ impl Tool for CreateFile {
         crate::util::fs::write_utf8(&resolved, content)?;
         ctx.lsp.notify_file_changed(&resolved).await;
 
-        let user_md = super::user_format::format_create_file(&resolved, content);
+        let user_md = super::user_format::format_create_file(content);
 
         Ok(vec![Content::text(user_md).with_audience(vec![Role::User])])
     }
@@ -593,10 +593,29 @@ impl Tool for FindFile {
     }
 }
 
+#[cfg(test)]
+const DEF_KEYWORDS: &[&str] = &[
+    "fn ",
+    "def ",
+    "func ",
+    "fun ",
+    "function ",
+    "async fn ",
+    "async def ",
+    "async function ",
+    "class ",
+    "struct ",
+    "impl ",
+    "trait ",
+    "interface ",
+    "enum ",
+    "type ",
+];
+
 /// Infers which symbol-aware tool to suggest when `edit_file` is blocked on a source file.
 /// Priority: delete (empty new_string) → structural definition keyword → insertion (new > old) → fallback.
-#[allow(dead_code)]
-pub(crate) fn infer_edit_hint(old_string: &str, new_string: &str) -> &'static str {
+#[cfg(test)]
+fn infer_edit_hint(old_string: &str, new_string: &str) -> &'static str {
     if new_string.is_empty() {
         return "remove_symbol(name_path, path) — deletes the symbol and its doc comments/attributes";
     }
@@ -607,24 +626,7 @@ pub(crate) fn infer_edit_hint(old_string: &str, new_string: &str) -> &'static st
     // Go: func, type
     // JS/TS: function, async function, class, interface, type
     // Java/Kotlin/C#/Swift: class, interface, enum, fun, func
-    let def_keywords = [
-        "fn ",
-        "def ",
-        "func ",
-        "fun ",
-        "function ",
-        "async fn ",
-        "async def ",
-        "async function ",
-        "class ",
-        "struct ",
-        "impl ",
-        "trait ",
-        "interface ",
-        "enum ",
-        "type ",
-    ];
-    if def_keywords.iter().any(|kw| old_string.contains(kw)) {
+    if DEF_KEYWORDS.iter().any(|kw| old_string.contains(kw)) {
         return "replace_symbol(name_path, path, new_body) — replaces the symbol body via LSP";
     }
 
@@ -2247,8 +2249,8 @@ mod tests {
             "block must be user-only"
         );
         let text = format!("{:?}", block);
-        assert!(text.contains("demo.rs"), "block must mention filename");
-        // ANSI header produced by render_diff_header starts with ESC[
+        assert!(text.contains("fn main"), "block must contain file content");
+        // Dim ANSI codes on line numbers
         assert!(text.contains("\\u{1b}["), "block must contain ANSI codes");
     }
 
