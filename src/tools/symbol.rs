@@ -1179,12 +1179,24 @@ fn is_declaration_line(line: &str) -> bool {
 /// Walk backward from `end` (exclusive) until the last included line starts with `}`.
 /// Prevents LSP over-extension from including sibling items (constants, functions, etc.)
 /// that follow immediately after a closing brace (BUG-014).
-fn clamp_end_to_closing_brace(end: usize, lines: &[&str]) -> usize {
+/// Walk backward from `end` (exclusive) until the last included line starts with `}`.
+/// Prevents LSP over-extension from including sibling items (constants, functions, etc.)
+/// that follow immediately after a closing brace (BUG-014).
+///
+/// `floor` prevents walking past the symbol's own start — critical for items that
+/// have no closing `}` (const, static, type aliases, imports). Without a floor,
+/// the walk escapes into unrelated preceding code (BUG-016).
+fn clamp_end_to_closing_brace(end: usize, floor: usize, lines: &[&str]) -> usize {
     let mut e = end;
-    while e > 0 && !lines[e - 1].trim().starts_with('}') {
+    while e > floor && !lines[e - 1].trim().starts_with('}') {
         e -= 1;
     }
-    e
+    if e <= floor {
+        // No closing brace found within the symbol's range — trust the LSP end.
+        end
+    } else {
+        e
+    }
 }
 
 /// Advance `start` past any LSP-reported lead-in tokens: closing `}` variants
@@ -1422,10 +1434,27 @@ impl Tool for RemoveSymbol {
         let lines: Vec<&str> = content.lines().collect();
 
         let trimmed_start = trim_symbol_start(sym.start_line as usize, &lines);
-        let end = clamp_end_to_closing_brace((sym.end_line as usize + 1).min(lines.len()), &lines);
+        let end = clamp_end_to_closing_brace(
+            (sym.end_line as usize + 1).min(lines.len()),
+            trimmed_start,
+            &lines,
+        );
 
         // Scan backwards from trimmed_start to include doc comments and attributes
         let start = scan_backwards_for_docs(trimmed_start, &lines);
+
+        // Defense-in-depth: inverted range would corrupt the file (BUG-016).
+        if end <= start {
+            anyhow::bail!(RecoverableError::with_hint(
+                format!(
+                    "remove_symbol: empty/inverted range (start={}, end={}).                      LSP may have reported an incorrect symbol range for '{}'",
+                    start + 1,
+                    end,
+                    name_path,
+                ),
+                "Try list_symbols(path) to verify the symbol exists with the expected location.",
+            ));
+        }
 
         // Build new lines: everything before + everything after
         let mut new_lines: Vec<&str> = Vec::new();

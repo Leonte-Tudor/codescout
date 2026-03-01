@@ -518,3 +518,63 @@ async fn remove_symbol_does_not_delete_sibling_const() {
         "function must be removed; got:\n{result}"
     );
 }
+
+// ── BUG-016: remove_symbol must handle symbols without closing `}` ────────────
+
+/// A `const` item has no closing `}`. `clamp_end_to_closing_brace` must not
+/// walk backward past the symbol's own range, which would corrupt the file
+/// by producing an inverted range (end < start → content duplication).
+#[tokio::test]
+async fn remove_symbol_handles_const_without_closing_brace() {
+    // File layout (0-indexed):
+    //  0: "fn preceding() {"
+    //  1: "    // body"
+    //  2: "}"
+    //  3: "use std::fmt;"
+    //  4: ""                                   <- blank line
+    //  5: "/// A constant."
+    //  6: "const TARGET: bool = false;"        <- LSP says start=6, end=6
+    //  7: "fn following() {}"
+    let src = "fn preceding() {\n    // body\n}\nuse std::fmt;\n\n/// A constant.\nconst TARGET: bool = false;\nfn following() {}\n";
+
+    let (dir, ctx) = ctx_with_mock(&[("src/lib.rs", src)], |root| {
+        let file = root.join("src/lib.rs");
+        MockLspClient::new().with_symbols(file.clone(), vec![sym("TARGET", 6, 6, file)])
+    })
+    .await;
+
+    RemoveSymbol
+        .call(
+            json!({
+                "path": "src/lib.rs",
+                "name_path": "TARGET"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    let result = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+    assert!(
+        !result.contains("TARGET"),
+        "const must be removed; got:\n{result}"
+    );
+    assert!(
+        !result.contains("A constant"),
+        "doc comment must be removed; got:\n{result}"
+    );
+    assert!(
+        result.contains("fn preceding()"),
+        "preceding function must survive; got:\n{result}"
+    );
+    assert!(
+        result.contains("fn following()"),
+        "following function must survive; got:\n{result}"
+    );
+    // Count occurrences of "use std::fmt;" — must be exactly 1 (no duplication)
+    let use_count = result.matches("use std::fmt;").count();
+    assert_eq!(
+        use_count, 1,
+        "use import must not be duplicated; found {use_count} occurrences in:\n{result}"
+    );
+}

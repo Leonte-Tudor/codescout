@@ -449,7 +449,7 @@ Unknown. Possibly:
 
 **Date:** 2026-03-02
 **Severity:** High — tool hangs (never returns), partial corrupt write left on disk
-**Status:** Open
+**Status:** ✅ FIXED — `clamp_end_to_closing_brace` now takes a `floor` parameter (= `trimmed_start`) so it never walks past the symbol's own range. Defense-in-depth guard rejects `end <= start` before writing. Regression test: `remove_symbol_handles_const_without_closing_brace`.
 
 **What happened:**
 Called `remove_symbol(name_path="USER_OUTPUT_ENABLED", path="src/server.rs")` to delete a
