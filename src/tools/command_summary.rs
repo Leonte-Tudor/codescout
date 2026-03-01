@@ -233,7 +233,6 @@ pub fn summarize_generic(stdout: &str, stderr: &str, exit_code: i32) -> Value {
         "type": "generic",
         "exit_code": exit_code,
         "stdout": summarized_stdout,
-        "total_stdout_lines": total_stdout_lines,
     });
 
     if !stderr.is_empty() {

@@ -1215,6 +1215,11 @@ mod tests {
             "total_stdout_lines should be >= 100: {}",
             result["total_stdout_lines"]
         );
+        let hint = result["hint"].as_str().expect("hint should be present");
+        assert!(
+            hint.contains(output_id),
+            "hint should reference the output_id"
+        );
         let entry = ctx.output_buffer.get(output_id).unwrap();
         assert!(
             entry.stdout.contains("50\n"),
