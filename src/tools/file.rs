@@ -482,18 +482,6 @@ impl Tool for CreateFile {
             Some(h) => json!({ "worktree_hint": h }),
         })
     }
-
-    async fn call_content(&self, input: Value, ctx: &ToolContext) -> Result<Vec<Content>> {
-        super::guard_worktree_write(ctx).await?;
-        let path_str = super::require_str_param(&input, "path")?;
-        let content = super::require_str_param(&input, "content")?;
-        let root = ctx.agent.require_project_root().await?;
-        let security = ctx.agent.security_config().await;
-        let resolved = crate::util::path_security::validate_write_path(path_str, &root, &security)?;
-        crate::util::fs::write_utf8(&resolved, content)?;
-        ctx.lsp.notify_file_changed(&resolved).await;
-        Ok(vec![Content::text("ok")])
-    }
 }
 
 // ── find_file ───────────────────────────────────────────────────────────────

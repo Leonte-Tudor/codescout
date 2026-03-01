@@ -669,57 +669,51 @@ async fn integration_read_file_large_then_query_via_buffer() {
 #[tokio::test]
 async fn integration_speed_bump_two_round_trips() {
     use code_explorer::tools::workflow::RunCommand;
-    use code_explorer::tools::RecoverableError;
 
     let (dir, ctx) = project_with_files(&[("README.md", "# test\n")]).await;
 
-    // First call: dangerous command should be blocked as RecoverableError
+    // First call: dangerous command should return a pending_ack handle, not run immediately
     let r1 = RunCommand
         .call(
             json!({ "command": "rm -rf /tmp/ce_integration_test_nonexistent_dir" }),
             &ctx,
         )
-        .await;
-    assert!(r1.is_err(), "dangerous command should be blocked");
-    let err = r1.unwrap_err();
-    let rec = err
-        .downcast_ref::<RecoverableError>()
-        .expect("blocked command should produce a RecoverableError");
+        .await
+        .expect("dangerous command should return Ok(pending_ack), not Err");
+
+    let handle = r1["pending_ack"]
+        .as_str()
+        .expect("result should have pending_ack string field");
     assert!(
-        rec.message.to_lowercase().contains("dangerous"),
-        "error message should mention dangerous, got: {}",
-        rec.message
+        handle.starts_with("@ack_"),
+        "handle should start with @ack_, got: {handle}"
     );
     assert!(
-        rec.hint
-            .as_deref()
-            .unwrap_or("")
-            .contains("acknowledge_risk"),
-        "hint should mention acknowledge_risk, got: {:?}",
-        rec.hint
+        r1.get("reason").is_some(),
+        "result should include reason, got: {r1}"
+    );
+    assert!(
+        r1["hint"].as_str().unwrap_or("").contains("@ack_"),
+        "hint should reference the ack handle, got: {r1}"
     );
 
-    // Second call: with acknowledge_risk=true → command runs (rm on nonexistent path is fine)
-    let r2 = RunCommand
-        .call(
-            json!({
-                "command": "rm -rf /tmp/ce_integration_test_nonexistent_dir",
-                "acknowledge_risk": true,
-                "timeout_secs": 10
-            }),
-            &ctx,
-        )
-        .await;
-    // The command may exit non-zero (path doesn't exist) but must NOT be a dangerous block
+    // Second call: submit the @ack_* handle → command actually executes
+    let r2 = RunCommand.call(json!({ "command": handle }), &ctx).await;
+
     match &r2 {
-        Ok(_) => {} // happy path
+        Ok(v) => {
+            // Should have exit_code, not another pending_ack
+            assert!(
+                v.get("pending_ack").is_none(),
+                "ack'd command should not re-block, got: {v}"
+            );
+        }
         Err(e) => {
-            // Acceptable only if it is NOT a "dangerous command blocked" error
+            // Acceptable only if it is NOT a dangerous-block error
             let msg = e.to_string().to_lowercase();
             assert!(
-                !msg.contains("dangerous command blocked"),
-                "acknowledged command should not be blocked as dangerous, got: {}",
-                msg
+                !msg.contains("dangerous"),
+                "ack'd command should not be blocked as dangerous, got: {msg}"
             );
         }
     }

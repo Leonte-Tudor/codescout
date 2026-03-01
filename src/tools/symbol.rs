@@ -1048,6 +1048,37 @@ impl Tool for GotoDefinition {
     }
 }
 
+const HOVER_SKIP_TOKENS: &[&str] = &[
+    "pub", "async", "unsafe", "extern", "default", "override", "fn", "struct", "enum", "trait",
+    "impl", "type", "const", "static", "mod", "use", "dyn", "for", "where", "mut", "ref", "let",
+];
+
+/// Find the byte column of the first non-keyword identifier on `line`.
+/// Skips Rust visibility and declaration keywords (`pub`, `fn`, `struct`, …)
+/// so that `hover` on a declaration line lands on the symbol name, not `pub`.
+fn find_first_symbol_col(line: &str) -> u32 {
+    let bytes = line.as_bytes();
+    let mut pos = 0usize;
+    loop {
+        // Skip non-identifier characters (whitespace, parens, angle brackets, etc.)
+        while pos < bytes.len() && !bytes[pos].is_ascii_alphabetic() && bytes[pos] != b'_' {
+            pos += 1;
+        }
+        if pos >= bytes.len() {
+            break;
+        }
+        let start = pos;
+        while pos < bytes.len() && (bytes[pos].is_ascii_alphanumeric() || bytes[pos] == b'_') {
+            pos += 1;
+        }
+        let token = &line[start..pos];
+        if !HOVER_SKIP_TOKENS.contains(&token) {
+            return start as u32;
+        }
+    }
+    // Fallback: first non-whitespace character
+    line.chars().take_while(|c| c.is_whitespace()).count() as u32
+}
 pub struct Hover;
 
 #[async_trait::async_trait]
@@ -1088,7 +1119,7 @@ impl Tool for Hover {
         let full_path = resolve_read_path(ctx, rel_path).await?;
         let (client, lang) = get_lsp_client(ctx, &full_path).await?;
 
-        // Determine column: find identifier on the line, or use first non-whitespace
+        // Determine column: find identifier on the line, or skip modifiers to find first symbol
         let source = std::fs::read_to_string(&full_path)?;
         let source_line = source.lines().nth(line_0 as usize).ok_or_else(|| {
             RecoverableError::with_hint(
@@ -1109,10 +1140,7 @@ impl Tool for Hover {
                 )
             })? as u32
         } else {
-            source_line
-                .chars()
-                .take_while(|c| c.is_whitespace())
-                .count() as u32
+            find_first_symbol_col(source_line)
         };
 
         let hover_text = client.hover(&full_path, line_0, col, &lang).await?;
@@ -1125,7 +1153,7 @@ impl Tool for Hover {
             None => Err(RecoverableError::with_hint(
                 format!("no hover info at {}:{}", full_path.display(), line_1),
                 "The LSP has no type/doc info at this position. \
-                 Try specifying an 'identifier' parameter, or use find_symbol for name-based lookup",
+             Try specifying an 'identifier' parameter, or use find_symbol for name-based lookup",
             )
             .into()),
         }

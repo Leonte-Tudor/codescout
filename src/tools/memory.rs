@@ -1,6 +1,6 @@
 //! Memory tools: persistent per-project knowledge store.
 
-use super::{user_format, Tool, ToolContext};
+use super::{user_format, RecoverableError, Tool, ToolContext};
 use serde_json::{json, Value};
 
 pub struct WriteMemory;
@@ -42,13 +42,9 @@ impl Tool for WriteMemory {
                 } else {
                     p.memory.write(topic, content)?;
                 }
-                Ok(json!({ "status": "ok", "topic": topic }))
+                Ok(json!("ok"))
             })
             .await
-    }
-
-    fn format_for_user(&self, result: &Value) -> Option<String> {
-        Some(user_format::format_write_memory(result))
     }
 }
 
@@ -84,8 +80,12 @@ impl Tool for ReadMemory {
                     &p.memory
                 };
                 match store.read(topic)? {
-                    Some(content) => Ok(json!({ "topic": topic, "content": content })),
-                    None => Ok(json!({ "topic": topic, "content": null, "message": "not found" })),
+                    Some(content) => Ok(json!({ "content": content })),
+                    None => Err(RecoverableError::with_hint(
+                        format!("topic '{}' not found", topic),
+                        "Use list_memories to see available topics",
+                    )
+                    .into()),
                 }
             })
             .await
@@ -168,13 +168,9 @@ impl Tool for DeleteMemory {
                 } else {
                     p.memory.delete(topic)?;
                 }
-                Ok(json!({ "status": "ok", "topic": topic }))
+                Ok(json!("ok"))
             })
             .await
-    }
-
-    fn format_for_user(&self, result: &Value) -> Option<String> {
-        Some(user_format::format_delete_memory(result))
     }
 }
 
@@ -229,7 +225,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(result["status"], "ok");
+        assert_eq!(result, "ok");
 
         let result = ReadMemory
             .call(json!({ "topic": "test-topic" }), &ctx)
@@ -241,11 +237,12 @@ mod tests {
     #[tokio::test]
     async fn read_missing_returns_null() {
         let (_dir, ctx) = test_ctx_with_project().await;
-        let result = ReadMemory
+        let err = ReadMemory
             .call(json!({ "topic": "nonexistent" }), &ctx)
-            .await
-            .unwrap();
-        assert!(result["content"].is_null());
+            .await;
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("nonexistent"), "got: {msg}");
     }
 
     #[tokio::test]
@@ -282,11 +279,8 @@ mod tests {
             .await
             .unwrap();
 
-        let result = ReadMemory
-            .call(json!({ "topic": "to-delete" }), &ctx)
-            .await
-            .unwrap();
-        assert!(result["content"].is_null());
+        let err = ReadMemory.call(json!({ "topic": "to-delete" }), &ctx).await;
+        assert!(err.is_err());
     }
 
     #[tokio::test]
@@ -326,15 +320,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result["content"], "avoid blocking the runtime");
-    }
-
-    #[test]
-    fn write_memory_format_for_user() {
-        use serde_json::json;
-        let tool = WriteMemory;
-        let r = json!({ "status": "ok", "topic": "arch" });
-        let t = tool.format_for_user(&r).unwrap();
-        assert!(t.contains("arch"), "got: {t}");
     }
 
     #[test]
@@ -421,11 +406,11 @@ mod tests {
             .with_project(|p| p.memory.write("shared-topic", "data"))
             .await
             .unwrap();
-        let result = ReadMemory
+        // private store doesn't have the topic → should error, not return shared data
+        let err = ReadMemory
             .call(json!({"topic": "shared-topic", "private": true}), &ctx)
-            .await
-            .unwrap();
-        assert!(result["content"].is_null());
+            .await;
+        assert!(err.is_err());
     }
 
     #[tokio::test]

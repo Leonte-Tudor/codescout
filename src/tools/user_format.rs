@@ -869,23 +869,8 @@ pub fn format_find_file(result: &Value) -> String {
     format!("{total} files{cap_note}")
 }
 
-pub fn format_write_memory(result: &Value) -> String {
-    let topic = result["topic"].as_str().unwrap_or("?");
-    format!("written · {topic}")
-}
-
 pub fn format_read_memory(result: &Value) -> String {
-    let topic = result["topic"].as_str().unwrap_or("?");
-    match result["content"].as_str() {
-        None => format!("not found · {topic}"),
-        Some(content) => {
-            let mut out = topic.to_string();
-            for line in content.lines() {
-                out.push_str(&format!("\n  {line}"));
-            }
-            out
-        }
-    }
+    result["content"].as_str().unwrap_or("").to_string()
 }
 
 pub fn format_list_memories(result: &Value) -> String {
@@ -921,11 +906,6 @@ pub fn format_list_memories(result: &Value) -> String {
         }
     }
     out
-}
-
-pub fn format_delete_memory(result: &Value) -> String {
-    let topic = result["topic"].as_str().unwrap_or("?");
-    format!("deleted · {topic}")
 }
 
 pub fn format_get_config(result: &Value) -> String {
@@ -2899,24 +2879,14 @@ mod diff_tests {
     #[test]
     fn format_read_memory_shows_content() {
         let result = serde_json::json!({
-            "topic": "architecture",
             "content": "## Layers\n\nAgent → Server → Tools"
         });
         let out = format_read_memory(&result);
-        assert!(out.contains("architecture"), "should show topic");
         assert!(out.contains("Layers"), "should show content");
         assert!(
             out.contains("Agent → Server → Tools"),
             "should show full content"
         );
-    }
-
-    #[test]
-    fn format_read_memory_not_found_unchanged() {
-        let result = serde_json::json!({ "topic": "missing", "content": null });
-        let out = format_read_memory(&result);
-        assert!(out.contains("not found"), "should say not found");
-        assert!(out.contains("missing"), "should include topic name");
     }
 
     #[test]
