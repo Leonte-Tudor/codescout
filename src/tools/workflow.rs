@@ -485,7 +485,9 @@ impl Tool for RunCommand {
                 },
                 "acknowledge_risk": {
                     "type": "boolean",
-                    "description": "Bypass speed bump for dangerous commands. Required after a destructive command is detected."
+                    "description": "Bypass dangerous-command check directly. Prefer the @ack_* handle protocol: \
+                                    when a dangerous command is detected a pending_ack handle is returned — \
+                                    re-run as run_command(\"@ack_<id>\") to execute without repeating the full command."
                 }
             }
         })
@@ -502,15 +504,12 @@ impl Tool for RunCommand {
 
         // --- Early dispatch: @ack_* handle ---
         if looks_like_ack_handle(command) {
-            let stored = ctx
-                .output_buffer
-                .get_dangerous(command)
-                .ok_or_else(|| {
-                    super::RecoverableError::with_hint(
-                        "ack handle expired or unknown",
-                        "Re-run the original command to get a fresh handle.",
-                    )
-                })?;
+            let stored = ctx.output_buffer.get_dangerous(command).ok_or_else(|| {
+                super::RecoverableError::with_hint(
+                    "ack handle expired or unknown",
+                    "Re-run the original command to get a fresh handle.",
+                )
+            })?;
             return run_command_inner(
                 &stored.command,
                 &stored.command,
@@ -2066,7 +2065,10 @@ mod tests {
 
         let tool = RunCommand;
         let input = serde_json::json!({ "command": handle });
-        let result = tool.call(input, &ctx).await.expect("ack call should succeed");
+        let result = tool
+            .call(input, &ctx)
+            .await
+            .expect("ack call should succeed");
 
         let stdout = result["stdout"].as_str().unwrap_or("");
         assert!(
