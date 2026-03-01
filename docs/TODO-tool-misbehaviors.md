@@ -22,7 +22,7 @@ capture: what you did, what you expected, what actually happened, and a reproduc
 
 **Date:** 2026-02-28
 **Severity:** High — silently corrupts the file
-**Status:** ✅ FIXED — `expected_content` guard added (commit `e03bce7`)
+**Status:** ✅ SUPERSEDED — `edit_lines` removed; replaced by `edit_file` (old_string/new_string)
 
 **What happened:**
 Wanted to replace `project_explicitly_activated: false,` (line 56) with a variable binding.

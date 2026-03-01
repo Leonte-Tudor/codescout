@@ -24,7 +24,7 @@ cargo run -- index --project .     # Build embedding index
 - **When you notice anything unexpected**, add an entry to that file **before continuing** — even a one-liner. Capture: what you did, what you expected, what happened, and a probable cause.
 - Do not wait until you finish the task. Log it immediately while context is fresh.
 
-This applies to ALL unexpected tool behavior: `edit_lines`, `rename_symbol`, `replace_symbol`, `find_symbol`, `semantic_search`, etc.
+This applies to ALL unexpected tool behavior: `edit_file`, `rename_symbol`, `replace_symbol`, `find_symbol`, `semantic_search`, etc.
 
 
 ## Git Workflow
@@ -53,9 +53,9 @@ src/
 ├── prompts/         # LLM guidance: server_instructions.md, onboarding_prompt.md
 ├── tools/           # Tool implementations by category
 │   ├── output.rs    #   OutputGuard: progressive disclosure (exploring/focused)
-│   ├── file.rs      #   read_file, list_dir, search_pattern, create_file, find_file, edit_lines
+│   ├── file.rs      #   read_file, list_dir, search_pattern, create_file, find_file, edit_file
 │   ├── workflow.rs  #   onboarding, run_command
-│   ├── symbol.rs    #   9 LSP-backed tools (find_symbol, list_symbols, goto_definition, hover, etc.)
+│   ├── symbol.rs    #   10 LSP-backed tools (find_symbol, list_symbols, goto_definition, hover, remove_symbol, etc.)
 │   ├── git.rs       #   git_blame
 │   ├── semantic.rs  #   semantic_search, index_project, index_status (incl. drift)
 │   ├── library.rs   #   list_libraries, index_library
@@ -79,7 +79,7 @@ minimize output by default: names + locations in exploring mode, full bodies
 only in focused mode. Overflow produces actionable guidance ("showing N of M,
 narrow with..."), not truncated garbage.
 
-**No Echo in Write Responses** — Mutation tools (`create_file`, `edit_lines`,
+**No Echo in Write Responses** — Mutation tools (`create_file`, `edit_file`,
 `replace_symbol`, etc.) must never echo back what the LLM just sent. The caller
 already knows the path, content, and size — reflecting them wastes tokens with
 zero information gain. The only new information after a write is success/failure.

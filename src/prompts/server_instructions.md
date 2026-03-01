@@ -48,7 +48,8 @@ git blame, semantic search (embeddings), and project memory.
 
 - `replace_symbol(name_path, path, new_body)` — replace entire symbol body (preferred for code)
 - `insert_code(name_path, path, code, position)` — insert before or after a named symbol
-- `edit_lines(path, start_line, delete_count, new_text, expected_content?)` — line-level splice for non-code files or when symbol tools don't fit. Pass `expected_content` to guard against wrong-line edits: if the content at `start_line` doesn't match, the edit is aborted with an error showing what was actually there. May span multiple lines — the corresponding number of lines in the file are checked.
+- `edit_file(path, old_string, new_string, replace_all?)` — find-and-replace: locates old_string in the file and replaces it with new_string. Must match exactly (whitespace-sensitive). Fails if not found; fails if multiple matches unless replace_all is true. Empty new_string deletes the match.
+- `remove_symbol(name_path, path)` — delete a symbol entirely, including its doc comments and attributes
 - `create_file(path, content)` — create or overwrite a file
 
 ### Refactor
@@ -109,4 +110,4 @@ To clean up: `git worktree prune` from the main repo root, then start a new sess
 3. **Semantic search for "how does X work?"** Then drill into results with symbol tools.
 4. **Exploring mode first.** Only `detail_level: "full"` after you know what you need.
 5. **Respect overflow hints.** Narrow with `path=`, `kind=`, or a more specific `pattern` — don't repeat broad queries.
-6. **Prefer symbol edits** (`replace_symbol`, `insert_code`, `rename_symbol`) over `edit_lines` for code files.
+6. **Prefer symbol edits** (`replace_symbol`, `insert_code`, `remove_symbol`, `rename_symbol`) for code. Use `edit_file` when symbol tools don't fit.
