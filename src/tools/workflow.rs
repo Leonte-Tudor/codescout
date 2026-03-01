@@ -1858,6 +1858,17 @@ mod tests {
             draft.contains("gitignored"),
             "draft should explain that private memories are gitignored"
         );
+        // Ensure string continuation escapes did not embed leading whitespace.
+        // Each bullet line must start with '-', not with spaces.
+        for line in draft.lines() {
+            if line.contains("Personal preferences") || line.contains("Machine-specific config") {
+                assert!(
+                    line.starts_with('-'),
+                    "bullet line must not have leading spaces; got: {:?}",
+                    line
+                );
+            }
+        }
     }
 
     #[test]

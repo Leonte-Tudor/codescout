@@ -668,8 +668,13 @@ mod tests {
         let project = tempdir().unwrap();
         // /tmp itself must exist on the system for this test to be meaningful
         let target = PathBuf::from("/tmp/code-explorer-test-write.txt");
-        let result = validate_write_path(target.to_str().unwrap(), project.path(), &default_config());
-        assert!(result.is_ok(), "writes to /tmp should be allowed: {:?}", result.err());
+        let result =
+            validate_write_path(target.to_str().unwrap(), project.path(), &default_config());
+        assert!(
+            result.is_ok(),
+            "writes to /tmp should be allowed: {:?}",
+            result.err()
+        );
         assert_eq!(result.unwrap(), target);
     }
 
@@ -684,7 +689,10 @@ mod tests {
         };
         let result = validate_write_path("/tmp/secret/key", project.path(), &config);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("protected location"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("protected location"));
     }
 
     #[test]
@@ -1105,9 +1113,6 @@ mod tests {
     fn source_file_access_blocks_cat_rs_file_after_heredoc_segment() {
         // A pipe AFTER a heredoc segment must still be checked independently.
         // `cat <<'EOF' ... EOF | cat src/main.rs` — second segment is a real read.
-        assert!(check_source_file_access(
-            "cat <<'EOF'\nhello\nEOF\n | cat src/main.rs"
-        )
-        .is_some());
+        assert!(check_source_file_access("cat <<'EOF'\nhello\nEOF\n | cat src/main.rs").is_some());
     }
 }

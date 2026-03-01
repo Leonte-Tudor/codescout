@@ -489,8 +489,7 @@ impl Tool for CreateFile {
         let content = super::require_str_param(&input, "content")?;
         let root = ctx.agent.require_project_root().await?;
         let security = ctx.agent.security_config().await;
-        let resolved =
-            crate::util::path_security::validate_write_path(path_str, &root, &security)?;
+        let resolved = crate::util::path_security::validate_write_path(path_str, &root, &security)?;
         crate::util::fs::write_utf8(&resolved, content)?;
         ctx.lsp.notify_file_changed(&resolved).await;
 
