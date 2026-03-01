@@ -151,3 +151,4 @@ To clean up: `git worktree prune` from the main repo root, then start a new sess
 6. **Prefer symbol edits** (`replace_symbol`, `insert_code`, `remove_symbol`, `rename_symbol`) for code. Use `edit_file` when symbol tools don't fit.
 7. **`run_command` is already in the project root.** Never prefix with `cd /abs/path &&`. Use `cwd` param for subdirectories only.
 8. **Don't inline-pipe `run_command` output.** Run the command bare, then query the buffer in a follow-up: `cargo test` → `grep FAILED @cmd_id`. Never `cargo test 2>&1 | grep FAILED`.
+9. **Buffer queries return ≤ 50 lines inline.** When querying a `@ref` (e.g. `grep pattern @cmd_id`, `jq '.field' @tool_abc`), output above 50 lines is truncated — check `truncated`/`stdout_total` fields to decide if you need a narrower query. Do NOT pipe buffer queries (`grep @ref | head`) — run the targeted command directly.
