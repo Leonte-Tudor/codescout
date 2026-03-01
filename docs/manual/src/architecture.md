@@ -313,5 +313,7 @@ team members share the same configuration. See
   `project.toml`.
 - [Embedding Backends](configuration/embedding-backends.md) -- configuring
   Ollama, OpenAI, or local embeddings.
+- [Semantic Search Concepts](concepts/semantic-search.md) — how the embedding
+  pipeline works, similarity scoring, and when to reach for semantic vs symbol search
 - The full internal architecture with contributor-level detail is in
   `docs/ARCHITECTURE.md` in the repository root.
