@@ -106,21 +106,75 @@ impl OutputBuffer {
 
     /// Get an entry by handle, refreshing its LRU position.
     ///
+    /// For `@file_*` handles (entries with `source_path` set), checks the file's
+    /// mtime against the stored timestamp. If the file is newer, re-reads its content
+    /// and updates the entry in-place. If the file is gone or unreadable, returns `None`.
+    ///
     /// Supports a `.err` suffix on the handle (e.g. `@cmd_xxx.err`),
     /// which returns the same entry (caller decides what to extract).
     pub fn get(&self, id: &str) -> Option<BufferEntry> {
         let canonical = id.strip_suffix(".err").unwrap_or(id);
         let mut inner = self.inner.lock().unwrap();
-        if inner.entries.contains_key(canonical) {
-            // Refresh LRU order: move to end
-            if let Some(pos) = inner.order.iter().position(|k| k == canonical) {
-                inner.order.remove(pos);
-                inner.order.push(canonical.to_string());
-            }
-            inner.entries.get(canonical).cloned()
-        } else {
-            None
+
+        if !inner.entries.contains_key(canonical) {
+            return None;
         }
+
+        // For file-backed entries: check mtime and refresh if stale.
+        let needs_refresh = if let Some(entry) = inner.entries.get(canonical) {
+            if let Some(ref path) = entry.source_path {
+                match std::fs::metadata(path) {
+                    Err(_) => {
+                        // File gone or unreadable — evict and return None.
+                        inner.order.retain(|k| k != canonical);
+                        inner.entries.remove(canonical);
+                        return None;
+                    }
+                    Ok(meta) => {
+                        let mtime_ms = meta
+                            .modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0);
+                        mtime_ms > entry.timestamp
+                    }
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if needs_refresh {
+            let path = inner.entries[canonical].source_path.clone().unwrap();
+            match std::fs::read_to_string(&path) {
+                Ok(content) => {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    if let Some(entry) = inner.entries.get_mut(canonical) {
+                        entry.stdout = content;
+                        entry.timestamp = now;
+                    }
+                }
+                Err(_) => {
+                    // Became unreadable between stat and read — evict.
+                    inner.order.retain(|k| k != canonical);
+                    inner.entries.remove(canonical);
+                    return None;
+                }
+            }
+        }
+
+        // Refresh LRU order: move to end.
+        if let Some(pos) = inner.order.iter().position(|k| k == canonical) {
+            inner.order.remove(pos);
+            inner.order.push(canonical.to_string());
+        }
+        inner.entries.get(canonical).cloned()
     }
 
     /// Store file content under a `@file_*` handle.
@@ -721,10 +775,18 @@ mod tests {
 
     #[test]
     fn store_file_sets_source_path() {
+        use std::fs;
+
+        // Use a real file — get() stats it and evicts non-existent paths.
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("foo.rs");
+        fs::write(&file_path, "content").unwrap();
+
         let buf = OutputBuffer::new(10);
-        let id = buf.store_file("/tmp/foo.rs".to_string(), "content".to_string());
+        let path_str = file_path.to_string_lossy().to_string();
+        let id = buf.store_file(path_str.clone(), "content".to_string());
         let entry = buf.get(&id).unwrap();
-        assert_eq!(entry.source_path, Some(PathBuf::from("/tmp/foo.rs")));
+        assert_eq!(entry.source_path, Some(file_path));
     }
 
     #[test]
@@ -741,5 +803,82 @@ mod tests {
         let id = buf.store_tool("my_tool", "output".to_string());
         let entry = buf.get(&id).unwrap();
         assert_eq!(entry.source_path, None);
+    }
+
+    #[test]
+    fn get_file_handle_refreshes_when_file_modified() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+
+        // Write initial content
+        fs::write(&file_path, "original content").unwrap();
+
+        let buf = OutputBuffer::new(10);
+        let id = buf.store_file(
+            file_path.to_string_lossy().to_string(),
+            "original content".to_string(),
+        );
+
+        // Sandwich step 1: verify cached content is served
+        assert_eq!(buf.get(&id).unwrap().stdout, "original content");
+
+        // Sandwich step 2: modify file on disk AND advance mtime past the stored timestamp
+        fs::write(&file_path, "updated content").unwrap();
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+        filetime::set_file_mtime(&file_path, filetime::FileTime::from_system_time(future)).unwrap();
+
+        // Sandwich step 3: get() must return fresh content
+        let entry = buf.get(&id).unwrap();
+        assert_eq!(entry.stdout, "updated content");
+    }
+
+    #[test]
+    fn get_file_handle_returns_none_when_file_deleted() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+        fs::write(&file_path, "hello").unwrap();
+
+        let buf = OutputBuffer::new(10);
+        let id = buf.store_file(
+            file_path.to_string_lossy().to_string(),
+            "hello".to_string(),
+        );
+
+        assert!(buf.get(&id).is_some());
+
+        fs::remove_file(&file_path).unwrap();
+
+        assert!(buf.get(&id).is_none());
+    }
+
+    #[test]
+    fn get_file_handle_unmodified_returns_cached() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+        fs::write(&file_path, "stable content").unwrap();
+
+        let buf = OutputBuffer::new(10);
+        let id = buf.store_file(
+            file_path.to_string_lossy().to_string(),
+            "stable content".to_string(),
+        );
+
+        // Two gets without touching the file — both return cached content
+        assert_eq!(buf.get(&id).unwrap().stdout, "stable content");
+        assert_eq!(buf.get(&id).unwrap().stdout, "stable content");
+    }
+
+    #[test]
+    fn get_cmd_handle_not_affected_by_refresh_logic() {
+        let buf = OutputBuffer::new(10);
+        let id = buf.store("echo hi".to_string(), "hi".to_string(), "".to_string(), 0);
+        let entry = buf.get(&id).unwrap();
+        assert_eq!(entry.stdout, "hi");
     }
 }
