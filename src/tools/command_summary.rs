@@ -259,16 +259,13 @@ pub fn count_lines(s: &str) -> usize {
 /// Returns `(truncated_text, lines_shown, lines_total)`.
 /// When `lines_total <= max_lines`, `text` is returned unchanged and
 /// `lines_shown == lines_total`.
+#[allow(dead_code)]
 pub(crate) fn truncate_lines(text: &str, max_lines: usize) -> (String, usize, usize) {
     let total = count_lines(text);
     if total <= max_lines {
         return (text.to_string(), total, total);
     }
-    let truncated = text
-        .lines()
-        .take(max_lines)
-        .collect::<Vec<_>>()
-        .join("\n");
+    let truncated = text.lines().take(max_lines).collect::<Vec<_>>().join("\n");
     (truncated, max_lines, total)
 }
 
@@ -525,7 +522,10 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
 
     #[test]
     fn truncate_lines_exact_limit_not_truncated() {
-        let text: String = (1..=5).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let text: String = (1..=5)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let (out, shown, total) = truncate_lines(&text, 5);
         assert_eq!(shown, 5);
         assert_eq!(total, 5);
@@ -534,7 +534,10 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
 
     #[test]
     fn truncate_lines_long_truncates_correctly() {
-        let text: String = (1..=10).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let text: String = (1..=10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let (out, shown, total) = truncate_lines(&text, 3);
         assert_eq!(shown, 3);
         assert_eq!(total, 10);
