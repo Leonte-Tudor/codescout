@@ -17,12 +17,13 @@ pub mod semantic;
 pub mod symbol;
 pub mod usage;
 pub use usage::GetUsageStats;
+pub mod user_format;
 pub mod workflow;
 
 use std::sync::Arc;
 
 use anyhow::Result;
-use rmcp::model::Content;
+use rmcp::model::{Content, Role};
 use serde_json::Value;
 
 use crate::agent::Agent;
@@ -178,16 +179,34 @@ pub trait Tool: Send + Sync {
     /// Execute the tool with the given input (already parsed from JSON)
     async fn call(&self, input: Value, ctx: &ToolContext) -> Result<Value>;
 
+    /// Optional human-readable formatting for the tool result.
+    /// When Some, call_content() emits dual-audience blocks:
+    ///   1. Compact JSON (audience: assistant)
+    ///   2. Formatted plain text (audience: user)
+    fn format_for_user(&self, _result: &Value) -> Option<String> {
+        None
+    }
+
     /// Returns MCP content blocks for this tool call.
     ///
-    /// Default: delegates to `call()` and wraps the JSON value as plain text
-    /// with no audience annotation — shown to both the LLM and the user.
-    /// Override to return audience-split blocks (e.g. user-only preview).
+    /// If format_for_user() returns Some, emits dual-audience blocks:
+    /// compact JSON for the assistant, formatted text for the user.
+    /// Otherwise, falls back to pretty-printed JSON for both.
+    /// Override directly for full control over content blocks.
     async fn call_content(&self, input: Value, ctx: &ToolContext) -> Result<Vec<Content>> {
         let val = self.call(input, ctx).await?;
-        Ok(vec![Content::text(
-            serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string()),
-        )])
+        match self.format_for_user(&val) {
+            Some(user_text) => {
+                let json = serde_json::to_string(&val).unwrap_or_else(|_| val.to_string());
+                Ok(vec![
+                    Content::text(json).with_audience(vec![Role::Assistant]),
+                    Content::text(user_text).with_audience(vec![Role::User]),
+                ])
+            }
+            None => Ok(vec![Content::text(
+                serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string()),
+            )]),
+        }
     }
 }
 

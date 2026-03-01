@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use crate::tools::RecoverableError;
 
 use super::output::{OutputGuard, OutputMode};
+use super::user_format;
 use super::{Tool, ToolContext};
 use crate::ast;
 use crate::lsp::SymbolInfo;
@@ -475,6 +476,10 @@ impl Tool for ListSymbols {
             .into())
         }
     }
+
+    fn format_for_user(&self, result: &Value) -> Option<String> {
+        Some(user_format::format_list_symbols(result))
+    }
 }
 
 // ── find_symbol ────────────────────────────────────────────────────────────
@@ -772,6 +777,10 @@ impl Tool for FindSymbol {
         }
         Ok(result)
     }
+
+    fn format_for_user(&self, result: &Value) -> Option<String> {
+        Some(user_format::format_find_symbol(result))
+    }
 }
 
 // ── find_referencing_symbols ───────────────────────────────────────────────
@@ -982,6 +991,10 @@ impl Tool for GotoDefinition {
             "from": format!("{}:{}", full_path.file_name().unwrap_or_default().to_string_lossy(), line_1),
         }))
     }
+
+    fn format_for_user(&self, result: &Value) -> Option<String> {
+        Some(user_format::format_goto_definition(result))
+    }
 }
 
 pub struct Hover;
@@ -1065,6 +1078,10 @@ impl Tool for Hover {
             )
             .into()),
         }
+    }
+
+    fn format_for_user(&self, result: &Value) -> Option<String> {
+        Some(user_format::format_hover(result))
     }
 }
 

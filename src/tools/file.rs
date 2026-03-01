@@ -3,6 +3,7 @@
 use anyhow::Result;
 use serde_json::{json, Value};
 
+use super::user_format;
 use super::{RecoverableError, Tool, ToolContext};
 use crate::util::text::extract_lines;
 use rmcp::model::{Content, Role};
@@ -151,6 +152,10 @@ impl Tool for ReadFile {
             Ok(json!({ "content": text, "total_lines": total_lines, "source": source_tag }))
         }
     }
+
+    fn format_for_user(&self, result: &Value) -> Option<String> {
+        Some(user_format::format_read_file(result))
+    }
 }
 
 // ── list_dir ────────────────────────────────────────────────────────────────
@@ -250,6 +255,10 @@ impl Tool for ListDir {
             result["overflow"] = OutputGuard::overflow_json(&ov);
         }
         Ok(result)
+    }
+
+    fn format_for_user(&self, result: &Value) -> Option<String> {
+        Some(user_format::format_list_dir(result))
     }
 }
 
@@ -416,6 +425,10 @@ impl Tool for SearchPattern {
             });
         }
         Ok(result)
+    }
+
+    fn format_for_user(&self, result: &Value) -> Option<String> {
+        Some(user_format::format_search_pattern(result))
     }
 }
 

@@ -1,6 +1,6 @@
 //! Semantic search tools backed by the embedding index.
 
-use super::{Tool, ToolContext};
+use super::{user_format, Tool, ToolContext};
 use serde_json::{json, Value};
 
 pub struct SemanticSearch;
@@ -133,6 +133,10 @@ impl Tool for SemanticSearch {
             }
         }
         Ok(result)
+    }
+
+    fn format_for_user(&self, result: &Value) -> Option<String> {
+        Some(user_format::format_semantic_search(result))
     }
 }
 
