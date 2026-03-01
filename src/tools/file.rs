@@ -2319,3 +2319,6 @@ mod tests {
         );
     }
 }
+    }
+>>>>>>> 7306554 (style: remove redundant inner use rmcp::model::Role in call_content test)
+}

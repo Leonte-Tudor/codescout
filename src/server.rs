@@ -194,7 +194,7 @@ impl ServerHandler for CodeExplorerServer {
         let result = if let Some(secs) = timeout_secs {
             tokio::time::timeout(
                 std::time::Duration::from_secs(secs),
-                recorder.record(&req.name, || tool.call(input, &ctx)),
+                recorder.record_content(&req.name, || tool.call_content(input, &ctx)),
             )
             .await
             .unwrap_or_else(|_| {
@@ -206,15 +206,11 @@ impl ServerHandler for CodeExplorerServer {
                 ))
             })
         } else {
-            recorder.record(&req.name, || tool.call(input, &ctx)).await
+            recorder.record_content(&req.name, || tool.call_content(input, &ctx)).await
         };
 
         match result {
-            Ok(output) => {
-                let text =
-                    serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string());
-                Ok(CallToolResult::success(vec![Content::text(text)]))
-            }
+            Ok(blocks) => Ok(CallToolResult::success(blocks)),
             Err(e) => Ok(route_tool_error(e)),
         }
     }

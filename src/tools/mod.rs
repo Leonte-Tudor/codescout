@@ -20,6 +20,7 @@ pub mod workflow;
 use std::sync::Arc;
 
 use anyhow::Result;
+use rmcp::model::Content;
 use serde_json::Value;
 
 use crate::agent::Agent;
@@ -174,6 +175,18 @@ pub trait Tool: Send + Sync {
 
     /// Execute the tool with the given input (already parsed from JSON)
     async fn call(&self, input: Value, ctx: &ToolContext) -> Result<Value>;
+
+    /// Returns MCP content blocks for this tool call.
+    ///
+    /// Default: delegates to `call()` and wraps the JSON value as plain text
+    /// with no audience annotation — shown to both the LLM and the user.
+    /// Override to return audience-split blocks (e.g. user-only preview).
+    async fn call_content(&self, input: Value, ctx: &ToolContext) -> Result<Vec<Content>> {
+        let val = self.call(input, ctx).await?;
+        Ok(vec![Content::text(
+            serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string()),
+        )])
+    }
 }
 
 #[cfg(test)]
