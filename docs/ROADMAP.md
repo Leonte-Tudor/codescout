@@ -20,7 +20,7 @@ See [`FEATURES.md`](FEATURES.md) for the full feature reference. Summary:
 - **31 tools** across 10 categories (file, workflow, symbol, AST, git, semantic, memory, config, library, usage)
 - **LSP client** — transport, lifecycle, document symbols, references, definition, hover, rename + text sweep
 - **Tree-sitter AST** — symbol extraction + docstrings for Rust, Python, TypeScript, Go, Java, Kotlin
-- **Semantic search** — embedding pipeline with sqlite-vec ANN-indexed KNN, incremental rebuilds, drift detection
+- **Semantic search** — embedding pipeline with sqlite-vec ANN-indexed KNN, incremental rebuilds, drift detection ([concepts](manual/src/concepts/semantic-search.md), [backends](manual/src/configuration/embedding-backends.md))
 - **Library search** — navigate third-party deps via LSP-inferred discovery, scoped symbol nav + semantic search
 - **OutputBuffer** — `@cmd_*` / `@file_*` handles; large output stored, queried with Unix tools
 - **run_command** — cwd, acknowledge_risk, dangerous-cmd speed bump, smart summaries per command type
@@ -42,7 +42,7 @@ See [`FEATURES.md`](FEATURES.md) for the full feature reference. Summary:
 
 - Additional tree-sitter grammars
 - Additional LSP server configurations
-- sqlite-vec integration for vector similarity (currently pure-Rust cosine)
+- sqlite-vec integration for vector similarity (currently pure-Rust cosine — see [Semantic Search](manual/src/concepts/semantic-search.md))
 - HTTP/SSE transport for non-Claude Code agents
 - Companion Claude Code plugin: `code-explorer-routing` (live at [mareurs/claude-plugins](https://github.com/mareurs/claude-plugins))
 

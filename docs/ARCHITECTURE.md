@@ -2,6 +2,10 @@
 
 ## Overview
 
+> **User documentation:** This file covers contributor-level internals. For the
+> user-facing manual — installation, tool reference, and semantic search guide — see
+> [`docs/manual/src/`](manual/src/introduction.md).
+
 code-explorer is an MCP server that gives LLMs IDE-grade code intelligence. It exposes symbol-level tools so agents can navigate and edit code semantically.
 
 ```
