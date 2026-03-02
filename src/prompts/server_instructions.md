@@ -133,7 +133,6 @@ don't probe the same `@ref` multiple times for overlapping information.
 - `get_config` — show active project config and server settings
 - `index_project` — build or incrementally update the semantic search index
 - `index_status` — index stats, staleness, and drift scores. Pass `threshold` to query drift.
-- `get_usage_stats` — per-tool call counts, error rates, latency percentiles
 
 ### Memory (persistent per-project knowledge)
 
@@ -153,7 +152,7 @@ to customize how the AI navigates and works with your codebase.
 ## Worktrees
 
 After `EnterWorktree`, call `activate_project` with the worktree path — write tools are NOT automatically coupled to the shell's working directory.
-If you forget, write tools will silently modify the main repo instead of the worktree — they will include a `"worktree_hint"` field in their response to alert you. When you see that field, call `activate_project` and redo the write.
+If you forget, write tools will silently modify the main repo instead of the worktree — call `activate_project` and redo the write.
 To clean up: `git worktree prune` from the main repo root, then start a new session.
 
 ## Rules

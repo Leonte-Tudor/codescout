@@ -7,7 +7,7 @@
 - `src/agent.rs` — `Agent` orchestrator, `ActiveProject` state
 
 ## Key Abstractions
-- `Tool` trait (`src/tools/mod.rs:167`) — interface for all 31 tools
+- `Tool` trait (`src/tools/mod.rs`) — interface for all 32 tools
 - `OutputGuard` (`src/tools/output.rs:35`) — progressive disclosure: Exploring vs Focused
 - `LspClientOps` / `LspProvider` (`src/lsp/ops.rs`) — testable LSP abstraction
 - `Embedder` trait (`src/embed/mod.rs:33`) — embedding backend abstraction

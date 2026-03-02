@@ -5,7 +5,7 @@ You have just onboarded this project. Below you'll find pre-gathered context fro
 1. **Do NOT duplicate CLAUDE.md** — If CLAUDE.md content is provided below, it's loaded every session automatically. Memories should *supplement* it, not repeat it. If CLAUDE.md already covers dev commands, your `development-commands` memory should only add what's missing.
 2. **Be specific** — Include file paths, exact command names, concrete patterns. "Uses clean architecture" is useless. "api/ → service/ → repository/ with interface+impl pattern" is useful.
 3. **Be concise** — Each memory should be 15–40 lines. Longer means too much detail.
-4. **Explore before writing** — The gathered data gives you a head start, but use code-explorer tools to verify and fill gaps: `get_symbols_overview("src")` for architecture, `find_symbol` for key abstractions, `list_functions` for API surface.
+4. **Explore before writing** — The gathered data gives you a head start, but use code-explorer tools to verify and fill gaps: `list_symbols("src/")` for architecture, `find_symbol` for key abstractions, `list_functions` for API surface.
 5. **Confirm with the user** — After creating all 6 memories, summarize what you wrote and ask if anything needs correction.
 6. **Private memories** — Use `write_memory(topic, content, private=true)` for project-local notes that should not appear in system instructions (e.g. personal debugging notes, temporary state). Standard `write_memory` creates shared memories visible to all agents.
 
