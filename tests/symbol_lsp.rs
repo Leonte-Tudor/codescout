@@ -6,7 +6,9 @@
 
 use code_explorer::agent::Agent;
 use code_explorer::lsp::{MockLspClient, MockLspProvider, SymbolInfo, SymbolKind};
-use code_explorer::tools::symbol::{FindSymbol, InsertCode, RemoveSymbol, ReplaceSymbol};
+use code_explorer::tools::symbol::{
+    FindSymbol, GotoDefinition, InsertCode, RemoveSymbol, ReplaceSymbol,
+};
 use code_explorer::tools::{Tool, ToolContext};
 use serde_json::json;
 
@@ -732,4 +734,67 @@ async fn find_symbol_name_path_does_not_return_local_variable_children() {
         "name_path lookup must return exactly the matching symbol, not its Variable children; got: {symbols:?}"
     );
     assert_eq!(symbols[0]["name"], "my_fn");
+}
+
+// ── goto_definition: no-identifier fallback (BUG-012) ─────────────────────────
+
+/// When `identifier` is omitted, `goto_definition` must use the first
+/// non-whitespace column of the line, not error with "identifier not found".
+///
+/// Regression for BUG-012: the old code called `str::find(ident)` which returned
+/// `None` for nearly every call, causing a 100% error rate.
+#[tokio::test]
+async fn goto_definition_unknown_identifier_falls_back_to_first_nonwhitespace() {
+    // Line 0 (1-indexed: line 1) has 4 spaces of indent before "let".
+    // First non-whitespace column = 4.
+    let src = "    let foo = 1;\n";
+
+    let (_dir, ctx) = ctx_with_mock(&[("src/lib.rs", src)], |root| {
+        let def_path = root.join("src/lib.rs");
+        // Configure a definition at exactly (line=0, col=4) — the expected column.
+        // If the tool uses any other column (e.g. 0), the mock returns [] and
+        // the tool fails with "no definition found" instead of the expected result.
+        MockLspClient::new().with_definitions(
+            0,
+            4,
+            vec![lsp_types::Location {
+                uri: url::Url::from_file_path(&def_path)
+                    .unwrap()
+                    .as_str()
+                    .parse()
+                    .unwrap(),
+                range: lsp_types::Range {
+                    start: lsp_types::Position {
+                        line: 0,
+                        character: 4,
+                    },
+                    end: lsp_types::Position {
+                        line: 0,
+                        character: 7,
+                    },
+                },
+            }],
+        )
+    })
+    .await;
+
+    let result = GotoDefinition
+        .call(
+            json!({
+                "path": "src/lib.rs",
+                "line": 1
+                // no "identifier" — must fall back to first-nonwhitespace column
+            }),
+            &ctx,
+        )
+        .await
+        .expect("should succeed: omitting identifier must not cause 'identifier not found'");
+
+    let defs = result["definitions"].as_array().unwrap();
+    assert_eq!(
+        defs.len(),
+        1,
+        "mock should return the pre-configured definition at col=4; \
+         if col is wrong the mock returns [] and the tool errors instead"
+    );
 }

@@ -11,19 +11,35 @@ use crate::lsp::SymbolInfo;
 
 pub struct MockLspClient {
     symbols: HashMap<PathBuf, Vec<SymbolInfo>>,
+    definitions: HashMap<(u32, u32), Vec<lsp_types::Location>>,
 }
 
 impl MockLspClient {
     pub fn new() -> Self {
         Self {
             symbols: HashMap::new(),
+            definitions: HashMap::new(),
         }
     }
 
     /// Pre-load symbol results for a given file path.
     /// The path must match exactly what the tool passes to `document_symbols`.
+    /// Pre-load symbol results for a given file path.
+    /// The path must match exactly what the tool passes to `document_symbols`.
     pub fn with_symbols(mut self, path: impl Into<PathBuf>, syms: Vec<SymbolInfo>) -> Self {
         self.symbols.insert(path.into(), syms);
+        self
+    }
+
+    /// Pre-load definition results for a specific (line, col) position (0-indexed).
+    /// `goto_definition` returns these locations only when called with an exact match.
+    pub fn with_definitions(
+        mut self,
+        line: u32,
+        col: u32,
+        locations: Vec<lsp_types::Location>,
+    ) -> Self {
+        self.definitions.insert((line, col), locations);
         self
     }
 }
@@ -61,11 +77,15 @@ impl LspClientOps for MockLspClient {
     async fn goto_definition(
         &self,
         _path: &Path,
-        _line: u32,
-        _col: u32,
+        line: u32,
+        col: u32,
         _language_id: &str,
     ) -> anyhow::Result<Vec<lsp_types::Location>> {
-        Ok(vec![])
+        Ok(self
+            .definitions
+            .get(&(line, col))
+            .cloned()
+            .unwrap_or_default())
     }
 
     async fn hover(
