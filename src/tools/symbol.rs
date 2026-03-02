@@ -249,19 +249,17 @@ fn symbol_to_json(
 /// shows the symbol spans multiple lines. Returns RecoverableError instead of
 /// silently fixing — consistent with "trust LSP, validate, fail loudly".
 fn validate_symbol_range(sym: &SymbolInfo) -> anyhow::Result<()> {
-    if sym.start_line != sym.end_line {
-        return Ok(());
-    }
     let Ok(ast_syms) = crate::ast::extract_symbols(&sym.file) else {
         return Ok(());
     };
     if let Some(ast_end) = find_ast_end_line_in(&ast_syms, &sym.name, sym.start_line) {
-        if ast_end > sym.start_line + 1 {
+        if ast_end > sym.end_line {
             anyhow::bail!(RecoverableError::with_hint(
                 format!(
-                    "LSP returned suspicious range for '{}' (line {}, but AST shows it spans to line {})",
+                    "LSP returned suspicious range for '{}' (lines {}-{}, but AST shows it spans to line {})",
                     sym.name,
                     sym.start_line + 1,
+                    sym.end_line + 1,
                     ast_end + 1,
                 ),
                 "The LSP server may have returned a selection range instead of the full symbol range. \
@@ -2674,6 +2672,40 @@ impl Point {
 
         let result = validate_symbol_range(&sym);
         assert!(result.is_ok(), "good range should be accepted");
+    }
+
+    /// Truncated end_line (end inside body, not at closing `}`) must be rejected.
+    /// This is the BUG-018 pattern: start != end but end < AST end.
+    #[test]
+    fn validate_symbol_range_rejects_truncated_end_line() {
+        use crate::lsp::SymbolKind;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("lib.rs");
+        // 3-line function (0-indexed lines 0..2)
+        std::fs::write(&file, "fn target() {\n    old_body();\n}\n").unwrap();
+
+        let sym = SymbolInfo {
+            name: "target".to_string(),
+            name_path: "target".to_string(),
+            kind: SymbolKind::Function,
+            file: file.clone(),
+            start_line: 0,
+            end_line: 1, // truncated — inside body, misses closing `}` at line 2
+            start_col: 0,
+            children: vec![],
+            detail: None,
+        };
+
+        let result = validate_symbol_range(&sym);
+        assert!(
+            result.is_err(),
+            "truncated end_line should be rejected; got Ok"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("suspicious range"),
+            "error should mention suspicious range; got: {msg}"
+        );
     }
 
     // ── validate_symbol_range: multi-language coverage ────────────────────────

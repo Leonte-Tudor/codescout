@@ -256,6 +256,59 @@ async fn replace_symbol_rejects_stale_lsp_start_line() {
     );
 }
 
+// ── BUG-018: replace_symbol truncated end_line (inside body, misses closing `}`) ──
+
+/// When LSP reports an end_line that lands inside the function body instead of
+/// at the closing `}`, trusting that range causes replace_symbol to splice only
+/// the first N lines and leave the tail of the old body in the file — stray
+/// tokens, compilation failure, silent corruption.
+///
+/// validate_symbol_range must catch `end_line < AST end_line` and return
+/// RecoverableError before touching the file. Regression test for BUG-018.
+#[tokio::test]
+async fn replace_symbol_rejects_truncated_end_line() {
+    // File layout (0-indexed):
+    //  0: "fn target() {"       ← LSP start=0 (correct)
+    //  1: "    old_body();"     ← LSP end=1   (WRONG — truncated, misses `}`)
+    //  2: "}"                   ← actual end=2, not covered by LSP range
+    let src = "fn target() {\n    old_body();\n}\n";
+
+    let (dir, ctx) = ctx_with_mock(&[("src/lib.rs", src)], |root| {
+        let file = root.join("src/lib.rs");
+        MockLspClient::new().with_symbols(
+            file.clone(),
+            // end_line=1 is inside the body — truncated off-by-one (BUG-018 pattern)
+            vec![sym("target", 0, 1, file)],
+        )
+    })
+    .await;
+
+    let err = ReplaceSymbol
+        .call(
+            json!({
+                "path": "src/lib.rs",
+                "name_path": "target",
+                "new_body": "fn target() {\n    new_body();\n}"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("suspicious range"),
+        "expected suspicious range error, got: {msg}"
+    );
+
+    // File must be untouched — truncated splice would have left a stray `}`
+    let content = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+    assert!(
+        content.contains("old_body()"),
+        "file must be unmodified after truncated-range guard; got:\n{content}"
+    );
+}
+
 // ── BUG-010: insert_code "before" must walk past #[attr] and /// doc lines ────
 
 /// `insert_code(position="before")` targeting a struct with a leading doc comment

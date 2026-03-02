@@ -664,7 +664,7 @@ catch the stale-LSP class of errors.
 
 **Date:** 2026-03-02
 **Severity:** High — silently corrupts the file; cargo still compiles past the first error
-**Status:** Open
+**Status:** ✅ FIXED — `validate_symbol_range` now checks `ast_end > sym.end_line` (previously only caught the degenerate `start == end` case; truncated off-by-one slipped through). Regression tests: `validate_symbol_range_rejects_truncated_end_line` (unit) and `replace_symbol_rejects_truncated_end_line` (symbol_lsp).
 
 **What happened:**
 Used `replace_symbol` to update a function body in `src/server.rs` (the integration test
