@@ -977,7 +977,6 @@ mod tests {
         let id = buf.store_file(path.to_string_lossy().to_string(), "original".to_string());
 
         // Overwrite file and bump mtime so it's definitely newer
-        std::thread::sleep(std::time::Duration::from_millis(10));
         fs::write(&path, "modified").unwrap();
         let future = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
         filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(future)).unwrap();
@@ -1026,7 +1025,6 @@ mod tests {
         let id = buf.store_file(path.to_string_lossy().to_string(), "original".to_string());
 
         // Modify the file so it looks newer
-        std::thread::sleep(std::time::Duration::from_millis(10));
         fs::write(&path, "updated").unwrap();
         let future = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
         filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(future)).unwrap();

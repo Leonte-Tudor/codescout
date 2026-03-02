@@ -2174,4 +2174,33 @@ mod tests {
             "error should mention 'expired', got: {err}"
         );
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_command_prepends_refresh_indicator_for_stale_file_handle() {
+        use std::fs;
+        let (dir, ctx) = project_ctx().await;
+
+        let path = dir.path().join("data.txt");
+        fs::write(&path, "original").unwrap();
+        let id = ctx
+            .output_buffer
+            .store_file(path.to_string_lossy().to_string(), "original".to_string());
+
+        // Make the file look newer than the cached entry
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+        filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(future)).unwrap();
+
+        let result = RunCommand
+            .call(json!({ "command": format!("cat {}", id) }), &ctx)
+            .await
+            .unwrap();
+
+        let stdout = result["stdout"].as_str().unwrap();
+        assert!(
+            stdout.starts_with(&format!("↻ {} refreshed from disk", id)),
+            "expected refresh indicator, got: {:?}",
+            stdout
+        );
+    }
 }
