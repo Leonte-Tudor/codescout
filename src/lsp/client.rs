@@ -94,7 +94,7 @@ pub struct LspServerConfig {
 
 /// A running LSP client session connected to a language server process.
 pub struct LspClient {
-    writer: Mutex<ChildStdin>,
+    writer: Arc<Mutex<ChildStdin>>,
     #[allow(dead_code)]
     next_id: AtomicI64,
     #[allow(dead_code)]
@@ -113,10 +113,12 @@ pub struct LspClient {
     /// Tracks files opened via textDocument/didOpen to prevent duplicate notifications.
     /// The LSP spec prohibits sending didOpen for an already-open file without an
     /// intervening didClose; some servers (e.g. kotlin-lsp) error on duplicates.
+    /// Keys are canonicalized paths to avoid symlink/relative-path aliases.
     open_files: StdMutex<HashSet<PathBuf>>,
 }
 
 impl LspClient {
+    /// Start a language server process and perform the LSP initialize handshake.
     /// Start a language server process and perform the LSP initialize handshake.
     pub async fn start(config: LspServerConfig) -> Result<Self> {
         tracing::info!("Starting LSP server: {} {:?}", config.command, config.args);
@@ -140,6 +142,9 @@ impl LspClient {
             Arc::new(StdMutex::new(HashMap::new()));
         let alive = Arc::new(AtomicBool::new(true));
 
+        // Wrap writer in Arc so the reader task can share it for auto-responses.
+        let writer = Arc::new(Mutex::new(stdin));
+
         // Spawn stderr reader (logs server stderr, doesn't affect protocol)
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr);
@@ -157,6 +162,7 @@ impl LspClient {
         // Spawn stdout reader task — dispatches responses to pending senders
         let pending_clone = pending.clone();
         let alive_clone = alive.clone();
+        let writer_clone = writer.clone();
         let reader_handle = tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
             loop {
@@ -164,12 +170,21 @@ impl LspClient {
                     Ok(msg) => {
                         if let Some(id) = msg.get("id").and_then(|v| v.as_i64()) {
                             if msg.get("method").is_some() {
-                                // Server-to-client request — log and ignore for now
+                                // Server-to-client request (e.g. client/registerCapability,
+                                // workspace/configuration). Respond with null so the server
+                                // doesn't stall waiting for an acknowledgement.
                                 tracing::debug!(
-                                    "LSP server request (id={}): {}",
+                                    "LSP server request (id={}): {} — auto-responding null",
                                     id,
                                     msg["method"]
                                 );
+                                let response = serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "result": null,
+                                });
+                                let mut w = writer_clone.lock().await;
+                                let _ = transport::write_message(&mut *w, &response).await;
                             } else {
                                 // Response to our request
                                 if let Some(sender) = pending_clone.lock().unwrap().remove(&id) {
@@ -216,7 +231,7 @@ impl LspClient {
             .unwrap_or(std::time::Duration::from_secs(30));
 
         let client = Self {
-            writer: Mutex::new(stdin),
+            writer,
             next_id: AtomicI64::new(1),
             pending,
             alive,
@@ -468,11 +483,13 @@ impl LspClient {
 
     /// Send textDocument/didOpen notification for a file.
     pub async fn did_open(&self, path: &Path, language_id: &str) -> Result<()> {
-        // Guard against duplicate didOpen notifications. The LSP spec prohibits sending
-        // textDocument/didOpen for a document that is already open (without a prior didClose).
+        // Canonicalize before tracking to avoid treating symlinks or relative paths
+        // as different files — the LSP spec prohibits duplicate didOpen notifications.
+        let canonical = std::fs::canonicalize(path)
+            .with_context(|| format!("Failed to canonicalize path for didOpen: {:?}", path))?;
         {
             let mut open_files = self.open_files.lock().unwrap();
-            if !open_files.insert(path.to_path_buf()) {
+            if !open_files.insert(canonical) {
                 return Ok(());
             }
         }
@@ -730,7 +747,8 @@ impl LspClient {
 
     /// Send textDocument/didClose notification for a file.
     pub async fn did_close(&self, path: &Path) -> Result<()> {
-        self.open_files.lock().unwrap().remove(path);
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        self.open_files.lock().unwrap().remove(&canonical);
 
         let uri = path_to_uri(path)?;
 
@@ -746,7 +764,8 @@ impl LspClient {
     /// Notify the LSP server that a file it has open was modified on disk by an external tool.
     /// No-op if the file is not currently open in this server.
     pub async fn did_change(&self, path: &Path) -> Result<()> {
-        if !self.open_files.lock().unwrap().contains(path) {
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        if !self.open_files.lock().unwrap().contains(&canonical) {
             return Ok(());
         }
         let content = std::fs::read_to_string(path)

@@ -1958,16 +1958,45 @@ fn write_lines(
     if had_trailing_newline && !out.is_empty() {
         out.push('\n');
     }
-    std::fs::write(path, out)
+    // Atomic write: write to a sibling .tmp file then rename so a crash or
+    // disk-full condition mid-write can't leave the file in a corrupt state.
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, &out)?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e
+    })
 }
 
 /// Walk the symbol tree to find a symbol by name_path (e.g. "MyStruct/my_method").
+/// Check if a symbol matches a query by name or name_path.
+///
+/// Exact match takes priority. Falls back to a prefix check for generic types
+/// so that e.g. `IRepository<T, ID>` matches query `IRepository`, and
+/// `impl Tool for MyStruct<T>` matches query `MyStruct<T>` or `MyStruct`.
+fn symbol_name_matches(sym: &SymbolInfo, query: &str) -> bool {
+    if sym.name_path == query || sym.name == query {
+        return true;
+    }
+    // Generic prefix: "Foo<T>" matches query "Foo" when followed by '<', '(', or ' '
+    for candidate in [sym.name.as_str(), sym.name_path.as_str()] {
+        if candidate.starts_with(query) {
+            if let Some(&next) = candidate.as_bytes().get(query.len()) {
+                if matches!(next, b'<' | b'(' | b' ') {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 fn find_symbol_by_name_path<'a>(
     symbols: &'a [SymbolInfo],
     name_path: &str,
 ) -> Option<&'a SymbolInfo> {
     for sym in symbols {
-        if sym.name_path == name_path || sym.name == name_path {
+        if symbol_name_matches(sym, name_path) {
             return Some(sym);
         }
         if let Some(found) = find_symbol_by_name_path(&sym.children, name_path) {
@@ -2911,6 +2940,97 @@ impl Point {
         // Miss
         let found = find_symbol_by_name_path(&symbols, "nonexistent");
         assert!(found.is_none());
+    }
+
+    #[test]
+    fn symbol_name_matches_generic_types() {
+        let make_sym = |name: &str, name_path: &str| SymbolInfo {
+            name: name.to_string(),
+            name_path: name_path.to_string(),
+            kind: crate::lsp::SymbolKind::Struct,
+            file: std::env::temp_dir().join("test.ts"),
+            start_line: 0,
+            end_line: 10,
+            start_col: 0,
+            children: vec![],
+            detail: None,
+        };
+
+        let sym = make_sym("IRepository<T, ID>", "IRepository<T, ID>");
+        // Exact match
+        assert!(symbol_name_matches(&sym, "IRepository<T, ID>"));
+        // Generic prefix match
+        assert!(symbol_name_matches(&sym, "IRepository"));
+        // Partial prefix must NOT match (would be "IRepo" → 's' next, not '<'/'('/' ')
+        assert!(!symbol_name_matches(&sym, "IRepo"));
+
+        // Parenthesis suffix (callable generic)
+        let sym2 = make_sym("createStore()", "createStore()");
+        assert!(symbol_name_matches(&sym2, "createStore"));
+        assert!(!symbol_name_matches(&sym2, "create"));
+
+        // Space suffix (e.g. "impl Trait for Struct<T>")
+        let sym3 = make_sym("impl Tool for MyStruct<T>", "impl Tool for MyStruct<T>");
+        assert!(symbol_name_matches(&sym3, "impl Tool for MyStruct<T>"));
+
+        // Exact name still works with no suffix
+        let sym4 = make_sym("PlainStruct", "PlainStruct");
+        assert!(symbol_name_matches(&sym4, "PlainStruct"));
+        assert!(!symbol_name_matches(&sym4, "Plain"));
+    }
+
+    #[test]
+    fn find_symbol_by_name_path_generic_types() {
+        let test_file = std::env::temp_dir().join("test.ts");
+        let symbols = vec![
+            SymbolInfo {
+                name: "IRepository<T, ID>".to_string(),
+                name_path: "IRepository<T, ID>".to_string(),
+                kind: crate::lsp::SymbolKind::Interface,
+                file: test_file.clone(),
+                start_line: 0,
+                end_line: 20,
+                start_col: 0,
+                children: vec![SymbolInfo {
+                    name: "findById".to_string(),
+                    name_path: "IRepository<T, ID>/findById".to_string(),
+                    kind: crate::lsp::SymbolKind::Method,
+                    file: test_file.clone(),
+                    start_line: 2,
+                    end_line: 3,
+                    start_col: 4,
+                    children: vec![],
+                    detail: None,
+                }],
+                detail: None,
+            },
+            SymbolInfo {
+                name: "IRepositoryExtended".to_string(),
+                name_path: "IRepositoryExtended".to_string(),
+                kind: crate::lsp::SymbolKind::Interface,
+                file: test_file,
+                start_line: 22,
+                end_line: 30,
+                start_col: 0,
+                children: vec![],
+                detail: None,
+            },
+        ];
+
+        // Bare query matches the generic type, not the similarly-named one
+        let found = find_symbol_by_name_path(&symbols, "IRepository");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "IRepository<T, ID>");
+
+        // "IRepositoryExtended" should NOT match query "IRepository" (different suffix char)
+        let found_ext = find_symbol_by_name_path(&symbols, "IRepositoryExtended");
+        assert!(found_ext.is_some());
+        assert_eq!(found_ext.unwrap().name, "IRepositoryExtended");
+
+        // Child method still reachable through generic parent
+        let found_method = find_symbol_by_name_path(&symbols, "findById");
+        assert!(found_method.is_some());
+        assert_eq!(found_method.unwrap().name, "findById");
     }
 
     #[tokio::test]
