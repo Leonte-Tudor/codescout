@@ -115,6 +115,90 @@ impl CodeExplorerServer {
     fn find_tool(&self, name: &str) -> Option<&Arc<dyn Tool>> {
         self.tools.iter().find(|t| t.name() == name)
     }
+
+    /// Core tool dispatch, separated from the MCP trait method so tests can
+    /// call it without constructing a `RequestContext`.
+    async fn call_tool_inner(
+        &self,
+        req: CallToolRequestParam,
+        progress: Option<Arc<progress::ProgressReporter>>,
+    ) -> std::result::Result<CallToolResult, McpError> {
+        let tool = self.find_tool(&req.name).ok_or_else(|| {
+            McpError::invalid_params(format!("unknown tool: '{}'", req.name), None)
+        })?;
+
+        // Check tool access before dispatching
+        let security = self.agent.security_config().await;
+        if let Err(e) = crate::util::path_security::check_tool_access(&req.name, &security) {
+            return Ok(CallToolResult::error(vec![Content::text(e.to_string())]));
+        }
+
+        let input: Value = req
+            .arguments
+            .map(Value::Object)
+            .unwrap_or(Value::Object(Default::default()));
+
+        let ctx = ToolContext {
+            agent: self.agent.clone(),
+            lsp: self.lsp.clone(),
+            output_buffer: self.output_buffer.clone(),
+            progress,
+        };
+
+        let timeout_secs = if tool_skips_server_timeout(&req.name) {
+            None
+        } else {
+            self.agent
+                .with_project(|p| Ok(p.config.project.tool_timeout_secs))
+                .await
+                .ok()
+        };
+
+        let recorder = UsageRecorder::new(self.agent.clone());
+
+        let result = if let Some(secs) = timeout_secs {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(secs),
+                recorder.record_content(&req.name, || tool.call_content(input, &ctx)),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err(anyhow::anyhow!(
+                    "Tool '{}' timed out after {}s. \
+                     Increase tool_timeout_secs in .code-explorer/project.toml if needed.",
+                    req.name,
+                    secs
+                ))
+            })
+        } else {
+            recorder
+                .record_content(&req.name, || tool.call_content(input, &ctx))
+                .await
+        };
+
+        // Assemble the result — success or error both produce a CallToolResult
+        // so we can apply post-processing in one place.
+        let call_result = match result {
+            Ok(blocks) => CallToolResult::success(blocks),
+            Err(e) => route_tool_error(e),
+        };
+
+        // Strip the absolute project root from all output to reduce token usage.
+        // Agents work exclusively within the project directory; relative paths
+        // carry all necessary information. The full root (e.g. /home/user/project)
+        // is a long repeated prefix that appears in every "file" field and error
+        // message. Buffer content (@tool_xxx refs) is covered here too: it only
+        // re-enters the pipeline through run_command, which also passes through
+        // call_tool.
+        let root_prefix = self
+            .agent
+            .project_root()
+            .await
+            .map(|p| format!("{}/", p.display()))
+            .unwrap_or_default();
+
+        Ok(strip_project_root_from_result(call_result, &root_prefix))
+    }
 }
 
 /// Returns true for tools that manage their own timeout internally and must not
@@ -167,67 +251,11 @@ impl ServerHandler for CodeExplorerServer {
         req: CallToolRequestParam,
         req_ctx: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResult, McpError> {
-        let tool = self.find_tool(&req.name).ok_or_else(|| {
-            McpError::invalid_params(format!("unknown tool: '{}'", req.name), None)
-        })?;
-
-        // Check tool access before dispatching
-        let security = self.agent.security_config().await;
-        if let Err(e) = crate::util::path_security::check_tool_access(&req.name, &security) {
-            return Ok(CallToolResult::error(vec![Content::text(e.to_string())]));
-        }
-
-        let input: Value = req
-            .arguments
-            .map(Value::Object)
-            .unwrap_or(Value::Object(Default::default()));
-
         let progress = Some(progress::ProgressReporter::new(
             req_ctx.peer.clone(),
             req_ctx.id.clone(),
         ));
-        let ctx = ToolContext {
-            agent: self.agent.clone(),
-            lsp: self.lsp.clone(),
-            output_buffer: self.output_buffer.clone(),
-            progress,
-        };
-
-        let timeout_secs = if tool_skips_server_timeout(&req.name) {
-            None
-        } else {
-            self.agent
-                .with_project(|p| Ok(p.config.project.tool_timeout_secs))
-                .await
-                .ok()
-        };
-
-        let recorder = UsageRecorder::new(self.agent.clone());
-
-        let result = if let Some(secs) = timeout_secs {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(secs),
-                recorder.record_content(&req.name, || tool.call_content(input, &ctx)),
-            )
-            .await
-            .unwrap_or_else(|_| {
-                Err(anyhow::anyhow!(
-                    "Tool '{}' timed out after {}s. \
-                     Increase tool_timeout_secs in .code-explorer/project.toml if needed.",
-                    req.name,
-                    secs
-                ))
-            })
-        } else {
-            recorder
-                .record_content(&req.name, || tool.call_content(input, &ctx))
-                .await
-        };
-
-        match result {
-            Ok(blocks) => Ok(CallToolResult::success(blocks)),
-            Err(e) => Ok(route_tool_error(e)),
-        }
+        self.call_tool_inner(req, progress).await
     }
 }
 
@@ -434,12 +462,14 @@ pub async fn run(
 /// Buffer content (`@tool_xxx` refs) is covered automatically: it only
 /// re-enters the pipeline through `run_command`, which also passes through
 /// `call_tool` and gets stripped there.
-#[allow(dead_code)] // wired into call_tool in Task 3
 fn strip_project_root_from_result(mut result: CallToolResult, root_prefix: &str) -> CallToolResult {
     if root_prefix.is_empty() {
         return result;
     }
-    debug_assert!(root_prefix.ends_with('/'), "root_prefix must end with '/' to avoid stripping partial path components");
+    debug_assert!(
+        root_prefix.ends_with('/'),
+        "root_prefix must end with '/' to avoid stripping partial path components"
+    );
     for block in &mut result.content {
         if let RawContent::Text(ref mut t) = block.raw {
             t.text = t.text.replace(root_prefix, "");
@@ -751,6 +781,29 @@ mod tests {
                 name
             );
         }
+    }
+
+    #[tokio::test]
+    async fn call_tool_strips_project_root_from_output() {
+        let (dir, server) = make_server().await;
+        let root = dir.path().to_string_lossy().to_string();
+
+        let req = CallToolRequestParam {
+            name: "list_dir".into(),
+            arguments: Some(serde_json::from_value(serde_json::json!({"path": "."})).unwrap()),
+        };
+        let result = server.call_tool_inner(req, None).await.unwrap();
+
+        let text = result
+            .content
+            .iter()
+            .find_map(|c| c.as_text().map(|t| t.text.as_str()))
+            .unwrap_or("");
+
+        assert!(
+            !text.contains(&root),
+            "Expected absolute root to be stripped, but found it in output:\n{text}"
+        );
     }
 
     #[test]
