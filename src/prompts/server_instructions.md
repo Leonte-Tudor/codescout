@@ -96,6 +96,8 @@ Multi-line edits on source files (`.rs`, `.py`, `.ts`, `.go`, etc.) are blocked 
 
 ## Output Modes
 
+**File paths in tool output are relative to the project root** (e.g. `src/tools/mod.rs`, not `/home/user/project/src/tools/mod.rs`). Pass them as-is to other tools — no relativization needed.
+
 Default: **exploring** — compact, capped at 200 items.
 Pass `detail_level: "full"` for focused mode with `offset`/`limit` pagination.
 Only switch to focused AFTER identifying targets.
@@ -164,4 +166,4 @@ To clean up: `git worktree prune` from the main repo root, then start a new sess
 6. **Prefer symbol edits** (`replace_symbol`, `insert_code`, `remove_symbol`, `rename_symbol`) for code. Use `edit_file` when symbol tools don't fit.
 7. **`run_command` is already in the project root.** Never prefix with `cd /abs/path &&`. Use `cwd` param for subdirectories only.
 8. **Don't inline-pipe `run_command` output.** Run the command bare, then query the buffer in a follow-up: `cargo test` → `grep FAILED @cmd_id`. Never `cargo test 2>&1 | grep FAILED`.
-9. **Buffer queries return ≤ 200 lines inline.** When querying a `@ref` (e.g. `grep pattern @cmd_id`, `jq '.field' @tool_abc`), output above 200 lines is truncated — the hint shows the exact next-page `sed` command to continue. Do NOT pipe buffer queries (`grep @ref | head`) — run the targeted command directly. For text/markdown files, prefer `read_file(path, start_line, end_line)` over `run_command("cat file") + buffer queries`.
+9. **Buffer queries return ≤ 100 lines inline.** When querying a `@ref` (e.g. `grep pattern @cmd_id`, `jq '.field' @tool_abc`), output above 100 lines is truncated — the hint shows the exact next-page `sed` command to continue. Do NOT pipe buffer queries (`grep @ref | head`) — run the targeted command directly. For text/markdown files, prefer `read_file(path, start_line, end_line)` over `run_command("cat file") + buffer queries`.
