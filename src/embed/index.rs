@@ -108,6 +108,17 @@ pub fn open_db(project_root: &Path) -> Result<Connection> {
             chunks_removed  INTEGER NOT NULL,
             indexed_at      TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS memories (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            bucket     TEXT NOT NULL DEFAULT 'unstructured',
+            title      TEXT NOT NULL,
+            content    TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_memories_bucket ON memories(bucket);
         ",
     )?;
 
@@ -206,6 +217,40 @@ pub fn maybe_migrate_to_vec0(conn: &Connection) -> Result<()> {
     conn.execute_batch("COMMIT")?;
 
     tracing::info!("vec0 migration complete");
+    Ok(())
+}
+
+/// Lazily create the `vec_memories` vec0 virtual table for semantic memory
+/// search. Requires `embedding_dims` to be set in the `meta` table (which
+/// happens after the first `build_index` run). Safe to call multiple times
+/// (idempotent) — returns `Ok(())` if dims are unknown or table already exists.
+pub fn ensure_vec_memories(conn: &Connection) -> Result<()> {
+    use rusqlite::OptionalExtension;
+
+    let exists: bool = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='vec_memories'",
+            [],
+            |_| Ok(true),
+        )
+        .optional()?
+        .unwrap_or(false);
+    if exists {
+        return Ok(());
+    }
+
+    let dims = match get_meta(conn, "embedding_dims")? {
+        Some(s) => s.parse::<usize>().unwrap_or(0),
+        None => return Ok(()),
+    };
+    if dims == 0 {
+        return Ok(());
+    }
+
+    conn.execute_batch(&format!(
+        "CREATE VIRTUAL TABLE vec_memories USING vec0(\
+         embedding float[{dims}] distance_metric=cosine)"
+    ))?;
     Ok(())
 }
 
@@ -2533,5 +2578,34 @@ mod tests {
         let libs_only = search_scoped(&conn, &[1.0_f32, 0.0], 10, Some("libraries")).unwrap();
         assert_eq!(libs_only.len(), 1);
         assert_eq!(libs_only[0].source, "mylib");
+    }
+
+    #[test]
+    fn open_db_creates_memories_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_db(dir.path()).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn open_db_creates_vec_memories_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_db(dir.path()).unwrap();
+        set_meta(&conn, "embedding_dims", "384").unwrap();
+        ensure_vec_memories(&conn).unwrap();
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='vec_memories'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            sql.contains("vec0"),
+            "expected vec0 virtual table, got: {sql}"
+        );
     }
 }
