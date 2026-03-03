@@ -46,7 +46,7 @@ fn parse_model(name: &str) -> Result<fastembed::EmbeddingModel> {
         other => anyhow::bail!(
             "Unknown local model '{other}'. Supported variants:\n\
              • local:JinaEmbeddingsV2BaseCode   (768d, code-specific, ~300MB, recommended)\n\
-             • local:BGESmallENV15Q             (384d, quantized, ~20MB, fast CPU)\n\
+             • local:BGESmallENV15Q             (384d, GPU-optimized export; may fail on CPU)\n\
              • local:AllMiniLML6V2Q             (384d, quantized, ~22MB, lightest)\n\
              • local:BGESmallENV15              (384d, full precision)\n\
              • local:AllMiniLML6V2              (384d, full precision)"

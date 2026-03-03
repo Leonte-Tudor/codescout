@@ -19,7 +19,7 @@ code-explorer supports four embedding backends. The model string prefix in
 | `ollama:` | `ollama:mxbai-embed-large` | Local development — free, private, no API key |
 | `openai:` | `openai:text-embedding-3-small` | Best retrieval quality, cloud cost |
 | `custom:` | `custom:my-model@http://host:8080` | Any OpenAI-compatible endpoint |
-| `local:` | `local:BGESmallENV15Q` | Offline / air-gapped, no daemon required |
+| `local:` | `local:AllMiniLML6V2Q` | Offline / air-gapped, no daemon required |
 
 **Recommended starting point:** Ollama with `mxbai-embed-large`. It runs
 entirely on your machine, requires no API key, and produces good results on
@@ -222,7 +222,7 @@ conservative lower bound for mixed code and prose. Representative values:
 | `ollama:nomic-embed-text` | 8 192 tokens | ~20 900 chars |
 | `openai:text-embedding-3-small` | 8 191 tokens | ~20 900 chars |
 | `local:JinaEmbeddingsV2BaseCode` | 8 192 tokens | ~20 900 chars |
-| `local:BGESmallENV15Q` | 512 tokens | ~1 300 chars |
+| `local:AllMiniLML6V2Q` | 512 tokens | ~1 300 chars |
 | `local:AllMiniLML6V2Q` | 256 tokens | ~650 chars |
 
 Because AST chunking splits at function/method boundaries rather than at

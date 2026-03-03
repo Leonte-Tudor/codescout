@@ -33,7 +33,7 @@ Start with the default. Switch only when you have a specific reason to.
 | `ollama:all-minilm`             | Ollama   |  384 | Very fast      | Fair         | Large repos where indexing speed matters  |
 | `openai:text-embedding-3-small` | OpenAI   | 1536 | Fast (network) | Excellent    | Best quality/cost if cloud is acceptable  |
 | `openai:text-embedding-3-large` | OpenAI   | 3072 | Fast (network) | Best         | Overkill for most codebases               |
-| `local:BGESmallENV15Q`          | fastembed|  384 | Medium (CPU)   | Good         | Air-gapped or no daemon; no GPU needed    |
+| `local:AllMiniLML6V2Q`          | fastembed|  384 | Medium (CPU)   | Good         | Air-gapped or no daemon; CPU-safe         |
 
 **Switching models requires a full reindex** — see
 [Rebuilding After a Model Change](#rebuilding-after-a-model-change) below.
@@ -85,11 +85,11 @@ export OLLAMA_HOST=http://192.168.1.50:11434
 
 When code-explorer is built with both `remote-embed` and `local-embed` features, it probes
 Ollama before every indexing or search call. If the daemon is not reachable within 2 seconds,
-it automatically falls back to `local:BGESmallENV15Q` and emits a warning:
+it automatically falls back to `local:AllMiniLML6V2Q` and emits a warning:
 
 ```
 Ollama not reachable at http://localhost:11434: …
-Falling back to local:BGESmallENV15Q (CPU-friendly, ~20 MB).
+Falling back to local:AllMiniLML6V2Q (CPU-safe, ~22 MB).
 Set embeddings.model in .code-explorer/project.toml to suppress this.
 ```
 
@@ -99,7 +99,7 @@ fallback permanent, set the model explicitly:
 
 ```toml
 [embeddings]
-model = "local:BGESmallENV15Q"
+model = "local:AllMiniLML6V2Q"
 ```
 
 ### Recommended Ollama Models
@@ -220,7 +220,7 @@ cargo install code-explorer --features remote-embed,local-embed
 
 ```toml
 [embeddings]
-model = "local:BGESmallENV15Q"
+model = "local:AllMiniLML6V2Q"
 ```
 
 ### Supported Local Models
@@ -228,12 +228,12 @@ model = "local:BGESmallENV15Q"
 | Model string | Dimensions | Download size | Notes |
 |---|---|---|---|
 | `local:JinaEmbeddingsV2BaseCode` | 768 | ~300 MB | Code-specific, highest quality for source code |
-| `local:BGESmallENV15Q` | 384 | ~20 MB | Quantized, fast on CPU, recommended for most users |
-| `local:AllMiniLML6V2Q` | 384 | ~22 MB | Quantized, lightest, good for limited disk/RAM |
+| `local:AllMiniLML6V2Q` | 384 | ~22 MB | INT8-quantized, CPU-safe, recommended for most users |
+| `local:BGESmallENV15Q` | 384 | ~20 MB | GPU-optimized export; may fail on CPU-only machines  |
 | `local:BGESmallENV15` | 384 | ~65 MB | Full f32 precision variant of BGESmallENV15Q |
 | `local:AllMiniLML6V2` | 384 | ~90 MB | Full f32 precision variant of AllMiniLML6V2Q |
 
-For most local setups, `BGESmallENV15Q` gives the best tradeoff: small download, fast CPU
+For most local setups, `AllMiniLML6V2Q` gives the best tradeoff: small download, CPU-safe
 inference, and solid retrieval quality. Use `JinaEmbeddingsV2BaseCode` when search quality
 on code is the priority and the larger download is acceptable.
 
@@ -277,7 +277,7 @@ recorded in the existing index.
 A practical decision tree:
 
 - **You want zero setup and are comfortable with a local daemon** → use the default
-  `ollama:mxbai-embed-large`. If Ollama is absent, it falls back to `local:BGESmallENV15Q`
+  `ollama:mxbai-embed-large`. If Ollama is absent, it falls back to `local:AllMiniLML6V2Q`
   automatically (requires the `local-embed` feature).
 - **You have no GPU or just want something that works everywhere** → build with
   `--features remote-embed,local-embed` and leave the default model in place. The fallback
@@ -285,7 +285,7 @@ A practical decision tree:
 - **You want the best search quality and do not mind API costs** → use
   `openai:text-embedding-3-small`.
 - **You are on an air-gapped machine or want complete data privacy** → use
-  `local:BGESmallENV15Q` (build with `--features local-embed`).
+  `local:AllMiniLML6V2Q` (build with `--features local-embed`).
 - **You already run a TEI, vLLM, or similar server** → use `custom:<model>@<base-url>`.
 - **You are indexing a code-heavy project and want best code retrieval** → use
   `local:JinaEmbeddingsV2BaseCode`.

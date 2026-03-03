@@ -609,6 +609,45 @@ which now catches this case. The insertion fails loudly rather than silently cor
 ---
 ```
 
+### BUG-021 — `edit_file`: parallel calls cause partial state + MCP server crash
+
+**Date:** 2026-03-03
+**Severity:** High — leaves files in inconsistent partial state; server crash requires `/mcp` restart
+**Status:** Open
+
+**What happened:**
+Dispatched two `edit_file` calls in the same parallel response (targeting two different source
+files: `src/embed/local.rs` and `src/config/project.rs`). The Claude Code permission system
+handles each call independently: the first call was approved and returned `"ok"` (edit applied
+to `local.rs`); the second call was rejected by the user and returned an error. This left the
+two files in an inconsistent state — one edited, one not. Immediately after, the code-explorer
+MCP server crashed and became unavailable, requiring a manual `/mcp` reconnect.
+
+**Reproduction hint:**
+1. Dispatch two `edit_file` tool calls in a single parallel response to different source files.
+2. Approve the first permission prompt, reject (or let timeout) the second.
+3. Observe: first file edited, second file unchanged — inconsistent partial state.
+4. code-explorer MCP server crashes; subsequent tool calls fail until `/mcp` restart.
+
+**Root cause hypothesis:**
+Unknown exactly. Two likely contributors:
+1. **Permission system races**: the permission dialog for call #2 may time out or get into a
+   bad state while call #1 is completing, causing the MCP handler to receive an error response
+   it doesn't handle gracefully.
+2. **MCP server state corruption**: if the server's internal state machine (e.g. pending
+   response tracking) is not designed for one-success-one-failure in a parallel pair, an
+   unhandled error path may panic or leave the server in a broken state.
+
+**Fix ideas:**
+- Avoid dispatching multiple `edit_file` calls in the same parallel response. Always serialize
+  file edits — finish one before starting the next.
+- As a server-side safeguard, the MCP handler could catch panics per-call so a single failed
+  call doesn't bring down the server.
+- Investigate whether the crash is a panic in the rmcp handler or a broken stdio pipe from
+  Claude Code after a permission rejection during a multi-call response.
+
+---
+
 ### BUG-020 — `edit_file` + `run_command`: cross-tool `@ack_*` handle confusion
 
 **Date:** 2026-03-03

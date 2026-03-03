@@ -42,7 +42,7 @@ pub struct EmbeddingsSection {
     ///
     /// Recommended local models (rebuild with: cargo build --features local-embed):
     ///   "local:JinaEmbeddingsV2BaseCode"    → 768d, code-specific, ~300MB
-    ///   "local:BGESmallENV15Q"              → 384d, quantized, ~20MB, fast CPU
+    ///   "local:AllMiniLML6V2Q"              → 384d, INT8-quantized, ~22MB, CPU-safe
     ///   "local:AllMiniLML6V2Q"              → 384d, quantized, ~22MB, lightest
     ///   "local:BGESmallENV15"               → 384d, full precision
     #[serde(default = "default_embed_model")]

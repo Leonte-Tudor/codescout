@@ -216,7 +216,7 @@ encoding = "utf-8"
 tool_timeout_secs = 120
 
 [embeddings]
-model = "local:BGESmallENV15Q"
+model = "local:AllMiniLML6V2Q"
 drift_detection_enabled = true    # set to false to opt out of semantic drift scoring
 
 [ignored_paths]
