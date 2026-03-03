@@ -1224,14 +1224,29 @@ mod tests {
         let dir = tempdir().unwrap();
         let file = dir.path().join("lines.txt");
         std::fs::write(&file, "line1\nline2\nline3").unwrap();
+        let path = file.to_str().unwrap();
 
+        // Baseline: valid 1-indexed range succeeds and returns content
         let result = ReadFile
-            .call(
-                json!({ "path": file.to_str().unwrap(), "start_line": 0, "end_line": 3 }),
-                &ctx,
-            )
+            .call(json!({ "path": path, "start_line": 1, "end_line": 2 }), &ctx)
+            .await
+            .unwrap();
+        assert!(!result["content"].as_str().unwrap().is_empty(), "valid range must return content");
+
+        // Stale (the bug): old code passed start_line=0 through to extract_lines, which
+        // silently returned an empty string — indistinguishable from an empty file.
+        // Fixed: start_line=0 is now rejected with a RecoverableError.
+        let result = ReadFile
+            .call(json!({ "path": path, "start_line": 0, "end_line": 3 }), &ctx)
             .await;
-        assert!(result.is_err(), "start_line=0 should return a recoverable error");
+        assert!(result.is_err(), "start_line=0 must be rejected (lines are 1-indexed)");
+
+        // Fresh: valid range is unaffected — the guard is narrow and precise
+        let result = ReadFile
+            .call(json!({ "path": path, "start_line": 2, "end_line": 3 }), &ctx)
+            .await
+            .unwrap();
+        assert!(!result["content"].as_str().unwrap().is_empty(), "valid range after error cases must still return content");
     }
 
     #[tokio::test]
@@ -1239,15 +1254,30 @@ mod tests {
         let ctx = test_ctx().await;
         let dir = tempdir().unwrap();
         let file = dir.path().join("lines.txt");
-        std::fs::write(&file, "line1\nline2\nline3").unwrap();
+        std::fs::write(&file, "line1\nline2\nline3\nline4\nline5").unwrap();
+        let path = file.to_str().unwrap();
 
+        // Baseline: valid range succeeds
         let result = ReadFile
-            .call(
-                json!({ "path": file.to_str().unwrap(), "start_line": 5, "end_line": 2 }),
-                &ctx,
-            )
+            .call(json!({ "path": path, "start_line": 2, "end_line": 4 }), &ctx)
+            .await
+            .unwrap();
+        assert!(!result["content"].as_str().unwrap().is_empty(), "valid range must return content");
+
+        // Stale (the bug): old code passed end < start through to extract_lines, which
+        // computed a negative/empty slice and silently returned "".
+        // Fixed: end_line < start_line is now rejected with a RecoverableError.
+        let result = ReadFile
+            .call(json!({ "path": path, "start_line": 5, "end_line": 2 }), &ctx)
             .await;
-        assert!(result.is_err(), "end_line < start_line should return a recoverable error");
+        assert!(result.is_err(), "end_line < start_line must be rejected");
+
+        // Fresh: equal start/end (single line) is valid, not rejected
+        let result = ReadFile
+            .call(json!({ "path": path, "start_line": 3, "end_line": 3 }), &ctx)
+            .await
+            .unwrap();
+        assert!(!result["content"].as_str().unwrap().is_empty(), "start_line == end_line (single line) must succeed");
     }
 
     #[tokio::test]
@@ -2539,32 +2569,43 @@ mod tests {
     async fn search_pattern_context_mode_total_equals_block_count_not_line_count() {
         let ctx = test_ctx().await;
         let dir = tempdir().unwrap();
-        // Two matches close together → merge into ONE block; total should be 1 (block), not 2 (lines)
+        // MATCH_A at line 3, MATCH_B at line 5 — only 2 lines apart, so with context_lines=2
+        // their windows overlap and merge into ONE block.
         std::fs::write(
             dir.path().join("code.rs"),
             "line1\nline2\nMATCH_A\nline4\nMATCH_B\nline6\nline7\n",
         )
         .unwrap();
+        let path = dir.path().to_str().unwrap();
 
-        let result = SearchPattern
-            .call(
-                json!({
-                    "pattern": "MATCH_",
-                    "path": dir.path().to_str().unwrap(),
-                    "context_lines": 2
-                }),
-                &ctx,
-            )
+        // Baseline: without context_lines, total equals the raw number of matching lines (2).
+        // This is what the old context-mode code also used — the line count — which was wrong.
+        let no_ctx = SearchPattern
+            .call(json!({ "pattern": "MATCH_", "path": path }), &ctx)
             .await
             .unwrap();
-
-        let matches = result["matches"].as_array().unwrap();
-        let total = result["total"].as_u64().unwrap();
         assert_eq!(
-            total,
-            matches.len() as u64,
-            "total should equal the number of blocks returned, not the number of matching lines"
+            no_ctx["total"].as_u64().unwrap(),
+            2,
+            "without context, total must equal the number of matching lines"
         );
+        assert_eq!(no_ctx["matches"].as_array().unwrap().len(), 2);
+
+        // Stale (the bug): with context_lines=2 the two matches merge into 1 block,
+        // but old code still set total=2 (line count) — inconsistent with matches.len()=1.
+        // Fixed: total now equals the number of merged blocks returned.
+        let with_ctx = SearchPattern
+            .call(json!({ "pattern": "MATCH_", "path": path, "context_lines": 2 }), &ctx)
+            .await
+            .unwrap();
+        let matches = with_ctx["matches"].as_array().unwrap();
+        let total = with_ctx["total"].as_u64().unwrap();
+
+        // Sandwich assertion: the two matches must have merged into exactly one block
+        assert_eq!(matches.len(), 1, "adjacent matches with context_lines=2 must merge into one block");
+        // Fresh: total now tracks blocks, not lines — so it equals 1, not 2
+        assert_eq!(total, 1, "total must be block count (1), not line count (2)");
+        assert_eq!(total, matches.len() as u64, "total must always equal matches.len()");
     }
 
     #[tokio::test]

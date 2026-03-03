@@ -757,22 +757,60 @@ mod tests {
 
     #[test]
     fn is_buffer_only_false_for_relative_path_without_dot_prefix() {
-        // src/main.rs has no ./ prefix but is still a relative path — must not be buffer-only
-        assert!(!OutputBuffer::is_buffer_only(
-            "grep pattern @cmd_abc1234 src/main.rs"
-        ));
+        // Baseline: pure buffer reference with no real paths → IS buffer-only
+        assert!(
+            OutputBuffer::is_buffer_only("grep pattern @cmd_abc1234"),
+            "pure buffer command must be classified as buffer-only"
+        );
+
+        // Stale (the bug): old code only checked '/' and './' prefixes, so
+        // 'src/main.rs' (no leading '.') passed through and the command was
+        // wrongly classified as buffer-only, bypassing safety checks.
+        // Fixed: any word containing '/' that isn't a flag is treated as a real path.
+        assert!(
+            !OutputBuffer::is_buffer_only("grep pattern @cmd_abc1234 src/main.rs"),
+            "relative path without ./ prefix must NOT be classified as buffer-only"
+        );
+
+        // Fresh: other real-path forms are also correctly handled
+        assert!(
+            !OutputBuffer::is_buffer_only("grep pattern @cmd_abc1234 ./src/main.rs"),
+            "./ prefix must NOT be classified as buffer-only"
+        );
+        assert!(
+            !OutputBuffer::is_buffer_only("grep pattern @cmd_abc1234 /tmp/file.rs"),
+            "absolute path must NOT be classified as buffer-only"
+        );
     }
 
     #[test]
     fn resolve_refs_not_buffer_only_when_relative_path_arg_present() {
         let buf = OutputBuffer::new(20);
         let id = buf.store("cmd".into(), "output".into(), "".into(), 0);
-        let cmd = format!("grep foo {} src/main.rs", id);
-        let (_resolved, files, is_buf_only, _refreshed) = buf.resolve_refs(&cmd).unwrap();
+
+        // Baseline: command with only a buffer ref → IS buffer-only (safe to skip checks)
+        let (_, files, is_buf_only, _) = buf.resolve_refs(&format!("cat {id}")).unwrap();
+        OutputBuffer::cleanup_temp_files(&files);
+        assert!(is_buf_only, "command with only buffer refs must be buffer-only");
+
+        // Stale (the bug): old resolve_refs also classified 'grep foo @cmd src/main.rs'
+        // as buffer-only because it only checked '/' and './' prefixes on real args.
+        // Fixed: relative path 'src/main.rs' now marks the command as NOT buffer-only.
+        let cmd = format!("grep foo {id} src/main.rs");
+        let (_, files, is_buf_only, _) = buf.resolve_refs(&cmd).unwrap();
         OutputBuffer::cleanup_temp_files(&files);
         assert!(
             !is_buf_only,
             "relative path arg must not classify command as buffer-only"
+        );
+
+        // Fresh: absolute-path arg also correctly prevents buffer-only classification
+        let cmd = format!("diff {id} /etc/passwd");
+        let (_, files, is_buf_only, _) = buf.resolve_refs(&cmd).unwrap();
+        OutputBuffer::cleanup_temp_files(&files);
+        assert!(
+            !is_buf_only,
+            "absolute path arg must not classify command as buffer-only"
         );
     }
 

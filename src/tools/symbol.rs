@@ -3413,7 +3413,21 @@ impl Point {
             },
         ];
 
-        // Ambiguous bare name → RecoverableError listing all matching name_paths
+        // Baseline (the bug): old find_symbol_by_name_path silently returns the first
+        // depth-first match for a bare name — caller has no way to know it was ambiguous.
+        let old_result = find_symbol_by_name_path(&symbols, "call");
+        assert!(
+            old_result.is_some(),
+            "old function returns Some for ambiguous name — no error, caller is unaware"
+        );
+        assert_eq!(
+            old_result.unwrap().name_path,
+            "ToolA/call",
+            "old function returns first depth-first match, silently ignoring ToolB/call"
+        );
+
+        // Stale → Fixed: find_unique_symbol_by_name_path detects ambiguity and errors,
+        // listing all matching name_paths so the caller can supply a more specific query.
         let result = find_unique_symbol_by_name_path(&symbols, "call");
         assert!(result.is_err());
         let err_str = result.unwrap_err().to_string();
@@ -3426,7 +3440,7 @@ impl Point {
             "expected ToolB/call in error, got: {err_str}"
         );
 
-        // Qualified name_path → exactly one match
+        // Fresh: supplying the full name_path resolves the ambiguity unambiguously
         let result = find_unique_symbol_by_name_path(&symbols, "ToolA/call");
         assert!(result.is_ok());
         assert_eq!(result.unwrap().name_path, "ToolA/call");
