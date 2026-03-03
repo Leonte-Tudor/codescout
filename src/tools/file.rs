@@ -94,8 +94,18 @@ impl Tool for ReadFile {
             _ => anyhow::anyhow!("failed to read {}: {}", resolved.display(), e),
         })?;
 
-        // If explicit line range given, use it directly (no capping, no buffering)
+        // If explicit line range given, validate then use it directly (no capping, no buffering)
         if let (Some(start), Some(end)) = (start_line, end_line) {
+            if start == 0 || end < start {
+                return Err(RecoverableError::with_hint(
+                    format!(
+                        "invalid line range: start_line={} end_line={} (start_line must be >= 1 and end_line >= start_line)",
+                        start, end
+                    ),
+                    "Lines are 1-indexed. Example: start_line=1, end_line=50",
+                )
+                .into());
+            }
             let content = extract_lines(&text, start as usize, end as usize);
             return Ok(json!({ "content": content, "source": source_tag }));
         }
@@ -423,13 +433,20 @@ impl Tool for SearchPattern {
             }
         }
 
-        let mut result = json!({ "matches": matches, "total": total_match_count });
+        // In context mode, matches contains merged blocks — fewer than total_match_count
+        // (which counts individual matching lines). Report blocks so `total` == `matches.len()`.
+        let shown_count = if context_lines > 0 {
+            matches.len()
+        } else {
+            total_match_count
+        };
+        let mut result = json!({ "matches": matches, "total": shown_count });
         if hit_cap {
             result["overflow"] = json!({
-                "shown": total_match_count,
+                "shown": shown_count,
                 "hint": format!(
                     "Showing first {} matches (cap hit). Narrow with a more specific pattern or path=<file>.",
-                    total_match_count
+                    shown_count
                 )
             });
         }
@@ -1199,6 +1216,38 @@ mod tests {
             .unwrap();
 
         assert_eq!(result["content"], "line2\nline3\nline4");
+    }
+
+    #[tokio::test]
+    async fn read_file_rejects_start_line_zero() {
+        let ctx = test_ctx().await;
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("lines.txt");
+        std::fs::write(&file, "line1\nline2\nline3").unwrap();
+
+        let result = ReadFile
+            .call(
+                json!({ "path": file.to_str().unwrap(), "start_line": 0, "end_line": 3 }),
+                &ctx,
+            )
+            .await;
+        assert!(result.is_err(), "start_line=0 should return a recoverable error");
+    }
+
+    #[tokio::test]
+    async fn read_file_rejects_end_before_start() {
+        let ctx = test_ctx().await;
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("lines.txt");
+        std::fs::write(&file, "line1\nline2\nline3").unwrap();
+
+        let result = ReadFile
+            .call(
+                json!({ "path": file.to_str().unwrap(), "start_line": 5, "end_line": 2 }),
+                &ctx,
+            )
+            .await;
+        assert!(result.is_err(), "end_line < start_line should return a recoverable error");
     }
 
     #[tokio::test]
@@ -2483,6 +2532,38 @@ mod tests {
         assert!(
             content.contains("line7"),
             "block should extend to MATCH_B's context_after"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_pattern_context_mode_total_equals_block_count_not_line_count() {
+        let ctx = test_ctx().await;
+        let dir = tempdir().unwrap();
+        // Two matches close together → merge into ONE block; total should be 1 (block), not 2 (lines)
+        std::fs::write(
+            dir.path().join("code.rs"),
+            "line1\nline2\nMATCH_A\nline4\nMATCH_B\nline6\nline7\n",
+        )
+        .unwrap();
+
+        let result = SearchPattern
+            .call(
+                json!({
+                    "pattern": "MATCH_",
+                    "path": dir.path().to_str().unwrap(),
+                    "context_lines": 2
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let matches = result["matches"].as_array().unwrap();
+        let total = result["total"].as_u64().unwrap();
+        assert_eq!(
+            total,
+            matches.len() as u64,
+            "total should equal the number of blocks returned, not the number of matching lines"
         );
     }
 

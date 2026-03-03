@@ -448,13 +448,20 @@ impl OutputBuffer {
             temp_paths.push(path);
         }
 
-        // Determine is_buffer_only: check if there are file-path-like arguments
-        // (starting with / or ./) that are NOT one of our temp file paths.
+        // Determine is_buffer_only: true only when every path-like argument is one
+        // of our own injected temp files. Relative paths without a ./ prefix (e.g.
+        // "src/main.rs") are also treated as non-buffer-only.
         let is_buffer_only = !shell_words(&result).iter().any(|word| {
-            (word.starts_with('/') || word.starts_with("./"))
-                && !temp_path_strings
-                    .iter()
-                    .any(|tp| word.contains(tp.as_str()))
+            let is_temp = temp_path_strings.iter().any(|tp| word.contains(tp.as_str()));
+            if is_temp {
+                return false;
+            }
+            // Absolute or explicitly-relative paths
+            if word.starts_with('/') || word.starts_with("./") {
+                return true;
+            }
+            // Relative paths with a directory separator but no leading flag sigil
+            !word.starts_with('-') && word.contains('/')
         });
 
         Ok((result, temp_paths, is_buffer_only, refreshed_handles))
@@ -478,9 +485,15 @@ impl OutputBuffer {
         {
             return false;
         }
-        // Reject if any whitespace-separated word looks like a bare path.
+        // Reject if any whitespace-separated word looks like a path.
         for word in command.split_whitespace() {
+            // Absolute or explicitly-relative paths
             if word.starts_with('/') || word.starts_with("./") || word.starts_with("../") {
+                return false;
+            }
+            // Relative paths with a directory separator but no leading flag sigil
+            // (e.g. "src/main.rs") — flags like "--format=a/b" are excluded by the '-' check.
+            if !word.starts_with('-') && word.contains('/') {
                 return false;
             }
         }
@@ -740,6 +753,27 @@ mod tests {
     #[test]
     fn is_buffer_only_false_for_plain_commands() {
         assert!(!OutputBuffer::is_buffer_only("grep foo /etc/passwd"));
+    }
+
+    #[test]
+    fn is_buffer_only_false_for_relative_path_without_dot_prefix() {
+        // src/main.rs has no ./ prefix but is still a relative path — must not be buffer-only
+        assert!(!OutputBuffer::is_buffer_only(
+            "grep pattern @cmd_abc1234 src/main.rs"
+        ));
+    }
+
+    #[test]
+    fn resolve_refs_not_buffer_only_when_relative_path_arg_present() {
+        let buf = OutputBuffer::new(20);
+        let id = buf.store("cmd".into(), "output".into(), "".into(), 0);
+        let cmd = format!("grep foo {} src/main.rs", id);
+        let (_resolved, files, is_buf_only, _refreshed) = buf.resolve_refs(&cmd).unwrap();
+        OutputBuffer::cleanup_temp_files(&files);
+        assert!(
+            !is_buf_only,
+            "relative path arg must not classify command as buffer-only"
+        );
     }
 
     #[test]
