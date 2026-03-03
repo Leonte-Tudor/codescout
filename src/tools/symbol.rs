@@ -282,41 +282,6 @@ fn find_ast_end_line_in(symbols: &[SymbolInfo], name: &str, lsp_start: u32) -> O
     None
 }
 
-/// Returns `true` if `line` could plausibly be the first line of a symbol range
-/// as reported by an LSP server, `false` if it looks like the interior of a
-/// function body (which would indicate a stale line number).
-///
-/// LSP servers legitimately start a symbol's range at:
-/// - A Rust item keyword (`fn`, `pub`, `struct`, `impl`, ...)
-/// - A closing delimiter (`}`, `})`, ...) — over-extension into the preceding symbol
-/// - A blank line, comment, or attribute
-///
-/// They would never start at a `let` binding, `return`, function call, etc.
-/// Detecting those catches the BUG-019 class of stale-LSP corruption.
-fn is_valid_symbol_start_line(line: &str) -> bool {
-    let t = line.trim();
-    if t.is_empty() {
-        return true;
-    }
-    // Closing delimiters — LSP may include tail of preceding symbol
-    if t.starts_with(['}', ']', ')']) {
-        return true;
-    }
-    // Comments and doc comments
-    if t.starts_with("//") || t.starts_with("/*") || t.starts_with('*') {
-        return true;
-    }
-    // Attributes
-    if t.starts_with("#[") || t.starts_with("#!") {
-        return true;
-    }
-    // Rust item keywords
-    let item_starts = [
-        "fn ", "pub ", "pub(", "async ", "unsafe ", "struct ", "impl ", "trait ", "enum ", "type ",
-        "const ", "static ", "mod ", "use ", "extern ",
-    ];
-    item_starts.iter().any(|kw| t.starts_with(kw))
-}
 
 // ── get_symbols_overview ───────────────────────────────────────────────────
 
@@ -920,12 +885,7 @@ impl Tool for FindReferences {
 
         // Find the symbol's position by walking document symbols
         let symbols = client.document_symbols(&full_path, &lang).await?;
-        let sym = find_symbol_by_name_path(&symbols, name_path).ok_or_else(|| {
-            RecoverableError::with_hint(
-                format!("symbol not found: {}", name_path),
-                "Use list_symbols(path) to see available symbols, or check the name_path spelling.",
-            )
-        })?;
+        let sym = find_unique_symbol_by_name_path(&symbols, name_path)?;
 
         // Get references at the symbol's position
         let refs = client
@@ -1295,12 +1255,7 @@ impl Tool for ReplaceSymbol {
         let (client, lang) = get_lsp_client(ctx, &full_path).await?;
 
         let symbols = client.document_symbols(&full_path, &lang).await?;
-        let sym = find_symbol_by_name_path(&symbols, name_path).ok_or_else(|| {
-            RecoverableError::with_hint(
-                format!("symbol not found: {}", name_path),
-                "Use list_symbols(path) to see available symbols, or check the name_path spelling.",
-            )
-        })?;
+        let sym = find_unique_symbol_by_name_path(&symbols, name_path)?;
 
         // Validate: catch degenerate LSP ranges (start == end for multi-line symbols)
         validate_symbol_range(sym)?;
@@ -1323,22 +1278,9 @@ impl Tool for ReplaceSymbol {
             .into());
         }
 
-        // BUG-019 guard: reject stale LSP line numbers.
-        // If the line at start_line looks like function-body content (let, return,
-        // expression) rather than a symbol declaration, the LSP is operating on a
-        // stale view of the file — likely modified without a did_change notification.
-        if !is_valid_symbol_start_line(lines[start]) {
-            return Err(RecoverableError::with_hint(
-                format!(
-                    "symbol location appears stale — line {} does not look like a symbol start: {:?}",
-                    start + 1,
-                    lines[start].trim(),
-                ),
-                "The LSP may have stale data from a file modified without notification. \
-                 Re-run list_symbols(path) to refresh LSP state, then retry.",
-            )
-            .into());
-        }
+        // Note: the BUG-019 keyword guard was removed because the allowlist was Rust-only
+        // and caused false "stale" errors for Python, TypeScript, Go, and Java symbols.
+        // validate_symbol_range (AST cross-check above) is the canonical staleness defense.
 
         let mut new_lines = Vec::new();
         new_lines.extend_from_slice(&lines[..start]);
@@ -1389,12 +1331,7 @@ impl Tool for RemoveSymbol {
         let (client, lang) = get_lsp_client(ctx, &full_path).await?;
 
         let symbols = client.document_symbols(&full_path, &lang).await?;
-        let sym = find_symbol_by_name_path(&symbols, name_path).ok_or_else(|| {
-            RecoverableError::with_hint(
-                format!("symbol not found: {}", name_path),
-                "Use list_symbols(path) to see available symbols, or check the name_path spelling.",
-            )
-        })?;
+        let sym = find_unique_symbol_by_name_path(&symbols, name_path)?;
 
         // Validate: catch degenerate LSP ranges
         validate_symbol_range(sym)?;
@@ -1466,6 +1403,7 @@ impl Tool for InsertCode {
         })
     }
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
+        super::guard_worktree_write(ctx).await?;
         let name_path = super::require_str_param(&input, "name_path")?;
         let rel_path = get_path_param(&input, true)?.unwrap();
         let code = super::require_str_param(&input, "code")?;
@@ -1475,12 +1413,7 @@ impl Tool for InsertCode {
         let (client, lang) = get_lsp_client(ctx, &full_path).await?;
 
         let symbols = client.document_symbols(&full_path, &lang).await?;
-        let sym = find_symbol_by_name_path(&symbols, name_path).ok_or_else(|| {
-            RecoverableError::with_hint(
-                format!("symbol not found: {}", name_path),
-                "Use list_symbols(path) to see available symbols, or check the name_path spelling.",
-            )
-        })?;
+        let sym = find_unique_symbol_by_name_path(&symbols, name_path)?;
 
         validate_symbol_range(sym)?;
         let content = std::fs::read_to_string(&full_path)?;
@@ -1657,12 +1590,7 @@ impl Tool for RenameSymbol {
 
         // Find the symbol to get its position
         let symbols = client.document_symbols(&full_path, &lang).await?;
-        let sym = find_symbol_by_name_path(&symbols, name_path).ok_or_else(|| {
-            RecoverableError::with_hint(
-                format!("symbol not found: {}", name_path),
-                "Use list_symbols(path) to see available symbols, or check the name_path spelling.",
-            )
-        })?;
+        let sym = find_unique_symbol_by_name_path(&symbols, name_path)?;
 
         // Request rename from LSP
         let edit = client
@@ -2289,6 +2217,7 @@ fn symbol_name_matches(sym: &SymbolInfo, query: &str) -> bool {
     false
 }
 
+#[cfg(test)]
 fn find_symbol_by_name_path<'a>(
     symbols: &'a [SymbolInfo],
     name_path: &str,
@@ -2302,6 +2231,52 @@ fn find_symbol_by_name_path<'a>(
         }
     }
     None
+}
+
+/// Like [`find_symbol_by_name_path`] but errors on ambiguous matches.
+///
+/// Returns `Ok(&SymbolInfo)` when exactly one symbol matches `name_path`.
+/// Returns `Err(RecoverableError)` when:
+/// - No symbol matches (not found)
+/// - Multiple symbols match (ambiguous bare name) — the error lists all
+///   full `name_path`s so the caller can supply a more specific query.
+fn find_unique_symbol_by_name_path<'a>(
+    symbols: &'a [SymbolInfo],
+    name_path: &str,
+) -> anyhow::Result<&'a SymbolInfo> {
+    let mut matches = collect_matching_symbols(symbols, name_path);
+    match matches.len() {
+        0 => Err(RecoverableError::with_hint(
+            format!("symbol not found: {name_path}"),
+            "Use list_symbols(path) to see available symbols, or check the name_path spelling.",
+        )
+        .into()),
+        1 => Ok(matches.remove(0)),
+        _ => {
+            let paths: Vec<String> = matches.iter().map(|s| s.name_path.clone()).collect();
+            Err(RecoverableError::with_hint(
+                format!(
+                    "ambiguous name_path \"{name_path}\" matches {} symbols: {}",
+                    paths.len(),
+                    paths.join(", ")
+                ),
+                "Provide the full name_path (e.g. \"StructName/method_name\") to disambiguate.",
+            )
+            .into())
+        }
+    }
+}
+
+/// Collect all symbols matching `name_path` (depth-first, including children).
+fn collect_matching_symbols<'a>(symbols: &'a [SymbolInfo], name_path: &str) -> Vec<&'a SymbolInfo> {
+    let mut results = Vec::new();
+    for sym in symbols {
+        if symbol_name_matches(sym, name_path) {
+            results.push(sym);
+        }
+        results.extend(collect_matching_symbols(&sym.children, name_path));
+    }
+    results
 }
 
 /// Convert a `file://` URI to a filesystem path.
@@ -3397,6 +3372,73 @@ impl Point {
         let found_method = find_symbol_by_name_path(&symbols, "findById");
         assert!(found_method.is_some());
         assert_eq!(found_method.unwrap().name, "findById");
+    }
+
+    #[test]
+    fn find_unique_symbol_by_name_path_errors_on_ambiguous_name() {
+        let test_file = std::env::temp_dir().join("test.rs");
+        let make_method = |parent: &str, name: &str| SymbolInfo {
+            name: name.to_string(),
+            name_path: format!("{}/{}", parent, name),
+            kind: crate::lsp::SymbolKind::Function,
+            file: test_file.clone(),
+            start_line: 0,
+            end_line: 5,
+            start_col: 0,
+            children: vec![],
+            detail: None,
+        };
+        let symbols = vec![
+            SymbolInfo {
+                name: "ToolA".to_string(),
+                name_path: "ToolA".to_string(),
+                kind: crate::lsp::SymbolKind::Struct,
+                file: test_file.clone(),
+                start_line: 0,
+                end_line: 20,
+                start_col: 0,
+                children: vec![make_method("ToolA", "call")],
+                detail: None,
+            },
+            SymbolInfo {
+                name: "ToolB".to_string(),
+                name_path: "ToolB".to_string(),
+                kind: crate::lsp::SymbolKind::Struct,
+                file: test_file.clone(),
+                start_line: 25,
+                end_line: 45,
+                start_col: 0,
+                children: vec![make_method("ToolB", "call")],
+                detail: None,
+            },
+        ];
+
+        // Ambiguous bare name → RecoverableError listing all matching name_paths
+        let result = find_unique_symbol_by_name_path(&symbols, "call");
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("ToolA/call"),
+            "expected ToolA/call in error, got: {err_str}"
+        );
+        assert!(
+            err_str.contains("ToolB/call"),
+            "expected ToolB/call in error, got: {err_str}"
+        );
+
+        // Qualified name_path → exactly one match
+        let result = find_unique_symbol_by_name_path(&symbols, "ToolA/call");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().name_path, "ToolA/call");
+
+        // Not found → RecoverableError mentioning the query
+        let result = find_unique_symbol_by_name_path(&symbols, "nonexistent");
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("nonexistent"),
+            "expected symbol name in error, got: {err_str}"
+        );
     }
 
     #[tokio::test]
