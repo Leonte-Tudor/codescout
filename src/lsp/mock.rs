@@ -12,6 +12,7 @@ use crate::lsp::SymbolInfo;
 pub struct MockLspClient {
     symbols: HashMap<PathBuf, Vec<SymbolInfo>>,
     definitions: HashMap<(u32, u32), Vec<lsp_types::Location>>,
+    workspace_results: Vec<SymbolInfo>,
 }
 
 impl MockLspClient {
@@ -19,6 +20,7 @@ impl MockLspClient {
         Self {
             symbols: HashMap::new(),
             definitions: HashMap::new(),
+            workspace_results: vec![],
         }
     }
 
@@ -42,6 +44,12 @@ impl MockLspClient {
         self.definitions.insert((line, col), locations);
         self
     }
+
+    /// Pre-load workspace/symbol results returned for any query.
+    pub fn with_workspace_symbols(mut self, syms: Vec<SymbolInfo>) -> Self {
+        self.workspace_results = syms;
+        self
+    }
 }
 
 impl Default for MockLspClient {
@@ -61,7 +69,7 @@ impl LspClientOps for MockLspClient {
     }
 
     async fn workspace_symbols(&self, _query: &str) -> anyhow::Result<Vec<SymbolInfo>> {
-        Ok(vec![])
+        Ok(self.workspace_results.clone())
     }
 
     async fn references(

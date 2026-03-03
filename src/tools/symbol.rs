@@ -5218,4 +5218,81 @@ fn main() {
         assert!(out.contains("src/a.rs:1"));
         assert!(!out.contains("more"), "no trailer when all fit");
     }
+
+    #[tokio::test]
+    async fn find_symbol_falls_back_to_document_symbols_on_bad_workspace_range() {
+        use crate::lsp::{mock::MockLspClient, mock::MockLspProvider, SymbolInfo, SymbolKind};
+
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(dir.path().join(".code-explorer")).unwrap();
+        let file = src_dir.join("lib.rs");
+        std::fs::write(
+            &file,
+            "fn helper(x: i32) -> i32 {\n    let y = x + 1;\n    y * 2\n}\n",
+        )
+        .unwrap();
+
+        // workspace/symbol returns degenerate range (start == end)
+        let degenerate = SymbolInfo {
+            name: "helper".to_string(),
+            name_path: "helper".to_string(),
+            kind: SymbolKind::Function,
+            file: file.clone(),
+            start_line: 0,
+            end_line: 0,
+            start_col: 3,
+            children: vec![],
+            detail: None,
+        };
+
+        // document_symbols returns correct range
+        let correct = SymbolInfo {
+            name: "helper".to_string(),
+            name_path: "helper".to_string(),
+            kind: SymbolKind::Function,
+            file: file.clone(),
+            start_line: 0,
+            end_line: 3,
+            start_col: 3,
+            children: vec![],
+            detail: None,
+        };
+
+        let mock = MockLspClient::new()
+            .with_workspace_symbols(vec![degenerate])
+            .with_symbols(&file, vec![correct]);
+        let lsp = MockLspProvider::with_client(mock);
+
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        let ctx = ToolContext {
+            agent,
+            lsp,
+            output_buffer: buf(),
+            progress: None,
+        };
+
+        let result = FindSymbol
+            .call(
+                json!({
+                    "pattern": "helper",
+                    "include_body": true,
+                }),
+                &ctx,
+            )
+            .await;
+
+        let val = result.expect("find_symbol should recover via document_symbols fallback");
+        let symbols = val["symbols"].as_array().expect("symbols array");
+        assert_eq!(symbols.len(), 1, "should find exactly one symbol");
+
+        let body = symbols[0]["body"]
+            .as_str()
+            .expect("body should be present");
+        assert!(
+            body.contains("let y = x + 1"),
+            "body should contain function contents; got: {body}"
+        );
+    }
 }
