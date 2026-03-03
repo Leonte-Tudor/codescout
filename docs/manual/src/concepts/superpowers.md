@@ -109,7 +109,6 @@ you want it gone entirely.
 
 ## Further Reading
 
-- [Git Worktrees](worktrees.md) — the three-layer protection system (write guard,
-  worktree hint, navigation exclusions) that prevents silent cross-worktree edits
+- [Git Worktrees](worktrees.md) — two-layer protection (write guard + navigation exclusions) that prevents silent cross-worktree edits
 - [Routing Plugin](routing-plugin.md) — how the plugin's `worktree-activate.sh`
   hook auto-calls `activate_project` when `EnterWorktree` fires

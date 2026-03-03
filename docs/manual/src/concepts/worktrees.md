@@ -35,27 +35,7 @@ detect the mismatch and raise a hard error rather than silently writing to the
 wrong place. The error message lists the detected worktree paths and the exact
 `activate_project` call needed to unblock.
 
-This is the last line of defence — `worktree_hint` (below) should catch
-the situation earlier.
-
-## Layer 2 — Worktree Hint on Write Responses
-
-After every successful write, if linked worktrees exist under the active project
-root, the response JSON includes an advisory `"worktree_hint"` field:
-
-```json
-{
-  "worktree_hint": "This repo has linked worktrees: [/repo/.claude/worktrees/my-feature].
-                    If you meant to edit a worktree, call activate_project first."
-}
-```
-
-This surfaces immediately after the first write in a worktree session. The AI
-can self-correct before the mistake compounds. Zero overhead when no worktrees
-exist — it's a single `.git/worktrees/` directory check that returns `None` on
-the fast path.
-
-## Layer 3 — Navigation Exclusions
+## Layer 2 — Navigation Exclusions
 
 Worktree directories (`.claude/worktrees/`, `.worktrees/`) are excluded from
 `find_file` and `list_dir` results. Without this, file searches and directory
