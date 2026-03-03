@@ -672,6 +672,71 @@ fn looks_like_ack_handle(command: &str) -> bool {
     suffix.len() == 8 && suffix.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+/// Reassemble a buffered command summary with a stable, reader-friendly field order.
+///
+/// Dynamic field appending (`obj["key"] = val`) always places fields last, which
+/// caused `output_id` (the buffer reference) to land after `stdout`/`failures`/
+/// `first_error` (the bulk content). Correct order:
+///   type → exit_code → output_id → [counts] → hint → [total_lines] → [warning] → [content]
+fn rebuild_buffered_summary(
+    raw: Value,
+    output_id: &str,
+    hint: &str,
+    total_stdout_lines: usize,
+    total_stderr_lines: usize,
+    add_warning: bool,
+) -> Value {
+    // These are large text fields — always go last.
+    const CONTENT_FIELDS: &[&str] = &["stdout", "failures", "first_error"];
+
+    let mut map = serde_json::Map::new();
+
+    // 1. Status identity
+    if let Some(v) = raw.get("type") {
+        map.insert("type".into(), v.clone());
+    }
+    if let Some(v) = raw.get("exit_code") {
+        map.insert("exit_code".into(), v.clone());
+    }
+
+    // 2. Buffer reference — most action-relevant, agent needs this to query results
+    map.insert("output_id".into(), json!(output_id));
+
+    // 3. Type-specific compact fields (counts, not content)
+    let raw_obj = raw.as_object().expect("summary is always an object");
+    for (k, v) in raw_obj {
+        if !["type", "exit_code"].contains(&k.as_str()) && !CONTENT_FIELDS.contains(&k.as_str()) {
+            map.insert(k.clone(), v.clone());
+        }
+    }
+
+    // 4. Guidance
+    map.insert("hint".into(), json!(hint));
+
+    // 5. Line count metadata
+    map.insert("total_stdout_lines".into(), json!(total_stdout_lines));
+    if total_stderr_lines > 0 {
+        map.insert("total_stderr_lines".into(), json!(total_stderr_lines));
+    }
+
+    // 6. Warning (security notice)
+    if add_warning {
+        map.insert(
+            "warning".into(),
+            json!("Shell commands execute with full user permissions. Only use for build/test commands."),
+        );
+    }
+
+    // 7. Content fields last — bulk payload
+    for field in CONTENT_FIELDS {
+        if let Some(v) = raw_obj.get(*field) {
+            map.insert((*field).into(), v.clone());
+        }
+    }
+
+    Value::Object(map)
+}
+
 /// Inner logic for `RunCommand::call`, extracted so temp-file cleanup
 /// always happens in the caller regardless of early returns.
 #[allow(clippy::too_many_arguments)]
@@ -896,7 +961,7 @@ async fn run_command_inner(
                 );
 
                 let cmd_type = detect_command_type(original_command);
-                let mut summary = match cmd_type {
+                let cmd_summary = match cmd_type {
                     CommandType::Test => summarize_test_output(&raw_stdout, &raw_stderr, exit_code),
                     CommandType::Build => {
                         summarize_build_output(&raw_stdout, &raw_stderr, exit_code)
@@ -904,13 +969,6 @@ async fn run_command_inner(
                     CommandType::Generic => summarize_generic(&raw_stdout, &raw_stderr, exit_code),
                 };
 
-                // Add buffer metadata
-                summary["output_id"] = json!(output_id);
-                summary["total_stdout_lines"] = json!(count_lines(&raw_stdout));
-                let stderr_lines = count_lines(&raw_stderr);
-                if stderr_lines > 0 {
-                    summary["total_stderr_lines"] = json!(stderr_lines);
-                }
                 let hint_text = if looks_like_file_read(original_command) {
                     format!(
                         "Full output stored. Query with: run_command(\"grep/tail/awk/sed {output_id}\"). \
@@ -921,17 +979,23 @@ async fn run_command_inner(
                         "Full output stored. Query with: run_command(\"grep/tail/awk/sed {output_id}\")",
                     )
                 };
-                summary["hint"] = json!(hint_text);
 
-                // Add warning in warn mode
-                if !buffer_only
+                let stdout_lines = count_lines(&raw_stdout);
+                let stderr_lines = count_lines(&raw_stderr);
+                let add_warning = !buffer_only
                     && (security.shell_command_mode == "warn"
-                        || security.shell_command_mode.is_empty())
-                {
-                    summary["warning"] = json!(
-                        "Shell commands execute with full user permissions. Only use for build/test commands."
-                    );
-                }
+                        || security.shell_command_mode.is_empty());
+
+                // Rebuild with correct field order so output_id (the buffer reference
+                // the agent needs) appears before content fields (stdout/failures/first_error).
+                let summary = rebuild_buffered_summary(
+                    cmd_summary,
+                    &output_id,
+                    &hint_text,
+                    stdout_lines,
+                    stderr_lines,
+                    add_warning,
+                );
 
                 Ok(summary)
             } else {
@@ -2295,6 +2359,45 @@ mod tests {
             stdout.starts_with(&format!("↻ {} refreshed from disk", id)),
             "expected refresh indicator, got: {:?}",
             stdout
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_command_buffered_output_has_output_id_before_stdout() {
+        // Regression: output_id (the buffer reference the agent needs to query results)
+        // was appended dynamically after the summary object was built, placing it AFTER
+        // stdout/content fields. It must appear before content.
+        let (_dir, ctx) = project_ctx().await;
+        // seq 100 produces 100 lines, exceeding SUMMARY_LINE_THRESHOLD (50) to trigger buffering.
+        let result = RunCommand
+            .call(json!({ "command": "seq 100" }), &ctx)
+            .await
+            .unwrap();
+
+        assert!(
+            result["output_id"].is_string(),
+            "expected buffered output (output_id present) for 100-line command, got: {result:?}"
+        );
+
+        let keys: Vec<&str> = result
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|s| s.as_str())
+            .collect();
+
+        let output_id_pos = keys.iter().position(|k| *k == "output_id").unwrap();
+        // stdout is the content field in generic summaries; failures/first_error in others.
+        // We assert output_id appears before any content-heavy field.
+        let stdout_pos = keys
+            .iter()
+            .position(|k| *k == "stdout")
+            .unwrap_or(keys.len());
+
+        assert!(
+            output_id_pos < stdout_pos,
+            "output_id must appear before stdout (content payload), got key order: {keys:?}"
         );
     }
 }

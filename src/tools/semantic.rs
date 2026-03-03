@@ -103,15 +103,15 @@ impl Tool for SemanticSearch {
                     }
                     preview
                 };
-                json!({
-                    "file_path": r.file_path,
-                    "language": r.language,
-                    "content": content_field,
-                    "start_line": r.start_line,
-                    "end_line": r.end_line,
-                    "score": r.score,
-                    "source": r.source,
-                })
+                format_search_result_item(
+                    &r.file_path,
+                    r.score,
+                    r.start_line,
+                    r.end_line,
+                    &r.language,
+                    &r.source,
+                    content_field,
+                )
             })
             .collect();
 
@@ -430,6 +430,31 @@ impl Tool for IndexStatus {
     fn format_compact(&self, result: &Value) -> Option<String> {
         Some(format_index_status(result))
     }
+}
+
+/// Build a single search result item JSON object.
+/// Field order: file_path → score → start_line → end_line → language → source → content
+/// (score is the primary quality signal and must appear before content to let the
+/// LLM assess relevance before paying the token cost of reading the chunk)
+fn format_search_result_item(
+    file_path: &str,
+    score: f32,
+    start_line: usize,
+    end_line: usize,
+    language: &str,
+    source: &str,
+    content: String,
+) -> Value {
+    // Field order: identity → quality signal → location → metadata → content (bulk payload last)
+    let mut map = serde_json::Map::new();
+    map.insert("file_path".into(), json!(file_path));
+    map.insert("score".into(), json!(score));
+    map.insert("start_line".into(), json!(start_line));
+    map.insert("end_line".into(), json!(end_line));
+    map.insert("language".into(), json!(language));
+    map.insert("source".into(), json!(source));
+    map.insert("content".into(), json!(content));
+    Value::Object(map)
 }
 
 fn format_semantic_search(val: &Value) -> String {
@@ -1123,6 +1148,41 @@ mod tests {
         assert!(
             out.contains("5 commits behind") || out.contains("stale"),
             "should note staleness, got: {out}"
+        );
+    }
+
+    #[test]
+    fn search_result_item_field_order_score_before_content() {
+        // Regression: score (the primary quality signal) must appear before content
+        // so the LLM can assess relevance before paying the token cost of reading the chunk.
+        // content must be last — it is the bulk payload.
+        let item = format_search_result_item(
+            "src/foo.rs",
+            0.95,
+            10,
+            20,
+            "rust",
+            "project",
+            "fn hello() {}".to_string(),
+        );
+        let keys: Vec<&str> = item
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|s| s.as_str())
+            .collect();
+
+        let score_pos = keys.iter().position(|k| *k == "score").unwrap();
+        let content_pos = keys.iter().position(|k| *k == "content").unwrap();
+
+        assert!(
+            score_pos < content_pos,
+            "score must appear before content, got key order: {keys:?}"
+        );
+        assert_eq!(
+            content_pos,
+            keys.len() - 1,
+            "content must be the last field, got key order: {keys:?}"
         );
     }
 }

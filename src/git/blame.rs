@@ -8,10 +8,10 @@ use super::open_repo;
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BlameLine {
     pub line: usize,
-    pub content: String,
-    pub sha: String,
     pub author: String,
+    pub sha: String,
     pub timestamp: i64,
+    pub content: String, // bulk payload — last so identity fields are read first
 }
 
 /// Return blame information for each line of `file` (relative to repo root).
@@ -118,5 +118,39 @@ mod tests {
         );
         assert_eq!(result[0].content, "line 1");
         assert_eq!(result[1].content, "line 2");
+    }
+
+    #[test]
+    fn blame_line_field_order_author_sha_before_content() {
+        // Regression: content (the source code snippet) is the bulk payload and must be last.
+        // Author and sha are identity fields — the reader wants to know who wrote it
+        // before seeing what they wrote.
+        let line = BlameLine {
+            line: 1,
+            content: "let x = 1;".to_string(),
+            sha: "abc123def456abc1".to_string(),
+            author: "Alice".to_string(),
+            timestamp: 1_234_567_890,
+        };
+        let val = serde_json::to_value(&line).unwrap();
+        let keys: Vec<&str> = val
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|s| s.as_str())
+            .collect();
+
+        let author_pos = keys.iter().position(|k| *k == "author").unwrap();
+        let content_pos = keys.iter().position(|k| *k == "content").unwrap();
+
+        assert!(
+            author_pos < content_pos,
+            "author must appear before content, got key order: {keys:?}"
+        );
+        assert_eq!(
+            content_pos,
+            keys.len() - 1,
+            "content must be the last field, got key order: {keys:?}"
+        );
     }
 }
