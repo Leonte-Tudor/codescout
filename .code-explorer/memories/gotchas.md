@@ -1,29 +1,21 @@
 # Gotchas & Known Issues
 
+## Prompt Surface Consistency
+The project has three prompt surfaces that reference tool names:
+- `src/prompts/server_instructions.md` — injected every MCP request
+- `src/prompts/onboarding_prompt.md` — one-time onboarding
+- `build_system_prompt_draft()` in `src/tools/workflow.rs` — generated per-project
+
+**When tools get renamed/consolidated, all three need coordinated updates.**
+Files closer to the change get updated; distant ones get stale refs ("distance from change" problem).
+
 ## find_symbol body truncation
-- **Problem:** `find_symbol(include_body=true)` uses LSP `workspace/symbol` which returns the *name position* (single line), not the full declaration range. Results in `start_line == end_line` and body containing only the signature.
-- **Fix:** Use `list_symbols(path)` first to get correct line ranges, then `find_symbol(name_path=..., include_body=true)` for methods. For top-level functions in large files, `list_functions(path)` gives accurate spans.
+`find_symbol(include_body=true)` uses LSP `workspace/symbol` which returns the *name position* (single line), not the full declaration range. This causes `start_line == end_line` and a body containing only the signature.
 
-## read_file rejects source code
-- **Problem:** `read_file` without `start_line`+`end_line` rejects source code files (.rs, .py, .ts, etc.).
-- **Fix:** Use symbol tools for source code. Use `read_file` for configs (TOML, JSON, YAML, MD). For targeted source reads, provide line range.
+**Workaround:** Use `list_symbols(path)` first to get correct line ranges, then fetch the body with `find_symbol(name_path=..., include_body=true)` for methods (which get full bodies from `documentSymbol`). For top-level functions in large files, `list_functions(path)` gives accurate spans.
 
-## LSP server startup latency
-- **Problem:** First LSP operation for a language can be slow (seconds) while the LSP server initializes and indexes.
-- **Fix:** This is expected. Subsequent calls are fast. The `LspManager` caches running servers.
+## PreToolUse Hook Limitations
+Claude Code only runs PreToolUse hooks for tools that enter permission evaluation. Built-in read-only tools (`Read`, `Glob`, `Grep`) are pre-approved and skip that pipeline entirely — hooks on them never fire. Only `Bash` is fully blockable via PreToolUse.
 
-## sqlite-vec loading
-- **Problem:** `init_sqlite_vec()` uses `rusqlite::Connection::load_extension` which can fail on systems without the shared library.
-- **Fix:** The `bundled` feature on rusqlite includes libsqlite3. sqlite-vec is loaded via `sqlite_vec::sqlite3_vec_init`.
-
-## Worktree write guard
-- **Problem:** After `EnterWorktree`, write tools are blocked until `activate_project` is called with the worktree path.
-- **Fix:** Always call `activate_project("/path/to/worktree")` after entering a worktree.
-
-## OutputGuard max_results vs max_files
-- **Problem:** `cap_items` and `cap_files` are separate — some tools cap items (search results), others cap files (symbol listings). Using the wrong one produces incorrect overflow info.
-- **Fix:** Check existing tools in the same category for which cap method they use.
-
-## Tool misbehavior log
-- **Problem:** Tool bugs are easy to forget.
-- **Fix:** Always check and update `docs/TODO-tool-misbehaviors.md` before and during work.
+## No Echo in Write Responses
+Mutation tools must return `json!("ok")` — never echo content back. The caller already knows the path and content; reflecting them wastes tokens.
