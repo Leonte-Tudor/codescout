@@ -10,7 +10,7 @@ languages (see the [Extending](extending/adding-languages.md) chapter for that).
 
 codescout is an MCP server that gives LLMs IDE-grade code intelligence. It
 sits between the AI assistant (Claude Code, Cursor, or any MCP-capable client)
-and the project's source code, providing 23 tools for navigation, search,
+and the project's source code, providing 28 tools for navigation, search,
 editing, and analysis.
 
 The server is a single Rust binary. It launches language servers, parses source
@@ -106,7 +106,7 @@ across all tool calls and, in HTTP mode, across all connections. Calling
 
 **Source:** `src/server.rs`
 
-All 23 tools are registered at startup in `CodeScoutServer::from_parts()` as
+All 28 tools are registered at startup in `CodeScoutServer::from_parts()` as
 a `Vec<Arc<dyn Tool>>`. Dispatch is by name: `call_tool()` iterates the vector
 and matches on `tool.name()`.
 

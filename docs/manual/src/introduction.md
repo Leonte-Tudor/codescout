@@ -114,7 +114,7 @@ project root.
 
 Beyond these pillars: 6 file operation tools (directory listing, file
 reading, pattern search, file search, file creation, find-and-replace editing), 2 workflow tools
-(project onboarding, shell commands), and 2 config tools — **23 tools total**.
+(project onboarding, shell commands), and 2 config tools — **28 tools total**.
 
 ### Token Efficiency by Design
 
