@@ -264,6 +264,13 @@ pub fn validate_write_path(
     // intermediate output, and cross-process coordination without polluting
     // the project root.
     allowed.push(PathBuf::from("/tmp"));
+    // CWD at server startup — Claude Code launches MCP servers from the
+    // project directory, so this covers the case where an absolute path
+    // targets the user's working directory even when --project points
+    // elsewhere (e.g. a companion tool project).
+    if let Ok(cwd) = std::env::current_dir() {
+        allowed.push(best_effort_canonicalize(&cwd));
+    }
     for extra in &config.extra_write_roots {
         allowed.push(best_effort_canonicalize(extra));
     }
@@ -657,6 +664,37 @@ mod tests {
         );
         assert_eq!(result.unwrap(), target);
     }
+
+    #[test]
+    fn write_within_cwd_allowed_even_outside_project_root() {
+        // Simulate the case where Claude Code launches the MCP server from
+        // a project directory different from --project.  The CWD at server
+        // startup should be an additional allowed write root.
+        let project = tempdir().unwrap();
+        let cwd_project = tempdir().unwrap();
+        std::fs::create_dir_all(cwd_project.path().join("src")).unwrap();
+
+        // Temporarily change the process CWD to cwd_project.
+        let original_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(cwd_project.path()).unwrap();
+
+        let target = cwd_project.path().join("src/Routing.kt");
+        let result = validate_write_path(
+            target.to_str().unwrap(),
+            project.path(), // active project root is different
+            &default_config(),
+        );
+
+        // Restore CWD before asserting so a failure doesn't leave it changed.
+        std::env::set_current_dir(original_cwd).unwrap();
+
+        assert!(
+            result.is_ok(),
+            "writes to a path under CWD should be allowed even if outside project root: {:?}",
+            result.err()
+        );
+    }
+
 
     #[test]
     fn write_to_tmp_denied_even_in_deny_list() {
