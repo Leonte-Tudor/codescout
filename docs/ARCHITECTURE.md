@@ -11,7 +11,7 @@ codescout is an MCP server that gives LLMs IDE-grade code intelligence. It expos
 ```
 ┌────────────────────────────────────────────────────────┐
 │              MCP Layer (rmcp)                           │
-│   CodeExplorerServer → registered tools (23)           │
+│   CodeScoutServer → registered tools (23)              │
 └────────────────────────────────────────────────────────┘
                           ↓
 ┌────────────────────────────────────────────────────────┐

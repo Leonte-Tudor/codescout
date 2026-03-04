@@ -316,16 +316,16 @@ returned 0 results instead of also timing out.
 > **Resolved by design (2026-03-02):** Symbol range redesign removed all range-manipulation heuristics. We now trust LSP ranges directly. See `docs/plans/2026-03-02-symbol-range-redesign-design.md`.
 
 **What happened:**
-Called `insert_code(name_path="CodeExplorerServer", path="src/server.rs", position="before", code="const USER_OUTPUT_ENABLED: bool = false;\n")`.
+Called `insert_code(name_path="CodeScoutServer", path="src/server.rs", position="before", code="const USER_OUTPUT_ENABLED: bool = false;\n")`.
 Expected the const to land _before_ the doc comment `/// The MCP server handler` that precedes the struct.
-Instead, the const was inserted between `#[derive(Clone)]` and `pub struct CodeExplorerServer` — splitting the attribute from the item it annotates:
+Instead, the const was inserted between `#[derive(Clone)]` and `pub struct CodeScoutServer` — splitting the attribute from the item it annotates:
 
 ```rust
 /// The MCP server handler — holds shared agent state and a registry of tools.
 #[derive(Clone)]
 const USER_OUTPUT_ENABLED: bool = false;   // ← inserted HERE (wrong)
 
-pub struct CodeExplorerServer {
+pub struct CodeScoutServer {
 ```
 
 This caused two compiler errors:
