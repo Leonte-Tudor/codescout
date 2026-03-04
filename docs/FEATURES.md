@@ -212,6 +212,16 @@ init_timeout_secs = 120
 
 ---
 
+## `goto_definition` and `hover`
+
+Two LSP-backed point-in-file tools that mirror what an IDE shows in the gutter.
+
+**`goto_definition`** — takes a file path and 1-indexed line number, returns the definition location for the symbol at that position. When the definition lives outside the project root (e.g. in a Rust dependency), it auto-discovers and registers the library source so subsequent symbol navigation works on it too.
+
+**`hover`** — takes a file path and line number, returns the type signature and documentation for the symbol at that position. Surfaces the same information as hovering in VS Code: inferred types, generic bounds, doc comments.
+
+Both tools require a running LSP server for the target language.
+
 ---
 
 ## Library Search
@@ -322,3 +332,23 @@ drift_detection_enabled = true
 ```
 
 **Future improvement:** File-level semantic fingerprints (mean of chunk embeddings per file) for codebase evolution tracking across git tags/releases. Deferred until transient comparison proves useful.
+
+---
+
+## GitHub Integration (5 tools)
+
+Five consolidated tools giving the AI authenticated read/write access to GitHub — replacing the need to shell out to `gh` for common operations.
+
+| Tool | Operations |
+|------|------------|
+| `github_identity` | `get_me`, `search_users`, `get_teams`, `get_team_members` |
+| `github_issue` | `list`, `search`, `get`, `get_comments`, `create`, `update`, `add_comment` |
+| `github_pr` | `list`, `get`, `get_diff`, `get_files`, `create_review`, `submit_review`, `merge` |
+| `github_file` | `get`, `create_or_update`, `delete`, `push_files` |
+| `github_repo` | `list_branches`, `create_branch`, `list_commits`, `list_releases`, `search_code` |
+
+**Key design:** `get_diff` and `get_commit` return `@tool_*` buffer handles rather than raw text — diffs are large and would flood context. Query them with `run_command("grep pattern @tool_id")` as with any other buffer.
+
+**Authentication:** Requires a `GITHUB_TOKEN` environment variable (or equivalent configured in the MCP host).
+
+See [GitHub tools reference](manual/src/tools/github.md) for full parameter docs.
