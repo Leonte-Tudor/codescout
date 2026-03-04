@@ -4,7 +4,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 #[derive(Parser)]
 #[command(
-    name = "code-explorer",
+    name = "codescout",
     about = "High-performance coding agent MCP server"
 )]
 struct Cli {
@@ -88,17 +88,17 @@ async fn main() -> Result<()> {
             auth_token,
         } => {
             tracing::info!(
-                "Starting code-explorer MCP server (transport={})",
+                "Starting codescout MCP server (transport={})",
                 transport
             );
-            code_explorer::server::run(project, &transport, &host, port, auth_token).await?;
+            codescout::server::run(project, &transport, &host, port, auth_token).await?;
         }
         Commands::Index { project, force } => {
             let root = project
                 .or_else(|| std::env::current_dir().ok())
                 .unwrap_or_else(|| std::path::PathBuf::from("."));
             tracing::info!("Indexing project at {}", root.display());
-            code_explorer::embed::index::build_index(&root, force).await?;
+            codescout::embed::index::build_index(&root, force).await?;
         }
         #[cfg(feature = "dashboard")]
         Commands::Dashboard {
@@ -111,7 +111,7 @@ async fn main() -> Result<()> {
                 .or_else(|| std::env::current_dir().ok())
                 .unwrap_or_else(|| std::path::PathBuf::from("."));
             tracing::info!("Launching dashboard for {}", root.display());
-            code_explorer::dashboard::serve(root, host, port, !no_open).await?;
+            codescout::dashboard::serve(root, host, port, !no_open).await?;
         }
     }
 
