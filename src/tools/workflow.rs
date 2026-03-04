@@ -546,7 +546,9 @@ impl Tool for RunCommand {
     }
     fn description(&self) -> &str {
         "Run a shell command in the project root. Large output is buffered with a smart summary \
-         — query it with Unix tools via @output_id refs (e.g. grep pattern @cmd_abc)."
+         — query it with Unix tools via @output_id refs (e.g. grep pattern @cmd_abc). \
+         ALREADY IN THE PROJECT ROOT — do NOT prefix with `cd /abs/path &&`. \
+         Use the `cwd` parameter for subdirectories."
     }
     fn input_schema(&self) -> Value {
         json!({
@@ -555,7 +557,7 @@ impl Tool for RunCommand {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "Shell command to execute. May reference stored output buffers with @output_id syntax (e.g. grep FAILED @cmd_a1b2c3)."
+                    "description": "Shell command to execute. NEVER prefix with `cd /abs/path &&` — already in the project root. May reference stored output buffers with @output_id syntax (e.g. grep FAILED @cmd_a1b2c3)."
                 },
                 "timeout_secs": {
                     "type": "integer",
@@ -795,7 +797,7 @@ async fn run_command_inner(
     use super::command_summary::{
         count_lines, detect_command_type, detect_terminal_filter, needs_summary,
         summarize_build_output, summarize_generic, summarize_test_output, truncate_lines,
-        truncate_lines_and_bytes, CommandType, BUFFER_QUERY_INLINE_CAP,
+        truncate_lines_and_bytes, CommandType, BUFFER_QUERY_INLINE_CAP, SUMMARY_LINE_THRESHOLD,
     };
     use crate::util::path_security::is_dangerous_command;
 
@@ -937,12 +939,37 @@ async fn run_command_inner(
             let raw_stderr = String::from_utf8_lossy(&output.stderr).into_owned();
             let exit_code = output.status.code().unwrap_or(-1);
 
-            // Cleanup stub: Task 3 will read this file before deleting it.
-            // For now, just ensure it doesn't leak on early returns below.
-            let _unfiltered_tmpfile = unfiltered_tmpfile; // will be consumed in Task 3
+            // --- Step 6.5: Read tee capture and store as unfiltered_output ref ---
+            let unfiltered_ref: Option<(String, bool)> =
+                if let Some(ref tmpfile) = unfiltered_tmpfile {
+                    let capture = std::fs::read_to_string(tmpfile).ok();
+                    let _ = std::fs::remove_file(tmpfile); // always clean up
+                    capture.map(|content| {
+                        let line_count = count_lines(&content);
+                        let (stored, truncated) = if line_count > SUMMARY_LINE_THRESHOLD {
+                            let capped = content
+                                .lines()
+                                .take(SUMMARY_LINE_THRESHOLD)
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            (capped, true)
+                        } else {
+                            (content, false)
+                        };
+                        let ref_id = ctx.output_buffer.store(
+                            original_command.to_string(),
+                            stored,
+                            String::new(),
+                            exit_code,
+                        );
+                        (ref_id, truncated)
+                    })
+                } else {
+                    None
+                };
 
             // --- Step 6: Decide whether to buffer + summarize ---
-            if needs_summary(&raw_stdout, &raw_stderr) {
+            let mut result = if needs_summary(&raw_stdout, &raw_stderr) {
                 // When the command was querying a buffer ref (e.g. `sed @cmd_A`),
                 // creating a *new* buffer causes an infinite loop: the agent sees
                 // a fresh ref, queries it again, gets another ref, and so on.
@@ -1041,19 +1068,25 @@ async fn run_command_inner(
 
                 // Rebuild with correct field order so output_id (the buffer reference
                 // the agent needs) appears before content fields (stdout/failures/first_error).
-                let summary = rebuild_buffered_summary(cmd_summary, &output_id);
-
-                Ok(summary)
+                rebuild_buffered_summary(cmd_summary, &output_id)
             } else {
                 // Short output — return directly
-                let result = json!({
+                json!({
                     "stdout": raw_stdout,
                     "stderr": raw_stderr,
                     "exit_code": exit_code,
-                });
+                })
+            };
 
-                Ok(result)
+            // Attach unfiltered_output ref if we captured via tee
+            if let Some((ref ref_id, truncated)) = unfiltered_ref {
+                result["unfiltered_output"] = json!(ref_id);
+                if truncated {
+                    result["unfiltered_truncated"] = json!(true);
+                }
             }
+
+            Ok(result)
         }
         Ok(Err(e)) => {
             Err(super::RecoverableError::new(format!("command execution error: {}", e)).into())
@@ -2473,6 +2506,24 @@ mod tests {
         assert!(
             result.get("unfiltered_output").is_none(),
             "unexpected unfiltered_output for non-filter pipe: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unfiltered_truncated_when_over_threshold() {
+        let (dir, ctx) = project_ctx().await;
+        // Write SUMMARY_LINE_THRESHOLD + 10 lines; grep for just one
+        let content: String = (0..60).map(|i| format!("line{i}\n")).collect();
+        std::fs::write(dir.path().join("big.txt"), &content).unwrap();
+        let result = RunCommand
+            .call(json!({ "command": "cat big.txt | grep line0" }), &ctx)
+            .await
+            .unwrap();
+        // truncated flag should be set (60 lines > SUMMARY_LINE_THRESHOLD=50)
+        assert_eq!(
+            result["unfiltered_truncated"],
+            json!(true),
+            "expected truncated flag: {result}"
         );
     }
 }
