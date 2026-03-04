@@ -1,10 +1,10 @@
 use crate::e2e::expectations::{load_expectations, LangExpectation};
-use code_explorer::agent::Agent;
-use code_explorer::lsp::manager::LspManager;
-use code_explorer::tools::ast::ListFunctions;
-use code_explorer::tools::file::SearchPattern;
-use code_explorer::tools::symbol::{FindReferences, FindSymbol, ListSymbols};
-use code_explorer::tools::{Tool, ToolContext};
+use codescout::agent::Agent;
+use codescout::lsp::manager::LspManager;
+use codescout::tools::ast::ListFunctions;
+use codescout::tools::file::SearchPattern;
+use codescout::tools::symbol::{FindReferences, FindSymbol, ListSymbols};
+use codescout::tools::{Tool, ToolContext};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -43,7 +43,7 @@ async fn fixture_context(language: &str) -> Arc<ToolContext> {
     Arc::new(ToolContext {
         agent,
         lsp,
-        output_buffer: Arc::new(code_explorer::tools::output_buffer::OutputBuffer::new(20)),
+        output_buffer: Arc::new(codescout::tools::output_buffer::OutputBuffer::new(20)),
         progress: None,
     })
 }

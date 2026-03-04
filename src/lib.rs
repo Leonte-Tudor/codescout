@@ -1,4 +1,4 @@
-//! code-explorer: high-performance coding agent MCP server.
+//! codescout: high-performance coding agent MCP server.
 //!
 //! Provides IDE-grade code intelligence to LLMs via the Model Context Protocol.
 

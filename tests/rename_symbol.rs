@@ -9,10 +9,10 @@
 //!   cargo test --test rename_symbol rename_python -- --ignored
 //!   cargo test --test rename_symbol -- --ignored   # all
 
-use code_explorer::agent::Agent;
-use code_explorer::lsp::LspManager;
-use code_explorer::tools::symbol::RenameSymbol;
-use code_explorer::tools::{Tool, ToolContext};
+use codescout::agent::Agent;
+use codescout::lsp::LspManager;
+use codescout::tools::symbol::RenameSymbol;
+use codescout::tools::{Tool, ToolContext};
 use serde_json::json;
 use std::sync::Arc;
 use tempfile::tempdir;
@@ -31,7 +31,7 @@ async fn project(files: &[(&str, &str)]) -> (tempfile::TempDir, ToolContext) {
     let ctx = ToolContext {
         agent,
         lsp: Arc::new(LspManager::new()),
-        output_buffer: Arc::new(code_explorer::tools::output_buffer::OutputBuffer::new(20)),
+        output_buffer: Arc::new(codescout::tools::output_buffer::OutputBuffer::new(20)),
         progress: None,
     };
     (dir, ctx)
@@ -42,7 +42,7 @@ async fn project(files: &[(&str, &str)]) -> (tempfile::TempDir, ToolContext) {
 /// Triggers `textDocument/didOpen` via ListSymbols, then polls until the
 /// server returns actual symbols (proving it has parsed the file).
 async fn warmup(ctx: &ToolContext, path: &str) {
-    use code_explorer::tools::symbol::ListSymbols;
+    use codescout::tools::symbol::ListSymbols;
     let input = json!({ "path": path });
     for _ in 0u32..60 {
         match ListSymbols.call(input.clone(), ctx).await {

@@ -35,7 +35,7 @@ use crate::tools::{
 use crate::usage::UsageRecorder;
 
 #[derive(Clone)]
-pub struct CodeExplorerServer {
+pub struct CodeScoutServer {
     agent: Agent,
     lsp: Arc<dyn LspProvider>,
     output_buffer: Arc<crate::tools::output_buffer::OutputBuffer>,
@@ -47,7 +47,7 @@ pub struct CodeExplorerServer {
     instructions: String,
 }
 
-impl CodeExplorerServer {
+impl CodeScoutServer {
     pub async fn new(agent: Agent) -> Self {
         Self::from_parts(agent, LspManager::new_arc()).await
     }
@@ -204,7 +204,7 @@ fn tool_skips_server_timeout(name: &str) -> bool {
     matches!(name, "index_project" | "index_library" | "run_command")
 }
 
-impl ServerHandler for CodeExplorerServer {
+impl ServerHandler for CodeScoutServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             instructions: Some(self.instructions.clone()),
@@ -341,8 +341,8 @@ pub async fn run(
             if auth_token.is_some() {
                 tracing::warn!("--auth-token is ignored for stdio transport");
             }
-            tracing::info!("code-explorer MCP server ready (stdio)");
-            let server = CodeExplorerServer::from_parts(agent, lsp.clone()).await;
+            tracing::info!("codescout MCP server ready (stdio)");
+            let server = CodeScoutServer::from_parts(agent, lsp.clone()).await;
             let service = server
                 .serve(rmcp::transport::stdio())
                 .await
@@ -411,7 +411,7 @@ pub async fn run(
                                 let agent = agent.clone();
                                 let lsp = lsp.clone();
                                 tokio::spawn(async move {
-                                    let handler = CodeExplorerServer::from_parts(agent, lsp).await;
+                                    let handler = CodeScoutServer::from_parts(agent, lsp).await;
                                     match handler.serve(transport).await {
                                         Ok(service) => {
                                             if let Err(e) = service.waiting().await {
@@ -480,17 +480,17 @@ mod tests {
     use crate::agent::Agent;
     use tempfile::tempdir;
 
-    async fn make_server() -> (tempfile::TempDir, CodeExplorerServer) {
+    async fn make_server() -> (tempfile::TempDir, CodeScoutServer) {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".code-explorer")).unwrap();
         let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
-        let server = CodeExplorerServer::new(agent).await;
+        let server = CodeScoutServer::new(agent).await;
         (dir, server)
     }
 
-    async fn make_server_no_project() -> CodeExplorerServer {
+    async fn make_server_no_project() -> CodeScoutServer {
         let agent = Agent::new(None).await.unwrap();
-        CodeExplorerServer::new(agent).await
+        CodeScoutServer::new(agent).await
     }
 
     #[tokio::test]

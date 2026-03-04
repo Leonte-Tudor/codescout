@@ -3,9 +3,9 @@
 //! These tests exercise realistic tool sequences that a coding agent would
 //! perform, ensuring tools compose correctly end-to-end.
 
-use code_explorer::agent::Agent;
-use code_explorer::lsp::LspManager;
-use code_explorer::tools::{Tool, ToolContext};
+use codescout::agent::Agent;
+use codescout::lsp::LspManager;
+use codescout::tools::{Tool, ToolContext};
 use serde_json::json;
 use tempfile::tempdir;
 
@@ -24,7 +24,7 @@ async fn project_with_files(files: &[(&str, &str)]) -> (tempfile::TempDir, ToolC
     let ctx = ToolContext {
         agent,
         lsp: LspManager::new_arc(),
-        output_buffer: std::sync::Arc::new(code_explorer::tools::output_buffer::OutputBuffer::new(
+        output_buffer: std::sync::Arc::new(codescout::tools::output_buffer::OutputBuffer::new(
             20,
         )),
         progress: None,
@@ -38,7 +38,7 @@ async fn project_with_files(files: &[(&str, &str)]) -> (tempfile::TempDir, ToolC
 
 #[tokio::test]
 async fn workflow_read_search_replace() {
-    use code_explorer::tools::file::{EditFile, ReadFile, SearchPattern};
+    use codescout::tools::file::{EditFile, ReadFile, SearchPattern};
     let (dir, ctx) = project_with_files(&[
         (
             "src/main.txt",
@@ -108,7 +108,7 @@ async fn workflow_read_search_replace() {
 
 #[tokio::test]
 async fn workflow_analyze_ast() {
-    use code_explorer::tools::ast::{ListDocs, ListFunctions};
+    use codescout::tools::ast::{ListDocs, ListFunctions};
 
     let (dir, ctx) = project_with_files(&[
         (
@@ -170,8 +170,8 @@ async fn workflow_analyze_ast() {
 
 #[tokio::test]
 async fn workflow_project_memory_config() {
-    use code_explorer::tools::config::{ActivateProject, ProjectStatus};
-    use code_explorer::tools::memory::{ListMemories, ReadMemory, WriteMemory};
+    use codescout::tools::config::{ActivateProject, ProjectStatus};
+    use codescout::tools::memory::{ListMemories, ReadMemory, WriteMemory};
 
     let (dir, ctx) = project_with_files(&[("src/main.rs", "fn main() {}\n")]).await;
 
@@ -225,8 +225,8 @@ async fn workflow_project_memory_config() {
 
 #[tokio::test]
 async fn workflow_git_blame() {
-    use code_explorer::tools::file::CreateFile;
-    use code_explorer::tools::git::GitBlame;
+    use codescout::tools::file::CreateFile;
+    use codescout::tools::git::GitBlame;
 
     let dir = tempdir().unwrap();
 
@@ -238,7 +238,7 @@ async fn workflow_git_blame() {
     let ctx = ToolContext {
         agent,
         lsp: LspManager::new_arc(),
-        output_buffer: std::sync::Arc::new(code_explorer::tools::output_buffer::OutputBuffer::new(
+        output_buffer: std::sync::Arc::new(codescout::tools::output_buffer::OutputBuffer::new(
             20,
         )),
         progress: None,
@@ -287,9 +287,9 @@ async fn workflow_git_blame() {
 #[tokio::test]
 #[ignore = "requires running Ollama with nomic-embed-text"]
 async fn workflow_ollama_index_and_search() {
-    use code_explorer::embed::index;
-    use code_explorer::tools::config::ActivateProject;
-    use code_explorer::tools::semantic::{IndexProject, SemanticSearch};
+    use codescout::embed::index;
+    use codescout::tools::config::ActivateProject;
+    use codescout::tools::semantic::{IndexProject, SemanticSearch};
 
     let (dir, ctx) = project_with_files(&[
         (
@@ -399,8 +399,8 @@ async fn workflow_ollama_index_and_search() {
 
 #[tokio::test]
 async fn workflow_onboarding_explore() {
-    use code_explorer::tools::file::ListDir;
-    use code_explorer::tools::workflow::Onboarding;
+    use codescout::tools::file::ListDir;
+    use codescout::tools::workflow::Onboarding;
 
     let (dir, ctx) = project_with_files(&[
         ("src/main.rs", "fn main() {}\n"),
@@ -447,7 +447,7 @@ async fn workflow_onboarding_explore() {
 /// name_path patterns — all via tree-sitter fallback (no LSP).
 #[tokio::test]
 async fn workflow_find_symbol_path_types() {
-    use code_explorer::tools::symbol::FindSymbol;
+    use codescout::tools::symbol::FindSymbol;
 
     let (_dir, ctx) = project_with_files(&[
         (
@@ -533,7 +533,7 @@ async fn workflow_find_symbol_path_types() {
 
 #[tokio::test]
 async fn write_allowed_when_project_provided_at_startup_even_with_worktrees() {
-    use code_explorer::tools::file::CreateFile;
+    use codescout::tools::file::CreateFile;
 
     // 1. Create a temp project dir with fake worktree metadata
     let dir = tempdir().unwrap();
@@ -554,7 +554,7 @@ async fn write_allowed_when_project_provided_at_startup_even_with_worktrees() {
     let ctx = ToolContext {
         agent,
         lsp: LspManager::new_arc(),
-        output_buffer: std::sync::Arc::new(code_explorer::tools::output_buffer::OutputBuffer::new(
+        output_buffer: std::sync::Arc::new(codescout::tools::output_buffer::OutputBuffer::new(
             20,
         )),
         progress: None,
@@ -577,7 +577,7 @@ async fn write_allowed_when_project_provided_at_startup_even_with_worktrees() {
 #[cfg(unix)]
 #[tokio::test]
 async fn integration_run_command_buffer_round_trip() {
-    use code_explorer::tools::workflow::RunCommand;
+    use codescout::tools::workflow::RunCommand;
 
     let (dir, ctx) = project_with_files(&[("README.md", "# test\n")]).await;
 
@@ -623,8 +623,8 @@ async fn integration_run_command_buffer_round_trip() {
 #[cfg(unix)]
 #[tokio::test]
 async fn integration_read_file_large_then_query_via_buffer() {
-    use code_explorer::tools::file::ReadFile;
-    use code_explorer::tools::workflow::RunCommand;
+    use codescout::tools::file::ReadFile;
+    use codescout::tools::workflow::RunCommand;
 
     // Build a file with 250 lines (above the 200-line FILE_BUFFER_THRESHOLD)
     let content: String = (1..=250).map(|i| format!("entry {}\n", i)).collect();
@@ -668,7 +668,7 @@ async fn integration_read_file_large_then_query_via_buffer() {
 #[cfg(unix)]
 #[tokio::test]
 async fn integration_speed_bump_two_round_trips() {
-    use code_explorer::tools::workflow::RunCommand;
+    use codescout::tools::workflow::RunCommand;
 
     let (dir, ctx) = project_with_files(&[("README.md", "# test\n")]).await;
 

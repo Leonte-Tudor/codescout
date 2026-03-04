@@ -4,12 +4,12 @@
 //! language server. The mock returns pre-configured symbol positions that reproduce
 //! LSP range quirks (over-extension, degenerate ranges, lead-in artifacts).
 
-use code_explorer::agent::Agent;
-use code_explorer::lsp::{MockLspClient, MockLspProvider, SymbolInfo, SymbolKind};
-use code_explorer::tools::symbol::{
+use codescout::agent::Agent;
+use codescout::lsp::{MockLspClient, MockLspProvider, SymbolInfo, SymbolKind};
+use codescout::tools::symbol::{
     FindSymbol, GotoDefinition, InsertCode, RemoveSymbol, ReplaceSymbol,
 };
-use code_explorer::tools::{Tool, ToolContext};
+use codescout::tools::{Tool, ToolContext};
 use serde_json::json;
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
@@ -37,7 +37,7 @@ async fn ctx_with_mock(
     let ctx = ToolContext {
         agent,
         lsp: MockLspProvider::with_client(mock),
-        output_buffer: std::sync::Arc::new(code_explorer::tools::output_buffer::OutputBuffer::new(
+        output_buffer: std::sync::Arc::new(codescout::tools::output_buffer::OutputBuffer::new(
             20,
         )),
         progress: None,
@@ -625,7 +625,7 @@ async fn remove_symbol_const_trusts_lsp_range() {
 /// child with name_path "my_fn/local_var" matched a query for "my_fn".
 #[tokio::test]
 async fn find_symbol_name_path_does_not_return_local_variable_children() {
-    use code_explorer::lsp::SymbolKind;
+    use codescout::lsp::SymbolKind;
 
     let src = "fn my_fn() {\n    let local_var = 1;\n}\n";
 
