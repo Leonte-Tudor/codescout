@@ -1,10 +1,10 @@
-# code-explorer
+# codescout
 
 Rust MCP server giving LLMs IDE-grade code intelligence — symbol navigation, semantic search, git blame, shell integration, and persistent memory. Built for [Claude Code](https://code.claude.com/).
 
 ![Dashboard — Tool Stats page](docs/images/dashboard.png)
 
-*[Dashboard docs](docs/manual/src/concepts/dashboard.md) — tool usage charts, error log, memory browser, drift view. Run with `code-explorer dashboard --project .`*
+*[Dashboard docs](docs/manual/src/concepts/dashboard.md) — tool usage charts, error log, memory browser, drift view. Run with `codescout dashboard --project .`*
 
 **What sets it apart:**
 
@@ -21,7 +21,7 @@ The result: shallow understanding, hallucinated edits, constant human course-cor
 
 ## The Solution
 
-code-explorer is an MCP server that gives your AI coding agent the same navigation tools a human developer uses in an IDE — but optimized for token efficiency.
+codescout is an MCP server that gives your AI coding agent the same navigation tools a human developer uses in an IDE — but optimized for token efficiency.
 
 **Four pillars:**
 
@@ -36,7 +36,7 @@ Plus file operations (6 tools), workflow (2 tools), and config & navigation (3 t
 **Recent additions:**
 - **`goto_definition` + `hover`** — LSP-backed jump-to-definition and type/doc inspection. `goto_definition` auto-discovers and registers library source when the definition lives outside the project root.
 - **`project_status`** — unified project health snapshot: config, embedding index stats, usage telemetry (call counts, error rates, p50/p99 latency), and registered libraries — all in one call.
-- **Dashboard** — `code-explorer dashboard --project .` launches a local web UI (default port 8099) with tool usage charts and project health views.
+- **Dashboard** — `codescout dashboard --project .` launches a local web UI (default port 8099) with tool usage charts and project health views.
 - **Library Search** — navigate third-party dependency source code via LSP-inferred discovery, symbol navigation, and semantic search. Libraries auto-register when `goto_definition` returns paths outside the project root. Index a library with `index_project(scope: "lib:name")`.
 - **Incremental Index Rebuilding** — smart change detection for the embedding index. Uses git diff → mtime → SHA-256 fallback chain to skip unchanged files, with staleness warnings when the index falls behind HEAD.
 - **Semantic Drift Detection** — detects *how much* code changed in meaning after re-indexing, not just that bytes changed. Query via `project_status`. Opt out with `drift_detection_enabled = false` in `[embeddings]`.
@@ -45,7 +45,7 @@ Plus file operations (6 tools), workflow (2 tools), and config & navigation (3 t
 
 The structured workflows we use in this project — TDD, systematic debugging, brainstorming before building, parallel agent dispatch, code review — come from **[Superpowers](https://github.com/obra/superpowers)**, a Claude Code plugin by [Jesse Luoto (obra)](https://github.com/obra). His [blog post introducing Superpowers](https://blog.fsck.com/2025/10/09/superpowers/) is what got us thinking seriously about agent-first development workflows. The discipline baked into our day-to-day work here — the TDD gates, the brainstorming-before-building habit, the worktree isolation patterns — all flow from that foundation. If it has helped you, consider [sponsoring Jesse's open-source work](https://github.com/sponsors/obra).
 
-We also want to acknowledge **[Serena](https://github.com/oraios/serena)**, an MCP code intelligence server we ran for a good while before deciding to build our own. Serena proved the concept: an LLM really can navigate a real codebase through LSP and tree-sitter. That proof of concept directly shaped what code-explorer became — we kept the good ideas, threw out what didn't fit, and wrote the rest in Rust.
+We also want to acknowledge **[Serena](https://github.com/oraios/serena)**, an MCP code intelligence server we ran for a good while before deciding to build our own. Serena proved the concept: an LLM really can navigate a real codebase through LSP and tree-sitter. That proof of concept directly shaped what codescout became — we kept the good ideas, threw out what didn't fit, and wrote the rest in Rust.
 
 For the worktree workflow specifically: the recommended pattern for large plans and parallel work is to manually `git worktree add` + `cd` + launch Claude from inside the worktree — one terminal per branch, fully isolated, no mid-session project-switching. Note: `finishing-a-development-branch` cleanup can fail when Claude's CWD is inside the worktree; use `git worktree prune` from the main repo instead.
 
@@ -89,14 +89,14 @@ Tested on **Linux**. macOS and Windows may work but have not been verified. Cont
 
 The behavior described in this README — Claude consistently reaching for the right tool, structured workflows, cross-session memory — was produced with a specific combination of Claude Code plugins running together. Without the full stack, results will vary.
 
-> **The short version:** code-explorer gives Claude the *capability*. The surrounding plugins ensure that capability is actually *used*, consistently, across every session and every subagent.
+> **The short version:** codescout gives Claude the *capability*. The surrounding plugins ensure that capability is actually *used*, consistently, across every session and every subagent.
 
 **Our full stack:**
 
 | Component | Plugin ID | Role |
 |---|---|---|
-| **code-explorer** | *(this server)* | 23 tools: symbol navigation, semantic search, memory |
-| **code-explorer-routing** | `code-explorer-routing@sdd-misc-plugins` | Hooks that enforce tool selection — intercepts `grep`/`cat`/`read` in all sessions and subagents and redirects to code-explorer equivalents |
+| **codescout** | *(this server)* | 23 tools: symbol navigation, semantic search, memory |
+| **code-explorer-routing** | `code-explorer-routing@sdd-misc-plugins` | Hooks that enforce tool selection — intercepts `grep`/`cat`/`read` in all sessions and subagents and redirects to codescout equivalents |
 | **superpowers** | `superpowers@superpowers-marketplace` | Skills framework: TDD, systematic debugging, brainstorming, parallel agents, code review |
 | **episodic-memory** | `episodic-memory@superpowers-marketplace` | Cross-session memory: Claude searches past conversations semantically before starting any task |
 | **hookify** | `hookify@claude-plugins-official` | Hook-based behavior enforcement: codify recurring antipatterns into rules that block them automatically |
@@ -111,22 +111,22 @@ The behavior described in this README — Claude consistently reaching for the r
 
 ## Installation
 
-> **This is a Claude Code tool.** code-explorer is built for [Claude Code](https://code.claude.com/) and currently requires it as the host agent. Other MCP-capable agents may work but are not tested.
+> **This is a Claude Code tool.** codescout is built for [Claude Code](https://code.claude.com/) and currently requires it as the host agent. Other MCP-capable agents may work but are not tested.
 
 **The easiest way to get started:** clone the repo and let Claude do the installation for you. It has access to the full documentation, your system, and the install scripts — it will handle everything from building the binary to registering the MCP server and installing LSP servers for your languages.
 
 ```bash
-git clone https://github.com/mareurs/code-explorer.git
-cd code-explorer
+git clone https://github.com/mareurs/codescout.git
+cd codescout
 claude
-# Then ask: "Help me install and set up code-explorer"
+# Then ask: "Help me install and set up codescout"
 ```
 
 If you prefer to install manually, follow the steps below.
 
 ---
 
-code-explorer has two components that work together:
+codescout has two components that work together:
 
 1. **MCP Server** — provides the 23 tools (symbol navigation, semantic search, memory, etc.)
 2. **Routing Plugin** — ensures Claude always uses the right tool, across all sessions and subagents
@@ -139,19 +139,19 @@ a blank slate.
 ### Step 1: Install the MCP server
 
 ```bash
-cargo install code-explorer
+cargo install codescout
 ```
 
 Register it globally so it's available in every Claude Code session:
 
 ```bash
-claude mcp add --global code-explorer -- code-explorer start --project .
+claude mcp add --global codescout -- codescout start --project .
 ```
 
 Or per-project (add to your project's `.mcp.json`):
 
 ```bash
-claude mcp add code-explorer -- code-explorer start --project /path/to/your/project
+claude mcp add codescout -- codescout start --project /path/to/your/project
 ```
 
 ### Step 2: Install the routing plugin
@@ -176,7 +176,7 @@ The plugin is available from the [claude-plugins marketplace](https://github.com
 
 ```bash
 claude mcp list
-# Should show: code-explorer with 23 tools
+# Should show: codescout with 23 tools
 ```
 
 ### How They Interact
@@ -191,11 +191,11 @@ claude mcp list
 │  │  SessionStart  → inject tool selection guide │    │
 │  │  SubagentStart → propagate to all subagents  │    │
 │  │  PreToolUse    → redirect grep/cat/read to   │    │
-│  │                  code-explorer equivalents    │    │
+│  │                  codescout equivalents        │    │
 │  └──────────────────────┬──────────────────────┘    │
 │                         │ routes to                   │
 │  ┌──────────────────────▼──────────────────────┐    │
-│  │  code-explorer MCP server (23 tools)         │    │
+│  │  codescout MCP server (23 tools)             │    │
 │  │                                              │    │
 │  │  LSP · Semantic · Memory · ...               │    │
 │  └──────────────────────────────────────────────┘    │
