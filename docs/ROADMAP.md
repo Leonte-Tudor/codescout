@@ -33,7 +33,7 @@ See [`FEATURES.md`](FEATURES.md) for the full feature reference. Summary:
 - **Project customization** — `.code-explorer/system-prompt.md` injects project-specific agent guidance
 - **Onboarding** — language-specific nav hints, system-prompt draft generation
 - **RecoverableError** — non-fatal tool failures don't abort sibling parallel calls
-- **Dashboard** — `code-explorer dashboard` web UI with tool stats and project health ([concept page](manual/src/concepts/dashboard.md))
+- **Dashboard** — `codescout dashboard` web UI with tool stats and project health ([concept page](manual/src/concepts/dashboard.md))
 - **Companion Claude Code plugin** — `code-explorer-routing` for tool routing guidance (live at [mareurs/claude-plugins](https://github.com/mareurs/claude-plugins))
 - **Usage monitor** — per-tool call stats in `usage.db`, surfaced via the dashboard
 - **Semantic memories** — `remember`/`recall`/`forget` actions with sqlite-vec vector search, auto-classification into buckets (code/system/preferences/unstructured), cross-embedding of markdown memories, preferences auto-injection during onboarding
@@ -53,7 +53,7 @@ Implemented features have been moved to [`FEATURES.md`](FEATURES.md).
 
 ### Multi-Agent Support (Generalize Beyond Claude Code)
 
-Make code-explorer usable by any MCP-capable agent — Copilot, Cursor, Cline, custom agents — with routing knowledge included so agents know *when* to reach for each tool.
+Make codescout usable by any MCP-capable agent — Copilot, Cursor, Cline, custom agents — with routing knowledge included so agents know *when* to reach for each tool.
 
 **Motivation:** The server already speaks MCP over stdio. The gap is that agents other than Claude Code lack the curated routing guidance (the `server_instructions.md` prompt) that tells Claude *how* to choose between `semantic_search`, `find_symbol`, `list_symbols`, etc. Without this, agents default to over-using a single tool (usually semantic search).
 
@@ -101,7 +101,7 @@ Background filesystem watcher for near-realtime index updates. **Depends on** In
 
 Maintain project glossaries and documentation that stay in sync with the codebase via content-hash change detection.
 
-**Motivation:** LLM-generated documentation (onboarding summaries, architecture glossaries, API docs) goes stale the moment the underlying code changes. Manual upkeep is unsustainable. By tracking file content hashes, code-explorer can detect *which* documented files changed, compute targeted diffs, and trigger glossary/documentation updates — keeping project knowledge accurate without full re-indexing.
+**Motivation:** LLM-generated documentation (onboarding summaries, architecture glossaries, API docs) goes stale the moment the underlying code changes. Manual upkeep is unsustainable. By tracking file content hashes, codescout can detect *which* documented files changed, compute targeted diffs, and trigger glossary/documentation updates — keeping project knowledge accurate without full re-indexing.
 
 **Core mechanism:**
 
@@ -230,7 +230,7 @@ Decay rules:
 
 ## Contributor Skills
 
-Three Claude Code skills living in `.claude/skills/` within this repo. Contributors who open code-explorer in Claude Code get them automatically — no build step required. See [`plans/2026-02-26-contributor-skills-design.md`](plans/2026-02-26-contributor-skills-design.md) for the full design.
+Three Claude Code skills living in `.claude/skills/` within this repo. Contributors who open codescout in Claude Code get them automatically — no build step required. See [`plans/2026-02-26-contributor-skills-design.md`](plans/2026-02-26-contributor-skills-design.md) for the full design.
 
 | Skill | Purpose | Status |
 |---|---|---|
@@ -248,4 +248,4 @@ Systematic workflow from symptom to fix to verification — covering build failu
 
 ### `log-stat-analyzer`
 
-Structured workflow for interpreting Tool Usage Monitor data: per-tool call counts, error rates, p50/p99 latency, overflow rates, and time-bucketed drift detection. Produces actionable summaries (e.g. "semantic_search error rate up 3× in last 24h"). Uses the dashboard (`code-explorer dashboard`).
+Structured workflow for interpreting Tool Usage Monitor data: per-tool call counts, error rates, p50/p99 latency, overflow rates, and time-bucketed drift detection. Produces actionable summaries (e.g. "semantic_search error rate up 3× in last 24h"). Uses the dashboard (`codescout dashboard`).

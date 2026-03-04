@@ -1,4 +1,4 @@
-# code-explorer
+# codescout
 
 Rust MCP server giving LLMs IDE-grade code intelligence — symbol-level navigation, semantic search, git integration. Inspired by [Serena](https://github.com/oraios/serena).
 
@@ -20,7 +20,7 @@ cargo run -- index --project .     # Build embedding index
 **`docs/TODO-tool-misbehaviors.md` is a living document. You MUST maintain it.**
 
 - **Before starting any task**, read it to know current tool limitations.
-- **While working**, watch for: wrong edits, corrupt output, silent failures, misleading errors from code-explorer's own MCP tools.
+- **While working**, watch for: wrong edits, corrupt output, silent failures, misleading errors from codescout's own MCP tools.
 - **When you notice anything unexpected**, add an entry to that file **before continuing** — even a one-liner. Capture: what you did, what you expected, what happened, and a probable cause.
 - Do not wait until you finish the task. Log it immediately while context is fresh.
 
@@ -123,19 +123,30 @@ Use `RecoverableError` for expected, input-driven failures (path not found, unsu
 
 **Embedding pipeline**: `chunker::split()` → `RemoteEmbedder::embed()` → `index::insert_chunk()` → `index::search()` (cosine similarity). All stored in `.code-explorer/embeddings.db`. Incremental updates via `find_changed_files()`: git diff → mtime → SHA-256 fallback chain. `semantic_search` warns when the index is behind HEAD.
 
+## Prompt Surface Consistency
+
+The project has **three prompt surfaces** that reference tool names:
+- `src/prompts/server_instructions.md` — injected every MCP request
+- `src/prompts/onboarding_prompt.md` — one-time onboarding
+- `build_system_prompt_draft()` in `src/tools/workflow.rs` — generated per-project
+
+**When tools get renamed/consolidated, all three need coordinated updates.** Files
+closer to the change get updated; distant ones accumulate stale refs ("distance
+from change" problem). Always grep all three surfaces when modifying tool names.
+
 ## Companion Plugin: code-explorer-routing
 
-This project has a companion Claude Code plugin at **`../claude-plugins/code-explorer-routing/`** that is **always active** when working on code-explorer. You must be aware of it.
+This project has a companion Claude Code plugin at **`../claude-plugins/code-explorer-routing/`** that is **always active** when working on codescout. You must be aware of it.
 
 **What it does:**
 - `SessionStart` hook (`hooks/session-start.sh`) — injects tool guidance + memory hints into every session
 - `SubagentStart` hook (`hooks/subagent-guidance.sh`) — same for all subagents
-- `PreToolUse` hook on `Grep|Glob|Read` (`hooks/semantic-tool-router.sh`) — **blocks native Read/Grep/Glob on source files**, redirecting to code-explorer MCP tools
+- `PreToolUse` hook on `Grep|Glob|Read` (`hooks/semantic-tool-router.sh`) — **blocks native Read/Grep/Glob on source files**, redirecting to codescout MCP tools
 
 **Critical implication for working on this codebase:**
 The `PreToolUse` hook will **block** any attempt to use the native `Read`, `Grep`, or `Glob` tools on source code files (`.rs`, `.ts`, `.py`, etc). You will see `PreToolUse:Read hook error` if you try.
 
-**You MUST use code-explorer's own MCP tools to read source code:**
+**You MUST use codescout's own MCP tools to read source code:**
 - `mcp__code-explorer__list_symbols(path)` — see all symbols in a file/dir
 - `mcp__code-explorer__find_symbol(name, include_body=true)` — read a function body
 - `mcp__code-explorer__search_pattern(pattern)` — regex search
@@ -143,7 +154,7 @@ The `PreToolUse` hook will **block** any attempt to use the native `Read`, `Grep
 - `mcp__code-explorer__read_file(path)` — for non-source files (markdown, toml, json)
 
 **Configuration:**
-- Auto-detects code-explorer from `.mcp.json` or `~/.claude/settings.json`
+- Auto-detects codescout from `.mcp.json` or `~/.claude/settings.json`
 - Can be overridden via `.claude/code-explorer-routing.json`
 - `block_reads: false` in that config to disable blocking (dev/debug use)
 
