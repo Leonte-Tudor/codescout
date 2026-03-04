@@ -36,8 +36,9 @@ See [`FEATURES.md`](FEATURES.md) for the full feature reference. Summary:
 - **Dashboard** — `code-explorer dashboard` web UI with tool stats and project health ([concept page](manual/src/concepts/dashboard.md))
 - **Companion Claude Code plugin** — `code-explorer-routing` for tool routing guidance (live at [mareurs/claude-plugins](https://github.com/mareurs/claude-plugins))
 - **Usage monitor** — per-tool call stats in `usage.db`, surfaced via the dashboard
-- **Git blame** via git2; persistent memory store (markdown topics)
-- **MCP over stdio** (rmcp); 932 tests passing
+- **Semantic memories** — `remember`/`recall`/`forget` actions with sqlite-vec vector search, auto-classification into buckets (code/system/preferences/unstructured), cross-embedding of markdown memories, preferences auto-injection during onboarding
+- **Git blame** via git2; persistent memory store (markdown topics + semantic memories)
+- **MCP over stdio** (rmcp); 992 tests passing
 
 ## What's Next
 
@@ -167,6 +168,63 @@ Allow the agent to interact with long-running processes — REPLs, debuggers, an
 
 **Design doc:** [`plans/2026-03-01-interactive-sessions-design.md`](plans/2026-03-01-interactive-sessions-design.md)
 **Implementation plan:** [`plans/2026-03-01-interactive-sessions-plan.md`](plans/2026-03-01-interactive-sessions-plan.md)
+
+---
+
+### Auto-Memories with Temporal Decay
+
+Automatically capture and surface contextual knowledge — code gotchas, deployment
+pitfalls, debugging insights — with a decay mechanism that lets transitory memories
+fade while persistent truths remain.
+
+**Motivation:** Agents frequently rediscover the same gotchas ("this test is flaky
+on CI", "don't forget to restart Ollama after config changes", "the LSP crashes if
+you open >50 files"). Currently these are lost between sessions. The `remember`
+action requires explicit invocation — most insights slip through. Auto-memories
+capture them passively, but some gotchas are temporary (a bug gets fixed, a
+workaround becomes unnecessary), so blind accumulation would pollute the context
+with stale advice.
+
+**Auto-capture triggers:**
+- Agent hits an error and recovers → capture the recovery pattern
+- Agent deviates from a preference with confirmation → capture the exception
+- Agent discovers a non-obvious build/deploy step → capture as system gotcha
+- User says "watch out for..." or "this is tricky" → capture as code gotcha
+
+**Decay mechanism — confidence scoring:**
+
+Each auto-memory gets a `confidence` score (0.0–1.0) and a `last_verified` timestamp:
+
+```sql
+ALTER TABLE memories ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0;
+ALTER TABLE memories ADD COLUMN last_verified TEXT;
+ALTER TABLE memories ADD COLUMN auto_captured BOOLEAN DEFAULT 0;
+```
+
+Decay rules:
+1. **Time-based decay:** Auto-captured memories lose confidence over time
+   (e.g., -0.1 per month since `last_verified`). Manually created memories
+   (`remember`) don't decay.
+2. **Verification prompts:** During onboarding, if low-confidence memories exist
+   (< 0.5), the system prompt includes: "These memories may be outdated — verify
+   if they still apply: [list]". Agent confirmation resets confidence to 1.0.
+3. **Contradiction detection:** If an auto-memory says "X doesn't work" but the
+   agent successfully does X, flag for review.
+4. **Garbage collection:** Memories below 0.1 confidence are auto-archived
+   (moved to a `memories_archive` table, not deleted — recoverable if needed).
+
+**Bucket extensions:**
+- `code_gotcha` — tricky code behaviors, non-obvious API contracts, flaky tests
+- `deploy_gotcha` — deployment pitfalls, environment-specific issues
+- Both are sub-types of the existing buckets, tagged via a `sub_bucket` column
+
+**Integration with preferences:**
+- Preferences don't decay (they're intentional)
+- Gotchas decay (they may be transitory)
+- Both are auto-injected during onboarding, but gotchas show their confidence
+  score so agents can judge reliability
+
+**Design doc:** TBD
 
 ---
 
