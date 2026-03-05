@@ -105,7 +105,7 @@ impl Tool for ReadFile {
                     // Large extracted content (e.g. a function body) is stored as a
                     // plain-text @file_* ref so the agent can grep/browse it without
                     // triggering another @tool_* re-buffering cycle.
-                    let mut result = if content.len() > crate::tools::TOOL_OUTPUT_BUFFER_THRESHOLD {
+                    let mut result = if crate::tools::exceeds_inline_limit(&content) {
                         let file_id = ctx
                             .output_buffer
                             .store_file(format!("{path}:{jp}"), content);
@@ -152,7 +152,7 @@ impl Tool for ReadFile {
                 let content = extract_lines(&text, s as usize, e as usize);
                 // Large extracted sections → @file_* (plain text) so the agent can
                 // grep/browse without a cascading @tool_* chain.
-                if content.len() > crate::tools::TOOL_OUTPUT_BUFFER_THRESHOLD {
+                if crate::tools::exceeds_inline_limit(&content) {
                     let file_id = ctx.output_buffer.store_file(path.to_string(), content);
                     return Ok(json!({ "file_id": file_id, "total_lines": total_lines }));
                 }
@@ -160,7 +160,7 @@ impl Tool for ReadFile {
             }
             // Full content — store as @file_* if large so the agent can navigate it
             // as plain text rather than triggering another @tool_* re-buffering cycle.
-            if text.len() > crate::tools::TOOL_OUTPUT_BUFFER_THRESHOLD {
+            if crate::tools::exceeds_inline_limit(&text) {
                 let file_id = ctx.output_buffer.store_file(path.to_string(), text);
                 return Ok(json!({ "file_id": file_id, "total_lines": total_lines }));
             }
