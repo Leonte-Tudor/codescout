@@ -11,10 +11,8 @@ use std::sync::OnceLock;
 // Thresholds
 // ---------------------------------------------------------------------------
 
-/// Minimum total line count (stdout + stderr) before summarization kicks in.
-pub(crate) const SUMMARY_LINE_THRESHOLD: usize = 50;
 /// Inline line cap for buffer-only queries (e.g. `grep/sed @cmd_xxx`).
-/// Kept separate from SUMMARY_LINE_THRESHOLD so "when to buffer" and "how much
+/// Kept separate from the summarization threshold so "when to buffer" and "how much
 /// to return from a buffer query" can be tuned independently.
 pub(crate) const BUFFER_QUERY_INLINE_CAP: usize = 100;
 
@@ -178,8 +176,7 @@ pub fn detect_terminal_filter(cmd: &str) -> Option<usize> {
 /// Returns `true` when the combined output is large enough to benefit from
 /// summarization rather than raw output.
 pub fn needs_summary(stdout: &str, stderr: &str) -> bool {
-    let total_lines = count_lines(stdout) + count_lines(stderr);
-    total_lines > SUMMARY_LINE_THRESHOLD
+    (stdout.len() + stderr.len()) / 4 > crate::tools::MAX_INLINE_TOKENS
 }
 
 /// Produce a structured summary of test-runner output.
@@ -485,7 +482,8 @@ mod tests {
 
     #[test]
     fn long_output_needs_summary() {
-        let stdout: String = (1..=100).map(|i| format!("line {}\n", i)).collect();
+        // Generate output exceeding MAX_INLINE_TOKENS * 4 bytes (~10KB)
+        let stdout: String = (1..=3000).map(|i| format!("line {}\n", i)).collect();
         assert!(needs_summary(&stdout, ""));
     }
 

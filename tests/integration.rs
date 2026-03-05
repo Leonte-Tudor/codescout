@@ -575,14 +575,14 @@ async fn integration_run_command_buffer_round_trip() {
 
     let (dir, ctx) = project_with_files(&[("README.md", "# test\n")]).await;
 
-    // Generate > 50 lines so output gets buffered
+    // Generate enough output to exceed the token budget so it gets buffered
     let r1 = RunCommand
-        .call(json!({ "command": "seq 1 100", "timeout_secs": 10 }), &ctx)
+        .call(json!({ "command": "seq 1 3000", "timeout_secs": 10 }), &ctx)
         .await
         .unwrap();
     let output_id = r1["output_id"]
         .as_str()
-        .expect("seq 1 100 (100 lines) should be buffered and return output_id");
+        .expect("seq 1 3000 should be buffered and return output_id");
     assert!(
         output_id.starts_with("@cmd_"),
         "output_id should start with @cmd_, got: {}",

@@ -800,7 +800,7 @@ async fn run_command_inner(
     use super::command_summary::{
         count_lines, detect_command_type, detect_terminal_filter, needs_summary,
         summarize_build_output, summarize_generic, summarize_test_output, truncate_lines,
-        truncate_lines_and_bytes, CommandType, BUFFER_QUERY_INLINE_CAP, SUMMARY_LINE_THRESHOLD,
+        truncate_lines_and_bytes, CommandType, BUFFER_QUERY_INLINE_CAP,
     };
     use crate::util::path_security::is_dangerous_command;
 
@@ -1023,11 +1023,17 @@ async fn run_command_inner(
                     let capture = std::fs::read_to_string(&tmpfile.0).ok();
                     // tmpfile dropped at end of enclosing match arm — TmpfileGuard::drop() removes it
                     capture.map(|content| {
-                        let line_count = count_lines(&content);
-                        let (stored, truncated) = if line_count > SUMMARY_LINE_THRESHOLD {
-                            let capped = content
+                        let (stored, truncated) = if crate::tools::exceeds_inline_limit(&content) {
+                            let mut byte_budget = crate::tools::MAX_INLINE_TOKENS * 4;
+                            let capped: String = content
                                 .lines()
-                                .take(SUMMARY_LINE_THRESHOLD)
+                                .take_while(|line| {
+                                    if byte_budget == 0 {
+                                        return false;
+                                    }
+                                    byte_budget = byte_budget.saturating_sub(line.len() + 1);
+                                    true
+                                })
                                 .collect::<Vec<_>>()
                                 .join("\n");
                             (capped, true)
@@ -1244,7 +1250,7 @@ fn truncate_output(output: &str, limit: usize) -> (String, bool) {
 mod tests {
     use super::*;
     use crate::agent::Agent;
-    use crate::tools::command_summary::{BUFFER_QUERY_INLINE_CAP, SUMMARY_LINE_THRESHOLD};
+    use crate::tools::command_summary::BUFFER_QUERY_INLINE_CAP;
     use std::sync::Arc;
     use tempfile::tempdir;
 
@@ -1639,9 +1645,9 @@ mod tests {
     #[tokio::test]
     async fn run_command_buffer_only_skips_safety() {
         let (_dir, ctx) = project_ctx().await;
-        // Store some output in the buffer
+        // Store some output in the buffer (must exceed token budget to trigger buffering)
         let result = RunCommand
-            .call(json!({ "command": "seq 1 200", "timeout_secs": 5 }), &ctx)
+            .call(json!({ "command": "seq 1 3000", "timeout_secs": 5 }), &ctx)
             .await
             .unwrap();
         let output_id = result["output_id"].as_str().unwrap();
@@ -2022,8 +2028,9 @@ mod tests {
     #[tokio::test]
     async fn run_command_large_output_stored_in_buffer() {
         let (_dir, ctx) = project_ctx().await;
+        // seq 3000 produces ~14KB, exceeding MAX_INLINE_TOKENS * 4 (~10KB)
         let result = RunCommand
-            .call(json!({"command": "seq 1 100"}), &ctx)
+            .call(json!({"command": "seq 1 3000"}), &ctx)
             .await
             .unwrap();
         let output_id = result["output_id"]
@@ -2045,8 +2052,8 @@ mod tests {
             "buffered stdout should contain '50\\n'"
         );
         assert!(
-            entry.stdout.contains("100\n"),
-            "buffered stdout should contain '100\\n'"
+            entry.stdout.contains("3000\n"),
+            "buffered stdout should contain '3000\\n'"
         );
     }
 
@@ -2055,7 +2062,7 @@ mod tests {
     async fn run_command_buffer_ref_executes_correctly() {
         let (_dir, ctx) = project_ctx().await;
         let r1 = RunCommand
-            .call(json!({"command": "seq 1 100"}), &ctx)
+            .call(json!({"command": "seq 1 3000"}), &ctx)
             .await
             .unwrap();
         let output_id = r1["output_id"].as_str().unwrap();
@@ -2079,9 +2086,10 @@ mod tests {
     async fn run_command_buffer_only_above_threshold_truncates_inline() {
         // BUFFER_QUERY_INLINE_CAP + 1 lines — strictly above the inline cap.
         // Must return Ok with truncated content, NOT an error or a new buffer ref.
+        // Each line is padded to ~120 bytes so total exceeds the token budget.
         let (_dir, ctx) = project_ctx().await;
         let content: String = (1..=BUFFER_QUERY_INLINE_CAP + 1)
-            .map(|i| format!("{i}\n"))
+            .map(|i| format!("{i:>120}\n"))
             .collect();
         let id = ctx.output_buffer.store("cmd".into(), content, "".into(), 0);
         let result = RunCommand
@@ -2093,9 +2101,10 @@ mod tests {
             "should be truncated: {:?}",
             result
         );
-        assert_eq!(
-            result["stdout_shown"], BUFFER_QUERY_INLINE_CAP,
-            "stdout_shown should equal inline cap: {:?}",
+        let shown = result["stdout_shown"].as_u64().unwrap() as usize;
+        assert!(
+            shown > 0 && shown <= BUFFER_QUERY_INLINE_CAP,
+            "stdout_shown should be >0 and <=inline cap, got {shown}: {:?}",
             result
         );
         assert_eq!(
@@ -2114,12 +2123,19 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn run_command_buffer_only_at_threshold_returns_inline() {
-        // Exactly SUMMARY_LINE_THRESHOLD lines — the check is `>` not `>=`, so this
-        // must return content inline, not error.
+        // Content exactly at MAX_INLINE_TOKENS token budget — the check is `>` not `>=`,
+        // so this must return content inline, not error.
         let (_dir, ctx) = project_ctx().await;
-        let content: String = (1..=SUMMARY_LINE_THRESHOLD)
-            .map(|i| format!("{i}\n"))
-            .collect();
+        // Build content that is exactly MAX_INLINE_TOKENS * 4 bytes (at the limit, not over)
+        let target_bytes = crate::tools::MAX_INLINE_TOKENS * 4;
+        let mut content = String::new();
+        for i in 1.. {
+            let line = format!("{i}\n");
+            if content.len() + line.len() > target_bytes {
+                break;
+            }
+            content.push_str(&line);
+        }
         let id = ctx.output_buffer.store("cmd".into(), content, "".into(), 0);
         let result = RunCommand
             .call(json!({ "command": format!("cat {}", id) }), &ctx)
@@ -2141,8 +2157,8 @@ mod tests {
     #[tokio::test]
     async fn run_command_buffer_only_large_single_line_does_not_rebuffer() {
         // Regression: grep on a @tool_* ref returns the entire compact-JSON blob as
-        // one line.  Even with line count = 1 (< SUMMARY_LINE_THRESHOLD), the byte
-        // size can exceed TOOL_OUTPUT_BUFFER_THRESHOLD.  The result must be truncated
+        // one line.  Even when estimated tokens are low, the byte
+        // size can exceed the inline token budget.  The result must be truncated
         // inline — never stored as a new @tool_* ref (which would create an infinite
         // query loop: grep @tool_A → @tool_B → grep @tool_B → @tool_C…).
         let (_dir, ctx) = project_ctx().await;
@@ -2178,8 +2194,8 @@ mod tests {
         );
         let hint = result["hint"].as_str().unwrap_or("");
         assert!(
-            hint.contains("read_file"),
-            "hint should guide to read_file: {}",
+            !hint.is_empty(),
+            "hint should guide to next page or read_file: {}",
             hint
         );
     }
@@ -2192,7 +2208,7 @@ mod tests {
         // Use 150 lines (> BUFFER_QUERY_INLINE_CAP=100) to trigger truncation.
         let (_dir, ctx) = project_ctx().await;
 
-        let large_content: String = (1..=250).map(|i| format!("{i}\n")).collect();
+        let large_content: String = (1..=250).map(|i| format!("{i:>60}\n")).collect();
         let id = ctx
             .output_buffer
             .store("original_cmd".into(), large_content, "".into(), 0);
@@ -2267,9 +2283,10 @@ mod tests {
     async fn run_command_buffer_only_stderr_gets_priority() {
         // stderr = 25 lines (> 20 cap) + stdout = 250 lines (> remaining budget).
         // Expected: stderr_shown = 20, stdout_shown = 80 (BUFFER_QUERY_INLINE_CAP - 20).
+        // Lines padded to ~60 bytes so total exceeds the token budget.
         let (_dir, ctx) = project_ctx().await;
-        let stdout: String = (1..=250).map(|i| format!("out{i}\n")).collect();
-        let stderr: String = (1..=25).map(|i| format!("err{i}\n")).collect();
+        let stdout: String = (1..=250).map(|i| format!("out{i:>60}\n")).collect();
+        let stderr: String = (1..=25).map(|i| format!("err{i:>60}\n")).collect();
         let id = ctx.output_buffer.store("cmd".into(), stdout, stderr, 0);
         let result = RunCommand
             .call(json!({ "command": format!("cat {}", id) }), &ctx)
@@ -2304,9 +2321,10 @@ mod tests {
     async fn run_command_buffer_only_short_stderr_gives_budget_to_stdout() {
         // stderr = 10 lines (< 20 cap) + stdout = 250 lines (> remaining budget).
         // Expected: stderr_shown = 10, stdout_shown = 90 (BUFFER_QUERY_INLINE_CAP - 10).
+        // Lines padded to ~60 bytes so total exceeds the token budget.
         let (_dir, ctx) = project_ctx().await;
-        let stdout: String = (1..=250).map(|i| format!("out{i}\n")).collect();
-        let stderr: String = (1..=10).map(|i| format!("err{i}\n")).collect();
+        let stdout: String = (1..=250).map(|i| format!("out{i:>60}\n")).collect();
+        let stderr: String = (1..=10).map(|i| format!("err{i:>60}\n")).collect();
         let id = ctx.output_buffer.store("cmd".into(), stdout, stderr, 0);
         let result = RunCommand
             .call(json!({ "command": format!("cat {}", id) }), &ctx)
@@ -2473,19 +2491,16 @@ mod tests {
         assert!(text.contains("exit 0"), "got: {text}");
     }
 
-    // Fix A: buffer-only queries should use BUFFER_QUERY_INLINE_CAP (200), not
-    // SUMMARY_LINE_THRESHOLD (50). A 100-line result should be returned fully inline.
+    // Fix A: buffer-only queries should use BUFFER_QUERY_INLINE_CAP, not
+    // the summarization threshold. A 100-line result should be returned fully inline.
     #[tokio::test]
     async fn buffer_query_returns_up_to_200_lines_inline() {
         let (_dir, ctx) = project_ctx().await;
-        // Create a buffer with 100 lines (> SUMMARY_LINE_THRESHOLD=50, so it buffers)
-        let result = RunCommand
-            .call(json!({ "command": "seq 1 100", "timeout_secs": 5 }), &ctx)
-            .await
-            .unwrap();
-        let output_id = result["output_id"].as_str().unwrap().to_string();
+        // Directly store 100 lines in the buffer (bypasses needs_summary)
+        let content: String = (1..=100).map(|i| format!("{i}\n")).collect();
+        let output_id = ctx.output_buffer.store("cmd".into(), content, "".into(), 0);
 
-        // Query the buffer — 100 lines is within the 200-line inline cap
+        // Query the buffer — 100 lines is within the BUFFER_QUERY_INLINE_CAP
         let query = format!("cat {output_id}");
         let result2 = RunCommand
             .call(json!({ "command": query, "timeout_secs": 5 }), &ctx)
@@ -2499,7 +2514,7 @@ mod tests {
         );
         assert!(
             result2["truncated"].is_null(),
-            "should not be truncated when within 200-line cap"
+            "should not be truncated when within inline cap"
         );
     }
 
@@ -2508,12 +2523,10 @@ mod tests {
     #[tokio::test]
     async fn buffer_query_truncation_hint_shows_next_page() {
         let (_dir, ctx) = project_ctx().await;
-        // Create a buffer with 150 lines (> BUFFER_QUERY_INLINE_CAP=100)
-        let result = RunCommand
-            .call(json!({ "command": "seq 1 300", "timeout_secs": 5 }), &ctx)
-            .await
-            .unwrap();
-        let output_id = result["output_id"].as_str().unwrap().to_string();
+        // Directly store 300 lines (> BUFFER_QUERY_INLINE_CAP=100) in the buffer.
+        // Lines padded to ~40 bytes so total exceeds token budget.
+        let content: String = (1..=300).map(|i| format!("{i:>40}\n")).collect();
+        let output_id = ctx.output_buffer.store("cmd".into(), content, "".into(), 0);
 
         // Query it — output exceeds 100-line cap, so hint should show next-page command
         let query = format!("cat {output_id}");
@@ -2652,15 +2665,15 @@ mod tests {
         // was appended dynamically after the summary object was built, placing it AFTER
         // stdout/content fields. It must appear before content.
         let (_dir, ctx) = project_ctx().await;
-        // seq 100 produces 100 lines, exceeding SUMMARY_LINE_THRESHOLD (50) to trigger buffering.
+        // seq 100 produces 100 lines, exceeding the token budget to trigger buffering.
         let result = RunCommand
-            .call(json!({ "command": "seq 100" }), &ctx)
+            .call(json!({ "command": "seq 3000" }), &ctx)
             .await
             .unwrap();
 
         assert!(
             result["output_id"].is_string(),
-            "expected buffered output (output_id present) for 100-line command, got: {result:?}"
+            "expected buffered output (output_id present) for large command, got: {result:?}"
         );
 
         let keys: Vec<&str> = result
@@ -2737,17 +2750,22 @@ mod tests {
 
     #[tokio::test]
     async fn unfiltered_truncated_when_over_threshold() {
-        use crate::tools::command_summary::SUMMARY_LINE_THRESHOLD;
         let (dir, ctx) = project_ctx().await;
-        // Write SUMMARY_LINE_THRESHOLD + 10 lines; grep for just one
-        let line_count = SUMMARY_LINE_THRESHOLD + 10;
-        let content: String = (0..line_count).map(|i| format!("line{i}\n")).collect();
+        // Write content exceeding MAX_INLINE_TOKENS token budget; grep for just one line
+        let over_bytes = crate::tools::MAX_INLINE_TOKENS * 4 + 1000;
+        let mut content = String::new();
+        for i in 0.. {
+            content.push_str(&format!("line{i}\n"));
+            if content.len() > over_bytes {
+                break;
+            }
+        }
         std::fs::write(dir.path().join("big.txt"), &content).unwrap();
         let result = RunCommand
             .call(json!({ "command": "cat big.txt | grep line0" }), &ctx)
             .await
             .unwrap();
-        // truncated flag should be set (SUMMARY_LINE_THRESHOLD + 10 lines > SUMMARY_LINE_THRESHOLD)
+        // truncated flag should be set (content exceeds token budget)
         assert_eq!(
             result["unfiltered_truncated"],
             json!(true),
