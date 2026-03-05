@@ -562,7 +562,7 @@ impl Tool for RunCommand {
                 "timeout_secs": {
                     "type": "integer",
                     "default": 30,
-                    "description": "Max execution time in seconds (default: 30)."
+                    "description": "Max execution time in seconds (default: 30). Ignored when run_in_background is true."
                 },
                 "cwd": {
                     "type": "string",
@@ -573,6 +573,10 @@ impl Tool for RunCommand {
                     "description": "Bypass dangerous-command check directly. Prefer the @ack_* handle protocol: \
                                     when a dangerous command is detected a pending_ack handle is returned — \
                                     re-run as run_command(\"@ack_<id>\") to execute without repeating the full command."
+                },
+                "run_in_background": {
+                    "type": "boolean",
+                    "description": "Spawn the command detached and return immediately. Output is written to a temp log file; monitor it with run_command(\"tail -50 <log>\"). Useful for long-running build or serve commands that exceed the timeout."
                 }
             }
         })
@@ -581,8 +585,13 @@ impl Tool for RunCommand {
         use super::output_buffer::OutputBuffer;
 
         let command = super::require_str_param(&input, "command")?;
-        let timeout_secs = input["timeout_secs"].as_u64().unwrap_or(30);
+        let timeout_secs = match &input["timeout_secs"] {
+            serde_json::Value::Number(n) => n.as_u64().unwrap_or(30),
+            serde_json::Value::String(s) => s.parse::<u64>().unwrap_or(30),
+            _ => 30,
+        };
         let acknowledge_risk = input["acknowledge_risk"].as_bool().unwrap_or(false);
+        let run_in_background = input["run_in_background"].as_bool().unwrap_or(false);
         let cwd_param = input["cwd"].as_str();
         let root = ctx.agent.require_project_root().await?;
         let security = ctx.agent.security_config().await;
@@ -615,6 +624,7 @@ impl Tool for RunCommand {
                 true, // acknowledge_risk
                 stored.cwd.as_deref(),
                 false, // buffer_only
+                false, // run_in_background — ack re-dispatch is always foreground
                 &root,
                 &security,
                 ctx,
@@ -634,6 +644,7 @@ impl Tool for RunCommand {
             acknowledge_risk,
             cwd_param,
             buffer_only,
+            run_in_background,
             &root,
             &security,
             ctx,
@@ -790,6 +801,7 @@ async fn run_command_inner(
     acknowledge_risk: bool,
     cwd_param: Option<&str>,
     buffer_only: bool,
+    run_in_background: bool,
     root: &Path,
     security: &crate::util::path_security::PathSecurityConfig,
     ctx: &ToolContext,
@@ -873,6 +885,29 @@ async fn run_command_inner(
     } else {
         root.to_path_buf()
     };
+
+    // --- Step 4.7: Background spawn ---
+    if run_in_background {
+        let log_tmp = tempfile::Builder::new()
+            .prefix("codescout-bg-")
+            .suffix(".log")
+            .tempfile()?;
+        let log_path = log_tmp.path().to_string_lossy().to_string();
+        let (log_file, _) = log_tmp.keep()?;
+        let log_stderr = log_file.try_clone()?;
+        tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(resolved_command)
+            .current_dir(&work_dir)
+            .stdout(std::process::Stdio::from(log_file))
+            .stderr(std::process::Stdio::from(log_stderr))
+            .spawn()?;
+        return Ok(serde_json::json!({
+            "background": true,
+            "log": log_path,
+            "hint": format!("Monitor with: run_command(\"tail -50 {}\")", log_path)
+        }));
+    }
 
     // --- Step 4.5: Tee injection for terminal filter commands ---
     // When the last pipe stage is a known filter (grep, head, tail, sed, awk, etc.),
@@ -1691,6 +1726,7 @@ mod tests {
             false, // acknowledge_risk
             None,  // cwd_param
             false, // buffer_only
+            false, // run_in_background
             &root,
             &security,
             &ctx,
