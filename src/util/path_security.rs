@@ -414,6 +414,72 @@ const SOURCE_EXTENSIONS: &str = r"\.(rs|py|ts|tsx|js|cjs|mjs|jsx|go|java|kt|kts|
 /// Shell commands whose primary job is reading file content.
 const SOURCE_ACCESS_COMMANDS: &str = r"\b(cat|head|tail|sed|awk|less|more|wc)\b";
 
+/// Split `s` on any separator in `seps` that appears *outside* single- or
+/// double-quoted strings. Separators are checked in order — put longer
+/// multi-char separators (e.g. `"&&"`) before their prefix (e.g. `"|"`) to
+/// avoid a prefix match stealing the first character.
+///
+/// Backslash escaping outside single quotes is respected (`\"` does not close
+/// a double-quoted string). Unclosed quotes are treated as closed at end-of-string.
+/// Empty segments are silently dropped.
+fn split_outside_quotes(s: &str, seps: &[&str]) -> Vec<String> {
+    let mut segments: Vec<String> = Vec::new();
+    let mut seg_start = 0usize; // byte offset of current segment start
+    let mut in_single = false;
+    let mut in_double = false;
+    let chars: Vec<(usize, char)> = s.char_indices().collect();
+    let mut i = 0usize;
+
+    'outer: while i < chars.len() {
+        let (byte_pos, c) = chars[i];
+
+        // Backslash: skip next char (escape) — only outside single quotes.
+        if c == '\\' && !in_single {
+            i += 2;
+            continue;
+        }
+
+        // Toggle quote state.
+        if c == '\'' && !in_double {
+            in_single = !in_single;
+            i += 1;
+            continue;
+        }
+        if c == '"' && !in_single {
+            in_double = !in_double;
+            i += 1;
+            continue;
+        }
+
+        // Outside quotes: check separators in order.
+        if !in_single && !in_double {
+            let remaining = &s[byte_pos..];
+            for sep in seps {
+                if remaining.starts_with(sep) {
+                    let seg = s[seg_start..byte_pos].trim();
+                    if !seg.is_empty() {
+                        segments.push(seg.to_string());
+                    }
+                    let sep_char_count = sep.chars().count();
+                    i += sep_char_count;
+                    seg_start = chars.get(i).map(|(b, _)| *b).unwrap_or(s.len());
+                    continue 'outer;
+                }
+            }
+        }
+
+        i += 1;
+    }
+
+    // Remaining segment after the last separator.
+    let last = s[seg_start..].trim();
+    if !last.is_empty() {
+        segments.push(last.to_string());
+    }
+
+    segments
+}
+
 /// Returns a hint string if `command` is a file-reading tool targeting a source file,
 /// `None` if the command is safe to execute.
 ///
@@ -431,34 +497,41 @@ pub fn check_source_file_access(command: &str) -> Option<String> {
     let cmd_re = Regex::new(SOURCE_ACCESS_COMMANDS).ok()?;
     let ext_re = Regex::new(SOURCE_EXTENSIONS).ok()?;
 
-    // Check each pipeline segment independently.
-    // `git diff src/server.rs | head -80` should NOT be blocked — `head` here
-    // filters git output, not the source file directly. Both conditions must
-    // match within the *same* segment to trigger a block.
-    //
-    // Segments containing `<<` use a heredoc: `cat <<'EOF'` reads from stdin,
-    // so any source extension in that segment is in the heredoc content, not a
-    // filename argument to the blocked command.
-    let blocked_segment = command
-        .split('|')
-        .find(|seg| !seg.contains("<<") && cmd_re.is_match(seg) && ext_re.is_match(seg))?;
+    // Split on compound-command operators and pipes, respecting quoted strings.
+    // Order: "&&"/"||" before "|" so that "||" is not mis-split as two "|" tokens.
+    let segments = split_outside_quotes(command, &["&&", "||", ";", "|"]);
 
-    let hint = if let Some(m) = cmd_re.find(blocked_segment) {
-        match m.as_str() {
-            "sed" | "awk" => {
-                "use read_file(path, start_line, end_line), list_symbols(path), \
-                 find_symbol(name, include_body=true), or search_pattern(regex) instead. \
-                 Re-run with acknowledge_risk: true if you need raw shell access."
-            }
-            _ => {
-                "use read_file(path, start_line, end_line) or list_symbols(path) + \
-                 find_symbol(name, include_body=true) instead. \
-                 Re-run with acknowledge_risk: true if you need raw shell access."
-            }
+    let blocked = segments.iter().find(|seg| {
+        // Heredoc: the command reads from stdin, not a source file.
+        if seg.contains("<<") {
+            return false;
         }
-    } else {
-        "use read_file, list_symbols, or find_symbol instead. \
-         Re-run with acknowledge_risk: true if you need raw shell access."
+        // Only the *first token* of a segment is the actual command being executed.
+        // Matching against the first token (not the full segment string) prevents
+        // false positives from quoted arguments containing command names, e.g.:
+        //   git commit -m "feat: tail-50 of log, output_buffer.rs"
+        let first_token = seg.split_whitespace().next().unwrap_or("");
+        if !cmd_re.is_match(first_token) {
+            return false;
+        }
+        // Check the full segment for a source extension so that quoted file paths
+        // (e.g. `cat "src/main.rs"`) are still caught.
+        ext_re.is_match(seg.as_str())
+    })?;
+
+    // Derive the hint from the specific command that triggered the block.
+    let first_cmd = blocked.split_whitespace().next().unwrap_or("");
+    let hint = match first_cmd {
+        "sed" | "awk" => {
+            "use read_file(path, start_line, end_line), list_symbols(path), \
+             find_symbol(name, include_body=true), or search_pattern(regex) instead. \
+             Re-run with acknowledge_risk: true if you need raw shell access."
+        }
+        _ => {
+            "use read_file(path, start_line, end_line) or list_symbols(path) + \
+             find_symbol(name, include_body=true) instead. \
+             Re-run with acknowledge_risk: true if you need raw shell access."
+        }
     };
 
     Some(hint.to_string())
@@ -1113,5 +1186,112 @@ mod tests {
         assert!(!is_source_path("README.md"));
         assert!(!is_source_path("Cargo.toml"));
         assert!(!is_source_path("config.json"));
+    }
+
+    #[test]
+    fn split_outside_quotes_no_separators() {
+        let parts = split_outside_quotes("git status", &["&&", "||", ";", "|"]);
+        assert_eq!(parts, vec!["git status"]);
+    }
+
+    #[test]
+    fn split_outside_quotes_pipe() {
+        let parts = split_outside_quotes("cat foo.rs | grep fn", &["&&", "||", ";", "|"]);
+        assert_eq!(parts, vec!["cat foo.rs", "grep fn"]);
+    }
+
+    #[test]
+    fn split_outside_quotes_ampersand() {
+        let parts = split_outside_quotes("./build.sh && cat src/main.rs", &["&&", "||", ";", "|"]);
+        assert_eq!(parts, vec!["./build.sh", "cat src/main.rs"]);
+    }
+
+    #[test]
+    fn split_outside_quotes_ampersand_inside_double_quotes() {
+        // The && inside "..." must NOT split
+        let parts = split_outside_quotes(
+            r#"git commit -m "fix && cat src/main.rs""#,
+            &["&&", "||", ";", "|"],
+        );
+        assert_eq!(parts, vec![r#"git commit -m "fix && cat src/main.rs""#]);
+    }
+
+    #[test]
+    fn split_outside_quotes_pipe_inside_single_quotes() {
+        // The | inside '...' must NOT split
+        let parts = split_outside_quotes("sed -n '1|2p' foo.rs", &["&&", "||", ";", "|"]);
+        assert_eq!(parts, vec!["sed -n '1|2p' foo.rs"]);
+    }
+
+    #[test]
+    fn split_outside_quotes_double_pipe_before_single_pipe() {
+        // "||" must be matched as one token, not split into two "|" segments
+        let parts = split_outside_quotes("cmd1 || cmd2", &["&&", "||", ";", "|"]);
+        assert_eq!(parts, vec!["cmd1", "cmd2"]);
+    }
+
+    #[test]
+    fn split_outside_quotes_semicolon() {
+        let parts = split_outside_quotes("echo done; cat src/main.rs", &["&&", "||", ";", "|"]);
+        assert_eq!(parts, vec!["echo done", "cat src/main.rs"]);
+    }
+
+    #[test]
+    fn split_outside_quotes_escaped_quote() {
+        // \" inside a double-quoted string must not close the string
+        let parts =
+            split_outside_quotes(r#"echo "say \"hi\" && bye" && ls"#, &["&&", "||", ";", "|"]);
+        assert_eq!(parts.len(), 2);
+        assert!(parts[0].contains("say"));
+        assert_eq!(parts[1].trim(), "ls");
+    }
+
+    #[test]
+    fn split_outside_quotes_empty_segments_skipped() {
+        // Trailing semicolon — empty last segment is dropped
+        let parts = split_outside_quotes("echo hi;", &["&&", "||", ";", "|"]);
+        assert_eq!(parts, vec!["echo hi"]);
+    }
+
+    // --- quote-aware splitting ---
+
+    #[test]
+    fn git_commit_with_tail_in_message_not_blocked() {
+        // "tail" and ".rs" appear inside the commit message — must NOT block
+        assert!(check_source_file_access(
+            r#"git commit -m "feat: tail-50 of log, output_buffer.rs, workflow.rs""#
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn git_commit_with_ampersand_and_source_in_message_not_blocked() {
+        // "&&" and "cat src/main.rs" inside the quoted message — must NOT block
+        assert!(
+            check_source_file_access(r#"git commit -m "fix && cat src/main.rs was broken""#)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn compound_and_then_cat_blocked() {
+        // cat src/main.rs is a real command after &&
+        assert!(check_source_file_access("./build.sh && cat src/main.rs").is_some());
+    }
+
+    #[test]
+    fn semicolon_then_cat_blocked() {
+        assert!(check_source_file_access("echo done; cat src/main.rs").is_some());
+    }
+
+    #[test]
+    fn or_then_tail_blocked() {
+        assert!(check_source_file_access("cargo build || tail src/lib.rs").is_some());
+    }
+
+    #[test]
+    fn pipe_chain_with_source_blocked() {
+        // tail is the first token of its segment — blocked
+        assert!(check_source_file_access("tail src/main.rs | grep error").is_some());
     }
 }
