@@ -1,10 +1,13 @@
 //! File-level drift detection: compare old and new chunks to quantify change.
 //!
-//! Pure functions with no database access. Receives old chunks (from
-//! `read_file_embeddings`) and new chunks (from the embedding phase),
-//! and computes drift scores using content hashing and cosine similarity.
+//! Receives old chunks (from `read_file_embeddings`) and new chunks (from the
+//! embedding phase), and computes drift scores using content hashing and
+//! cosine similarity via sqlite-vec's `vec_distance_cosine`.
 
-use super::index::{cosine_sim, l2_norm, OldChunk};
+use anyhow::Result;
+use rusqlite::{params, Connection};
+
+use super::index::OldChunk;
 
 /// Minimum cosine similarity to consider two chunks semantically related.
 const SEMANTIC_MATCH_THRESHOLD: f32 = 0.3;
@@ -38,20 +41,21 @@ pub struct NewChunk {
 /// 3. Classify unmatched as added/removed (drift 1.0 each)
 /// 4. Aggregate into avg_drift, max_drift, max_drift_chunk
 pub fn compute_file_drift(
+    conn: &Connection,
     file_path: &str,
     old_chunks: &[OldChunk],
     new_chunks: &[NewChunk],
-) -> FileDrift {
+) -> Result<FileDrift> {
     // Both empty → zero drift
     if old_chunks.is_empty() && new_chunks.is_empty() {
-        return FileDrift {
+        return Ok(FileDrift {
             file_path: file_path.to_string(),
             avg_drift: 0.0,
             max_drift: 0.0,
             max_drift_chunk: None,
             chunks_added: 0,
             chunks_removed: 0,
-        };
+        });
     }
 
     // Track all individual drift values and their associated content
@@ -90,17 +94,55 @@ pub fn compute_file_drift(
         .map(|(i, _)| i)
         .collect();
 
-    // Step 2: Greedy best-cosine pairing on remainder
+    // Step 2: Greedy best-cosine pairing via sqlite-vec vec_distance_cosine.
     if !unmatched_old.is_empty() && !unmatched_new.is_empty() {
-        // Compute all pairwise similarities
-        let mut pairs: Vec<(usize, usize, f32)> = Vec::new();
+        // Load unmatched old embeddings into a temp table so each new-chunk
+        // query can scan all old embeddings in one SQL round-trip.
+        conn.execute_batch(
+            "CREATE TEMP TABLE IF NOT EXISTS _drift_old (oi INTEGER, embedding BLOB); \
+             DELETE FROM _drift_old;",
+        )?;
         for &oi in &unmatched_old {
-            let a_norm = l2_norm(&old_chunks[oi].embedding);
+            let blob: Vec<u8> = old_chunks[oi]
+                .embedding
+                .iter()
+                .flat_map(|f| f.to_le_bytes())
+                .collect();
+            conn.execute(
+                "INSERT INTO _drift_old (oi, embedding) VALUES (?1, ?2)",
+                params![oi as i64, blob],
+            )?;
+        }
+
+        // One query per new chunk returns distances to all old chunks.
+        // vec_distance_cosine returns cosine distance ∈ [0,1] (0 = identical);
+        // COALESCE maps NULL (degenerate zero-vector) to 1.0 (maximum distance).
+        let mut pairs: Vec<(usize, usize, f32)> = Vec::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT oi, \
+                 COALESCE(vec_distance_cosine(vec_f32(embedding), vec_f32(?1)), 1.0) \
+                 FROM _drift_old",
+            )?;
             for &ni in &unmatched_new {
-                let sim = cosine_sim(&old_chunks[oi].embedding, &new_chunks[ni].embedding, a_norm);
-                pairs.push((oi, ni, sim));
+                let b_blob: Vec<u8> = new_chunks[ni]
+                    .embedding
+                    .iter()
+                    .flat_map(|f| f.to_le_bytes())
+                    .collect();
+                let rows = stmt
+                    .query_map(params![b_blob], |r| {
+                        let oi: i64 = r.get(0)?;
+                        let dist: f64 = r.get(1)?;
+                        Ok((oi as usize, (1.0_f32 - dist as f32).clamp(0.0, 1.0)))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                for (oi, sim) in rows {
+                    pairs.push((oi, ni, sim));
+                }
             }
         }
+        conn.execute_batch("DROP TABLE IF EXISTS _drift_old")?;
 
         // Sort by similarity descending
         pairs.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
@@ -167,14 +209,14 @@ pub fn compute_file_drift(
         .map(|(d, s)| (*d, s.clone()))
         .unwrap_or((0.0, None));
 
-    FileDrift {
+    Ok(FileDrift {
         file_path: file_path.to_string(),
         avg_drift,
         max_drift,
         max_drift_chunk,
         chunks_added,
         chunks_removed,
-    }
+    })
 }
 
 /// Truncate content to a snippet of at most `SNIPPET_MAX_LEN` characters.
@@ -190,6 +232,12 @@ fn snippet(content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
+
+    fn conn() -> Connection {
+        crate::embed::index::init_sqlite_vec();
+        Connection::open_in_memory().unwrap()
+    }
 
     fn old(content: &str, emb: &[f32]) -> OldChunk {
         OldChunk {
@@ -209,7 +257,7 @@ mod tests {
     fn identical_chunks_have_zero_drift() {
         let olds = vec![old("fn a() {}", &[1.0, 0.0, 0.0])];
         let news = vec![new("fn a() {}", &[1.0, 0.0, 0.0])];
-        let drift = compute_file_drift("a.rs", &olds, &news);
+        let drift = compute_file_drift(&conn(), "a.rs", &olds, &news).unwrap();
         assert_eq!(drift.avg_drift, 0.0);
         assert_eq!(drift.max_drift, 0.0);
         assert_eq!(drift.chunks_added, 0);
@@ -220,7 +268,7 @@ mod tests {
     fn completely_different_chunks_have_high_drift() {
         let olds = vec![old("fn a() {}", &[1.0, 0.0, 0.0])];
         let news = vec![new("fn b() { completely_different() }", &[0.0, 1.0, 0.0])];
-        let drift = compute_file_drift("a.rs", &olds, &news);
+        let drift = compute_file_drift(&conn(), "a.rs", &olds, &news).unwrap();
         assert!(drift.avg_drift > 0.9);
         assert!(drift.max_drift > 0.9);
     }
@@ -229,7 +277,7 @@ mod tests {
     fn added_chunks_count_as_full_drift() {
         let olds = vec![];
         let news = vec![new("fn new_func() {}", &[1.0, 0.0, 0.0])];
-        let drift = compute_file_drift("a.rs", &olds, &news);
+        let drift = compute_file_drift(&conn(), "a.rs", &olds, &news).unwrap();
         assert_eq!(drift.avg_drift, 1.0);
         assert_eq!(drift.max_drift, 1.0);
         assert_eq!(drift.chunks_added, 1);
@@ -240,7 +288,7 @@ mod tests {
     fn removed_chunks_count_as_full_drift() {
         let olds = vec![old("fn old_func() {}", &[1.0, 0.0, 0.0])];
         let news = vec![];
-        let drift = compute_file_drift("a.rs", &olds, &news);
+        let drift = compute_file_drift(&conn(), "a.rs", &olds, &news).unwrap();
         assert_eq!(drift.avg_drift, 1.0);
         assert_eq!(drift.max_drift, 1.0);
         assert_eq!(drift.chunks_added, 0);
@@ -252,7 +300,7 @@ mod tests {
         // Same content, different embeddings -> content match wins, drift = 0.0
         let olds = vec![old("fn a() {}", &[1.0, 0.0, 0.0])];
         let news = vec![new("fn a() {}", &[0.0, 1.0, 0.0])];
-        let drift = compute_file_drift("a.rs", &olds, &news);
+        let drift = compute_file_drift(&conn(), "a.rs", &olds, &news).unwrap();
         assert_eq!(drift.avg_drift, 0.0);
         assert_eq!(drift.max_drift, 0.0);
     }
@@ -268,7 +316,7 @@ mod tests {
             new("fn tweaked() { v2 }", &[0.1, 0.9, 0.0]),
             new("fn brand_new() {}", &[0.0, 0.0, 1.0]),
         ];
-        let drift = compute_file_drift("a.rs", &olds, &news);
+        let drift = compute_file_drift(&conn(), "a.rs", &olds, &news).unwrap();
         assert_eq!(drift.chunks_added, 1);
         assert_eq!(drift.chunks_removed, 0);
         assert!(drift.avg_drift > 0.3);
@@ -285,7 +333,7 @@ mod tests {
             new("fn stable() {}", &[1.0, 0.0, 0.0]),
             new("fn volatile() { new_impl }", &[0.0, 0.0, 1.0]),
         ];
-        let drift = compute_file_drift("a.rs", &olds, &news);
+        let drift = compute_file_drift(&conn(), "a.rs", &olds, &news).unwrap();
         assert!(drift.max_drift_chunk.is_some());
         let snippet = drift.max_drift_chunk.unwrap();
         assert!(snippet.contains("volatile"));
@@ -293,7 +341,7 @@ mod tests {
 
     #[test]
     fn both_empty_means_zero_drift() {
-        let drift = compute_file_drift("a.rs", &[], &[]);
+        let drift = compute_file_drift(&conn(), "a.rs", &[], &[]).unwrap();
         assert_eq!(drift.avg_drift, 0.0);
         assert_eq!(drift.max_drift, 0.0);
     }

@@ -35,7 +35,7 @@ pub fn db_path(project_root: &Path) -> PathBuf {
 /// gets `vec_distance_cosine`, `vec_f32`, and the `vec0` virtual table module.
 /// Uses `sqlite3_auto_extension` so the init runs on every `Connection::open`.
 /// Safe to call multiple times — the `Once` guard makes it idempotent.
-fn init_sqlite_vec() {
+pub(crate) fn init_sqlite_vec() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         // SAFETY: sqlite3_vec_init is a valid SQLite extension entry point.
@@ -709,19 +709,6 @@ fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
-pub(crate) fn l2_norm(v: &[f32]) -> f32 {
-    v.iter().map(|x| x * x).sum::<f32>().sqrt()
-}
-
-pub(crate) fn cosine_sim(a: &[f32], b: &[f32], a_norm: f32) -> f32 {
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let b_norm = l2_norm(b);
-    if a_norm == 0.0 || b_norm == 0.0 {
-        return 0.0;
-    }
-    (dot / (a_norm * b_norm)).clamp(0.0, 1.0)
-}
-
 /// Result of change detection: which files need re-indexing and which were deleted.
 #[derive(Debug)]
 pub struct ChangeSet {
@@ -1039,8 +1026,12 @@ pub async fn build_index(project_root: &Path, force: bool) -> Result<IndexReport
                     embedding: emb.clone(),
                 })
                 .collect();
-            let drift =
-                crate::embed::drift::compute_file_drift(&result.rel, &old_chunks, &new_chunks);
+            let drift = crate::embed::drift::compute_file_drift(
+                &conn,
+                &result.rel,
+                &old_chunks,
+                &new_chunks,
+            )?;
             upsert_drift_report(
                 &conn,
                 &drift.file_path,
