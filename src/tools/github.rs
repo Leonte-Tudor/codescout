@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::process::Command;
 
-use crate::tools::{RecoverableError, Tool, ToolContext, TOOL_OUTPUT_BUFFER_THRESHOLD};
+use crate::tools::{RecoverableError, Tool, ToolContext};
 
 // ── Shared execution ──────────────────────────────────────────────────────────
 
@@ -46,7 +46,7 @@ pub(crate) fn check_gh_output(out: GhOutput) -> Result<String, RecoverableError>
 
 /// Store in OutputBuffer if large; otherwise parse as JSON or return as string.
 pub(crate) fn maybe_buffer(content: String, tool_name: &str, ctx: &ToolContext) -> Value {
-    if content.len() > TOOL_OUTPUT_BUFFER_THRESHOLD {
+    if crate::tools::exceeds_inline_limit(&content) {
         let id = ctx.output_buffer.store_tool(tool_name, content);
         json!(id)
     } else {
@@ -1217,6 +1217,7 @@ impl Tool for GithubRepo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::TOOL_OUTPUT_BUFFER_THRESHOLD;
 
     #[test]
     fn test_check_gh_output_success() {
