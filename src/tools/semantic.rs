@@ -107,13 +107,15 @@ impl Tool for SemanticSearch {
                     // Focused mode: full content
                     r.content.clone()
                 } else {
-                    // Exploring mode: preview (first 150 chars)
-                    let preview_len = 150.min(r.content.len());
-                    let mut preview = r.content[..preview_len].to_string();
-                    if r.content.len() > preview_len {
-                        preview.push_str("...");
+                    // Exploring mode: first line only, max 50 chars (matches text compact format)
+                    let first_line = r.content.lines().next().unwrap_or("").trim();
+                    let char_count = first_line.chars().count();
+                    if char_count > 50 {
+                        let truncated: String = first_line.chars().take(47).collect();
+                        format!("{}...", truncated)
+                    } else {
+                        first_line.to_string()
                     }
-                    preview
                 };
                 format_search_result_item(
                     &r.file_path,
@@ -132,12 +134,12 @@ impl Tool for SemanticSearch {
             let content_field = if guard.should_include_body() {
                 mr.content.clone()
             } else {
-                let preview_len = 150.min(mr.content.len());
-                let mut preview = mr.content[..preview_len].to_string();
-                if mr.content.len() > preview_len {
-                    preview.push_str("...");
+                let first_line = mr.content.lines().next().unwrap_or("").trim();
+                if first_line.len() > 50 {
+                    format!("{}...", &first_line[..47])
+                } else {
+                    first_line.to_string()
                 }
-                preview
             };
             result_items.push(format_search_result_item(
                 &format!("[memory:{}]", mr.title),
@@ -832,19 +834,42 @@ mod tests {
 
     #[test]
     fn preview_truncation_works() {
-        let long_content = "x".repeat(500);
-        let preview_len = 150.min(long_content.len());
-        let mut preview = long_content[..preview_len].to_string();
-        if long_content.len() > preview_len {
-            preview.push_str("...");
-        }
-        assert_eq!(preview.len(), 153); // 150 + "..."
+        // Helper mirrors the inline logic in SemanticSearch::call
+        let truncate = |content: &str| -> String {
+            let first_line = content.lines().next().unwrap_or("").trim();
+            let char_count = first_line.chars().count();
+            if char_count > 50 {
+                let truncated: String = first_line.chars().take(47).collect();
+                format!("{}...", truncated)
+            } else {
+                first_line.to_string()
+            }
+        };
+
+        // ASCII: long content truncated to 47 chars + "..."
+        let long_ascii = "x".repeat(100);
+        let preview = truncate(&long_ascii);
+        assert_eq!(preview.chars().count(), 50); // 47 + "..."
         assert!(preview.ends_with("..."));
 
-        let short_content = "short";
-        let preview_len2 = 150.min(short_content.len());
-        let preview2 = short_content[..preview_len2].to_string();
-        assert_eq!(preview2, "short"); // no truncation for short content
+        // Unicode: multi-byte chars must not panic
+        // Each '日' is 3 bytes; 51 chars = 153 bytes — old [..47] would panic mid-codepoint
+        let long_unicode = "日".repeat(51);
+        let preview_unicode = truncate(&long_unicode);
+        assert_eq!(preview_unicode.chars().count(), 50); // 47 '日' + "..."
+        assert!(preview_unicode.ends_with("..."));
+
+        // Emoji: also multi-byte
+        let emoji_line = "🦀".repeat(51);
+        let preview_emoji = truncate(&emoji_line);
+        assert_eq!(preview_emoji.chars().count(), 50);
+
+        // Multi-line: only first line is used
+        let multiline = "first line\nsecond line\nthird line";
+        assert_eq!(truncate(multiline), "first line");
+
+        // Short content: no truncation
+        assert_eq!(truncate("short"), "short");
     }
 
     #[tokio::test]

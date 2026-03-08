@@ -7,6 +7,10 @@ prompt that give future AI sessions deep, accurate knowledge of this codebase.
 NO MEMORIES WRITTEN WITHOUT COMPLETING ALL EXPLORATION STEPS FIRST
 ```
 
+```
+DON'T LEAVE ANY STONE UNTURNED
+```
+
 **Violating the letter of this process is violating the spirit of onboarding.**
 
 This is a one-time setup. Every future AI session depends on the accuracy of what you
