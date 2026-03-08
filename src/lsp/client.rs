@@ -260,7 +260,7 @@ impl LspClient {
     pub async fn request(&self, method: &str, params: Value) -> Result<Value> {
         // Retry on -32800 (RequestCancelled) — disabled for now; re-enable if
         // empirical evidence shows retries help more than they delay failure reporting.
-        const RETRY_ON_CANCELLED: bool = false;
+        const RETRY_ON_CANCELLED: bool = true;
         const MAX_RETRIES: usize = 3;
         const RETRY_DELAY_MS: u64 = 300;
 
@@ -1397,6 +1397,105 @@ struct Point {
             add_fresh.start_line,
             original_line + 3,
             "after did_change, LSP should return the updated line number (shifted by 3)"
+        );
+
+        client.shutdown().await.unwrap();
+    }
+
+    /// Integration test: verify that `request()` retries on -32800 (RequestCancelled)
+    /// and eventually succeeds. Uses a fake LSP server (Python script) that returns
+    /// -32800 for the first 2 requests, then responds normally.
+    ///
+    /// Run manually: `cargo test retry_on_cancelled -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore] // requires Python 3; run manually
+    async fn retry_on_cancelled_succeeds_after_transient_errors() {
+        let dir = tempdir().unwrap();
+        let fake_lsp = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/fake_lsp_cancelled.py");
+        assert!(
+            fake_lsp.exists(),
+            "fake LSP script missing: {}",
+            fake_lsp.display()
+        );
+
+        let config = LspServerConfig {
+            command: "python3".into(),
+            args: vec![fake_lsp.to_string_lossy().into_owned(), "2".into()],
+            workspace_root: dir.path().to_path_buf(),
+            init_timeout: Some(std::time::Duration::from_secs(5)),
+        };
+
+        let client = LspClient::start(config)
+            .await
+            .expect("fake LSP should start");
+
+        // This request goes through `request()` which has RETRY_ON_CANCELLED=true.
+        // The fake server returns -32800 twice, then succeeds on the 3rd attempt.
+        let result = client
+            .request(
+                "textDocument/documentSymbol",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///fake.kt" }
+                }),
+            )
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "request should succeed after retries, got: {:?}",
+            result.err()
+        );
+
+        let symbols = result.unwrap();
+        assert!(symbols.is_array(), "expected array response");
+        assert_eq!(
+            symbols.as_array().unwrap().len(),
+            1,
+            "fake server returns exactly one symbol"
+        );
+
+        client.shutdown().await.unwrap();
+    }
+
+    /// Integration test: verify that `request()` fails when the server returns
+    /// -32800 on ALL retries (exhausts MAX_RETRIES).
+    ///
+    /// Run manually: `cargo test retry_exhausted -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore] // requires Python 3; run manually
+    async fn retry_on_cancelled_fails_when_exhausted() {
+        let dir = tempdir().unwrap();
+        let fake_lsp = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/fake_lsp_cancelled.py");
+
+        let config = LspServerConfig {
+            command: "python3".into(),
+            // Cancel 10 times — more than MAX_RETRIES (3), so all attempts fail
+            args: vec![fake_lsp.to_string_lossy().into_owned(), "10".into()],
+            workspace_root: dir.path().to_path_buf(),
+            init_timeout: Some(std::time::Duration::from_secs(5)),
+        };
+
+        let client = LspClient::start(config)
+            .await
+            .expect("fake LSP should start");
+
+        let result = client
+            .request(
+                "textDocument/documentSymbol",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///fake.kt" }
+                }),
+            )
+            .await;
+
+        assert!(result.is_err(), "should fail after exhausting retries");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("code -32800"),
+            "error should mention -32800, got: {}",
+            err_msg
         );
 
         client.shutdown().await.unwrap();
