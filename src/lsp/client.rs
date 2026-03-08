@@ -133,6 +133,9 @@ impl LspClient {
             .spawn()
             .with_context(|| format!("Failed to start LSP server: {}", config.command))?;
 
+        // These `.take().expect()` calls are infallible: stdin, stdout, and stderr are
+        // configured as `Stdio::piped()` in the Command builder immediately above, so
+        // tokio guarantees they are `Some` after a successful spawn.
         let stdin = child.stdin.take().expect("stdin must be piped");
         let stdout = child.stdout.take().expect("stdout must be piped");
         let stderr = child.stderr.take().expect("stderr must be piped");
@@ -187,7 +190,11 @@ impl LspClient {
                                 let _ = transport::write_message(&mut *w, &response).await;
                             } else {
                                 // Response to our request
-                                if let Some(sender) = pending_clone.lock().unwrap().remove(&id) {
+                                if let Some(sender) = pending_clone
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .remove(&id)
+                                {
                                     if let Some(error) = msg.get("error") {
                                         let err_msg = error["message"]
                                             .as_str()
@@ -215,7 +222,7 @@ impl LspClient {
                         }
                         alive_clone.store(false, Ordering::SeqCst);
                         // Drain pending requests with errors
-                        let mut map = pending_clone.lock().unwrap();
+                        let mut map = pending_clone.lock().unwrap_or_else(|e| e.into_inner());
                         for (_, sender) in map.drain() {
                             let _ = sender.send(Err(anyhow::anyhow!("LSP server disconnected")));
                         }
@@ -296,7 +303,10 @@ impl LspClient {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
 
-        self.pending.lock().unwrap().insert(id, tx);
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, tx);
 
         let msg = json!({
             "jsonrpc": "2.0",
@@ -308,7 +318,10 @@ impl LspClient {
         {
             let mut writer = self.writer.lock().await;
             if let Err(e) = transport::write_message(&mut *writer, &msg).await {
-                self.pending.lock().unwrap().remove(&id);
+                self.pending
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&id);
                 return Err(e);
             }
         }
@@ -318,7 +331,10 @@ impl LspClient {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => bail!("LSP response channel closed"),
             Err(_) => {
-                self.pending.lock().unwrap().remove(&id);
+                self.pending
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&id);
                 bail!(
                     "LSP request timed out after {}s: {}",
                     timeout.as_secs(),
@@ -393,7 +409,7 @@ impl LspClient {
 
         // Parse and store server capabilities
         let init_result: lsp_types::InitializeResult = serde_json::from_value(result)?;
-        *self.capabilities.lock().unwrap() = init_result.capabilities;
+        *self.capabilities.lock().unwrap_or_else(|e| e.into_inner()) = init_result.capabilities;
 
         // Send initialized notification
         self.notify("initialized", json!({})).await?;
@@ -424,7 +440,11 @@ impl LspClient {
 
         // Wait for reader task to finish (with timeout)
         // Extract handle before awaiting to avoid holding MutexGuard across await
-        let handle = self.reader_handle.lock().unwrap().take();
+        let handle = self
+            .reader_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         if let Some(handle) = handle {
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
         }
@@ -488,7 +508,7 @@ impl LspClient {
         let canonical = std::fs::canonicalize(path)
             .with_context(|| format!("Failed to canonicalize path for didOpen: {:?}", path))?;
         {
-            let mut open_files = self.open_files.lock().unwrap();
+            let mut open_files = self.open_files.lock().unwrap_or_else(|e| e.into_inner());
             if !open_files.insert(canonical) {
                 return Ok(());
             }
@@ -748,7 +768,10 @@ impl LspClient {
     /// Send textDocument/didClose notification for a file.
     pub async fn did_close(&self, path: &Path) -> Result<()> {
         let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        self.open_files.lock().unwrap().remove(&canonical);
+        self.open_files
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&canonical);
 
         let uri = path_to_uri(path)?;
 
@@ -765,7 +788,12 @@ impl LspClient {
     /// No-op if the file is not currently open in this server.
     pub async fn did_change(&self, path: &Path) -> Result<()> {
         let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        if !self.open_files.lock().unwrap().contains(&canonical) {
+        if !self
+            .open_files
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&canonical)
+        {
             return Ok(());
         }
         let content = std::fs::read_to_string(path)
@@ -799,6 +827,11 @@ impl Drop for LspClient {
         // shutdown/exit first.  This ensures the process dies even if the
         // graceful path was skipped (e.g., panic, abrupt exit).
         if let Some(pid) = self.child_pid {
+            // SAFETY: `pid` was captured from `child.id()` immediately after spawn and remains
+            // valid for the lifetime of this `LspClient` (we hold the child handle). SIGTERM
+            // (signal 15) is safe to send to a child process — it requests clean termination
+            // without undefined behaviour. The `u32 as i32` cast is safe because Linux PIDs
+            // are assigned from a range that fits in i32 (maximum 4,194,304 on 64-bit kernels).
             unsafe {
                 libc::kill(pid as i32, libc::SIGTERM);
             }

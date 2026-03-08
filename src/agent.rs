@@ -11,6 +11,7 @@ use crate::memory::MemoryStore;
 
 /// Shared agent state — cloned into each tool invocation.
 /// Cached embedder: `(model_name, embedder)` — invalidated on model change.
+/// `Arc<dyn Embedder>`: concrete type selected at runtime from a config string (e.g. `"openai"`, `"ollama"`); generics cannot express this.
 type CachedEmbedder = Arc<tokio::sync::Mutex<Option<(String, Arc<dyn crate::embed::Embedder>)>>>;
 
 /// State of the background index-build task spawned by `index_project`.

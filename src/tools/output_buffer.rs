@@ -92,7 +92,7 @@ impl OutputBuffer {
 
     /// Store command output and return an opaque handle (`@cmd_<8hex>`).
     pub fn store(&self, command: String, stdout: String, stderr: String, exit_code: i32) -> String {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -139,7 +139,7 @@ impl OutputBuffer {
     /// Only `@file_*` entries with `source_path` set can refresh; all others return `false`.
     pub fn get_with_refresh_flag(&self, id: &str) -> Option<(BufferEntry, bool)> {
         let canonical = id.strip_suffix(".err").unwrap_or(id);
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
         if !inner.entries.contains_key(canonical) {
             return None;
@@ -211,7 +211,7 @@ impl OutputBuffer {
     /// Content goes in `stdout`; `stderr` is empty; `exit_code` is 0.
     /// The `command` field holds the source path for diagnostics.
     pub fn store_file(&self, path: String, content: String) -> String {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -243,7 +243,7 @@ impl OutputBuffer {
     /// Content goes in `stdout`; `stderr` is empty; `exit_code` is 0.
     /// The `command` field holds the tool name for diagnostics.
     pub fn store_tool(&self, tool_name: &str, content: String) -> String {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -280,7 +280,7 @@ impl OutputBuffer {
         cwd: Option<String>,
         timeout_secs: u64,
     ) -> String {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -313,7 +313,7 @@ impl OutputBuffer {
     /// Does not consume the entry — LRU eviction handles cleanup.
     /// Returns `None` if the handle is unknown or has been evicted.
     pub fn get_dangerous(&self, handle: &str) -> Option<PendingAckCommand> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.pending_acks.get(handle).cloned()
     }
 
@@ -325,7 +325,7 @@ impl OutputBuffer {
         new_string: String,
         replace_all: bool,
     ) -> String {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -355,13 +355,13 @@ impl OutputBuffer {
 
     /// Retrieve a stored pending edit by handle.
     pub fn get_pending_edit(&self, handle: &str) -> Option<PendingAckEdit> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.pending_edits.get(handle).cloned()
     }
 
     /// Store a background job log path and return a `@bg_<8hex>` handle.
     pub fn store_background(&self, log_path: PathBuf) -> String {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.counter = inner.counter.wrapping_add(1);
         let id = format!("@bg_{:08x}", inner.counter as u32);
 
@@ -380,7 +380,7 @@ impl OutputBuffer {
 
     /// Look up the log path for a background job handle.
     pub fn get_background(&self, id: &str) -> Option<PathBuf> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.background_jobs.get(id).cloned()
     }
 

@@ -276,7 +276,7 @@ impl Tool for IndexProject {
 
         // Guard against concurrent runs.
         {
-            let mut state = ctx.agent.indexing.lock().unwrap();
+            let mut state = ctx.agent.indexing.lock().unwrap_or_else(|e| e.into_inner());
             if matches!(*state, IndexingState::Running) {
                 return Ok(json!({
                     "status": "already_running",
@@ -315,7 +315,7 @@ impl Tool for IndexProject {
 
             {
                 // Drop the MutexGuard before any `.await` — MutexGuard is !Send.
-                let mut state = state_arc.lock().unwrap();
+                let mut state = state_arc.lock().unwrap_or_else(|e| e.into_inner());
                 *state = match result {
                     Ok(report) => IndexingState::Done {
                         files_indexed: report.indexed,
@@ -516,7 +516,7 @@ impl Tool for IndexStatus {
         // Append background indexing state if not idle.
         {
             use crate::agent::IndexingState;
-            let state = ctx.agent.indexing.lock().unwrap();
+            let state = ctx.agent.indexing.lock().unwrap_or_else(|e| e.into_inner());
             match &*state {
                 IndexingState::Idle => {}
                 IndexingState::Running => {

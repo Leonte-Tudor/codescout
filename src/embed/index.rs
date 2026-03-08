@@ -733,7 +733,12 @@ fn search_scoped_vec0(
 fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
         .chunks_exact(4)
-        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .map(|b| {
+            f32::from_le_bytes(
+                b.try_into()
+                    .expect("chunks_exact(4) guarantees 4-byte slices"),
+            )
+        })
         .collect()
 }
 
@@ -986,7 +991,10 @@ pub async fn build_index(project_root: &Path, force: bool) -> Result<IndexReport
         let embedder = Arc::clone(&embedder);
         let sem = Arc::clone(&sem);
         tasks.spawn(async move {
-            let _permit = sem.acquire().await.expect("semaphore closed");
+            let _permit = sem
+                .acquire()
+                .await
+                .map_err(|_| anyhow::anyhow!("semaphore unexpectedly closed"))?;
             let texts: Vec<&str> = work.chunks.iter().map(|c| c.content.as_str()).collect();
             let embeddings = embedder.embed(&texts).await?;
             Ok(FileResult {
@@ -1212,7 +1220,10 @@ pub async fn build_library_index(
         let embedder = Arc::clone(&embedder);
         let sem = Arc::clone(&sem);
         tasks.spawn(async move {
-            let _permit = sem.acquire().await.expect("semaphore closed");
+            let _permit = sem
+                .acquire()
+                .await
+                .map_err(|_| anyhow::anyhow!("semaphore unexpectedly closed"))?;
             let texts: Vec<&str> = work.chunks.iter().map(|c| c.content.as_str()).collect();
             let embeddings = embedder.embed(&texts).await?;
             Ok(FileResult {

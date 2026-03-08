@@ -103,7 +103,7 @@ impl LspManager {
         let mut rx_opt = None;
         let tx_opt;
         {
-            let mut starting = self.starting.lock().unwrap();
+            let mut starting = self.starting.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(existing_rx) = starting.get(language) {
                 // Someone else is already starting this language — grab a receiver.
                 rx_opt = Some(existing_rx.clone());
@@ -136,14 +136,14 @@ impl LspManager {
             // Clean up the old barrier and register as a new starter.
             let (tx, rx) = tokio::sync::watch::channel(None);
             {
-                let mut starting = self.starting.lock().unwrap();
+                let mut starting = self.starting.lock().unwrap_or_else(|e| e.into_inner());
                 starting.insert(language.to_string(), rx);
             }
             return self.do_start(language, workspace_root, config, tx).await;
         }
 
         // We're the starter.
-        self.do_start(language, workspace_root, config, tx_opt.unwrap())
+        self.do_start(language, workspace_root, config, tx_opt.expect("tx_opt is always Some when rx_opt is None — set in the same exclusive branch above"))
             .await
     }
 
@@ -278,7 +278,7 @@ impl LspManager {
         let mut rx_opt = None;
         let tx_opt;
         {
-            let mut starting = self.starting.lock().unwrap();
+            let mut starting = self.starting.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(existing_rx) = starting.get(language) {
                 rx_opt = Some(existing_rx.clone());
                 tx_opt = None;
@@ -301,13 +301,13 @@ impl LspManager {
             }
             let (tx, rx) = tokio::sync::watch::channel(None);
             {
-                let mut starting = self.starting.lock().unwrap();
+                let mut starting = self.starting.lock().unwrap_or_else(|e| e.into_inner());
                 starting.insert(language.to_string(), rx);
             }
             return self.do_start(language, &workspace_root, config, tx).await;
         }
 
-        self.do_start(language, &workspace_root, config, tx_opt.unwrap())
+        self.do_start(language, &workspace_root, config, tx_opt.expect("tx_opt is always Some when rx_opt is None — set in the same exclusive branch above"))
             .await
     }
 }

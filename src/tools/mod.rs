@@ -57,6 +57,7 @@ pub(crate) const COMPACT_SUMMARY_HARD_MAX_BYTES: usize = 3_000;
 /// resources are added — all tools get access automatically.
 pub struct ToolContext {
     pub agent: Agent,
+    // Arc<dyn LspProvider>: swapped for MockLspProvider in tests, LspManager in production (testability seam).
     pub lsp: Arc<dyn LspProvider>,
     pub output_buffer: Arc<output_buffer::OutputBuffer>,
     pub progress: Option<Arc<progress::ProgressReporter>>,

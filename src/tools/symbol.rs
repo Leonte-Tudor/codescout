@@ -719,6 +719,7 @@ impl Tool for FindSymbol {
         let pattern_lower = pattern.to_lowercase();
         // Build the name predicate once: exact matching for name_path lookups,
         // case-insensitive substring matching for pattern searches.
+        // Box<dyn Fn>: two different closure types must be held under one variable across a conditional; generics cannot express this at runtime.
         let name_ok: Box<dyn Fn(&SymbolInfo) -> bool + Send> = if is_name_path {
             let p = pattern.to_owned();
             Box::new(move |sym: &SymbolInfo| symbol_name_matches(sym, &p))
