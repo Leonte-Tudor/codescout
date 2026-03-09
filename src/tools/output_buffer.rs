@@ -1292,4 +1292,27 @@ mod tests {
             "unexpected error: {err}"
         );
     }
+
+    /// Stale @bg_* refs (from a previous session) must return a RecoverableError,
+    /// not panic or crash the server. This is the most common scenario after /mcp restart.
+    #[test]
+    fn resolve_refs_bg_stale_ref_returns_recoverable_error() {
+        let buf = OutputBuffer::new(10);
+        // This ref was never stored — simulates a ref from a previous server session.
+        let result = buf.resolve_refs("tail -20 @bg_00000007");
+        assert!(result.is_err(), "stale @bg_ ref must error");
+        let err = result.unwrap_err();
+        let rec = err
+            .downcast_ref::<crate::tools::RecoverableError>()
+            .expect("must be RecoverableError, not a panic or anyhow");
+        assert!(
+            rec.message.contains("not found"),
+            "error should mention 'not found', got: {}",
+            rec.message
+        );
+        assert!(
+            rec.hint.as_deref().unwrap_or("").contains("session resets"),
+            "hint should mention session resets"
+        );
+    }
 }
