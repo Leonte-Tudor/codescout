@@ -15,11 +15,15 @@ use crate::memory::MemoryStore;
 type CachedEmbedder = Arc<tokio::sync::Mutex<Option<(String, Arc<dyn crate::embed::Embedder>)>>>;
 
 /// State of the background index-build task spawned by `index_project`.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub enum IndexingState {
     #[default]
     Idle,
-    Running,
+    Running {
+        done: usize,
+        total: usize,
+        eta_secs: Option<u64>,
+    },
     Done {
         files_indexed: usize,
         files_deleted: usize,

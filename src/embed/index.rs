@@ -908,13 +908,21 @@ fn is_file_changed_mtime_hash(conn: &Connection, project_root: &Path, rel: &str)
     Ok(stored_hash.as_deref() != Some(current_hash.as_str()))
 }
 
+/// Callback type for `build_index` progress reporting.
+/// Arguments: `(done, total, eta_secs)`.
+pub type ProgressCb = Box<dyn Fn(usize, usize, Option<u64>) + Send>;
+
 /// Build or incrementally update the embedding index for a project.
 ///
 /// Three-phase pipeline for maximum throughput:
 ///   1. Change detection + chunk  (git diff → mtime → hash fallback)
 ///   2. Embed concurrently   (up to 4 in-flight HTTP requests at once)
 ///   3. DB writes in a single transaction  (eliminates per-chunk commit overhead)
-pub async fn build_index(project_root: &Path, force: bool) -> Result<IndexReport> {
+pub async fn build_index(
+    project_root: &Path,
+    force: bool,
+    progress_cb: Option<ProgressCb>,
+) -> Result<IndexReport> {
     use crate::config::ProjectConfig;
     use crate::embed::{create_embedder, Embedding};
     use std::sync::Arc;
@@ -987,6 +995,10 @@ pub async fn build_index(project_root: &Path, force: bool) -> Result<IndexReport
     let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
     let mut tasks: JoinSet<Result<FileResult>> = JoinSet::new();
 
+    let total_to_embed = works.len();
+    let embed_start = std::time::Instant::now();
+    let mut embed_done = 0usize;
+
     for work in works {
         let embedder = Arc::clone(&embedder);
         let sem = Arc::clone(&sem);
@@ -1011,6 +1023,16 @@ pub async fn build_index(project_root: &Path, force: bool) -> Result<IndexReport
     let mut results: Vec<FileResult> = Vec::new();
     while let Some(res) = tasks.join_next().await {
         results.push(res.map_err(|e| anyhow::anyhow!(e))??);
+        embed_done += 1;
+        if let Some(cb) = &progress_cb {
+            let remaining = total_to_embed - embed_done;
+            // embed_done >= 1 here by construction; guard is kept for self-documentation.
+            let eta_secs = (embed_done > 0 && remaining > 0).then(|| {
+                let elapsed = embed_start.elapsed().as_secs_f64();
+                (elapsed / embed_done as f64 * remaining as f64) as u64
+            });
+            cb(embed_done, total_to_embed, eta_secs);
+        }
     }
 
     // ── Phase 3: Single transaction for all DB writes ─────────────────────────

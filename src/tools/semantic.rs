@@ -286,13 +286,17 @@ impl Tool for IndexProject {
         // Guard against concurrent runs.
         {
             let mut state = ctx.agent.indexing.lock().unwrap_or_else(|e| e.into_inner());
-            if matches!(*state, IndexingState::Running) {
+            if matches!(*state, IndexingState::Running { .. }) {
                 return Ok(json!({
                     "status": "already_running",
                     "hint": "Use index_status() to check progress."
                 }));
             }
-            *state = IndexingState::Running;
+            *state = IndexingState::Running {
+                done: 0,
+                total: 0,
+                eta_secs: None,
+            };
         }
 
         let state_arc = ctx.agent.indexing.clone();
@@ -301,8 +305,21 @@ impl Tool for IndexProject {
         if let Some(p) = &progress {
             p.report(0, None).await;
         }
+
+        // Separate clone: progress_cb captures this; state_arc is used after build_index returns.
+        let state_arc_cb = ctx.agent.indexing.clone();
+        let progress_cb: Option<crate::embed::index::ProgressCb> =
+            Some(Box::new(move |done, total, eta_secs| {
+                let mut s = state_arc_cb.lock().unwrap_or_else(|e| e.into_inner());
+                *s = IndexingState::Running {
+                    done,
+                    total,
+                    eta_secs,
+                };
+            }));
+
         tokio::spawn(async move {
-            let result = crate::embed::index::build_index(&root, force).await;
+            let result = crate::embed::index::build_index(&root, force, progress_cb).await;
 
             // Gather post-index stats *before* locking the mutex so that a
             // MutexGuard (which is !Send) is never held across an await point.
@@ -528,8 +545,17 @@ impl Tool for IndexStatus {
             let state = ctx.agent.indexing.lock().unwrap_or_else(|e| e.into_inner());
             match &*state {
                 IndexingState::Idle => {}
-                IndexingState::Running => {
-                    result["indexing"] = json!("running");
+                IndexingState::Running {
+                    done,
+                    total,
+                    eta_secs,
+                } => {
+                    result["indexing"] = json!({
+                        "status": "running",
+                        "done": done,
+                        "total": total,
+                        "eta_secs": eta_secs,
+                    });
                 }
                 IndexingState::Done {
                     files_indexed,
@@ -703,13 +729,19 @@ mod tests {
     use crate::lsp::LspManager;
     use tempfile::tempdir;
 
-    #[test]
-    fn index_project_call_accepts_progress_none() {
-        // Compile-only test: verifies the progress code path type-checks.
-        // When ctx.progress is None, no notifications are sent.
-        // Manual verification: run `cargo run -- index --project .` and
-        // observe progress in Claude Code's tool spinner.
-        assert!(true);
+    #[tokio::test]
+    async fn index_project_sets_initial_running_state() {
+        use crate::agent::IndexingState;
+        // Call index_project on a project with no embedder configured.
+        // It will start and quickly fail in the background, but the
+        // initial Running state is set synchronously before the spawn.
+        let (_dir, ctx) = project_ctx().await;
+        let _ = IndexProject.call(json!({}), &ctx).await;
+
+        // State should not be left Idle after a call — it was either
+        // set to Running (still in progress) or transitioned to Done/Failed.
+        let state = ctx.agent.indexing.lock().unwrap().clone();
+        assert!(!matches!(state, IndexingState::Idle));
     }
 
     async fn project_ctx() -> (tempfile::TempDir, ToolContext) {
@@ -785,6 +817,44 @@ mod tests {
         assert_eq!(result["file_count"], 1);
         assert_eq!(result["chunk_count"], 1);
         assert_eq!(result["embedding_count"], 1);
+    }
+
+    #[tokio::test]
+    async fn index_status_shows_running_progress() {
+        use crate::agent::IndexingState;
+        let (dir, ctx) = project_ctx().await;
+        // Create the DB so index_status doesn't early-return "no index"
+        let conn = crate::embed::index::open_db(dir.path()).unwrap();
+        drop(conn);
+
+        // Simulate mid-run state
+        {
+            let mut state = ctx.agent.indexing.lock().unwrap();
+            *state = IndexingState::Running {
+                done: 10,
+                total: 50,
+                eta_secs: Some(20),
+            };
+        }
+
+        let result = IndexStatus.call(json!({}), &ctx).await.unwrap();
+        let indexing = &result["indexing"];
+        assert_eq!(indexing["status"], "running");
+        assert_eq!(indexing["done"], 10);
+        assert_eq!(indexing["total"], 50);
+        assert_eq!(indexing["eta_secs"], 20);
+
+        // Verify eta_secs: None renders as JSON null (e.g. on last file or initial state)
+        {
+            let mut state = ctx.agent.indexing.lock().unwrap();
+            *state = IndexingState::Running {
+                done: 50,
+                total: 50,
+                eta_secs: None,
+            };
+        }
+        let result2 = IndexStatus.call(json!({}), &ctx).await.unwrap();
+        assert_eq!(result2["indexing"]["eta_secs"], serde_json::Value::Null);
     }
 
     #[tokio::test]

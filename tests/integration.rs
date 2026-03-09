@@ -182,7 +182,8 @@ async fn workflow_project_memory_config() {
 
     // Step 2: Get project status
     let config = ProjectStatus.call(json!({}), &ctx).await.unwrap();
-    assert!(config["config"].is_object());
+    assert!(config["languages"].is_array());
+    assert!(config["embeddings_model"].is_string());
     assert!(config["project_root"].is_string());
 
     // Step 3: Write memory

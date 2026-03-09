@@ -24,7 +24,7 @@ use crate::tools::{
     library::ListLibraries,
     memory::Memory,
     progress,
-    semantic::{IndexProject, SemanticSearch},
+    semantic::{IndexProject, IndexStatus, SemanticSearch},
     symbol::{
         FindReferences, FindSymbol, GotoDefinition, Hover, InsertCode, ListSymbols, RemoveSymbol,
         RenameSymbol, ReplaceSymbol,
@@ -83,6 +83,7 @@ impl CodeScoutServer {
             // Semantic search tools
             Arc::new(SemanticSearch),
             Arc::new(IndexProject),
+            Arc::new(IndexStatus),
             // Config tools
             Arc::new(ActivateProject),
             Arc::new(ProjectStatus),
@@ -518,6 +519,7 @@ mod tests {
             "memory",
             "semantic_search",
             "index_project",
+            "index_status",
             "activate_project",
             "project_status",
             "list_libraries",

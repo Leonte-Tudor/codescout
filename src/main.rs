@@ -92,7 +92,7 @@ async fn main() -> Result<()> {
                 .or_else(|| std::env::current_dir().ok())
                 .unwrap_or_else(|| std::path::PathBuf::from("."));
             tracing::info!("Indexing project at {}", root.display());
-            codescout::embed::index::build_index(&root, force).await?;
+            codescout::embed::index::build_index(&root, force, None).await?;
         }
         #[cfg(feature = "dashboard")]
         Commands::Dashboard {

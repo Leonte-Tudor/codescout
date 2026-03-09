@@ -84,34 +84,19 @@ impl Tool for ProjectStatus {
     }
 
     fn description(&self) -> &str {
-        "Active project state: config, semantic index health, usage telemetry, and library summary. \
-         Pass threshold (float) to include drift scores. Pass window ('1h','24h','7d','30d') for usage window."
+        "Active project state: languages, embedding model, index health summary, and memory staleness. \
+         Call index_status() for detailed index info and live progress."
     }
 
     fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "threshold": {
-                    "type": "number",
-                    "description": "Min avg_drift to include (0.0-1.0). When provided, adds drift data to index section."
-                },
-                "path": {
-                    "type": "string",
-                    "description": "Glob pattern to filter drift files (SQL LIKE syntax, e.g. 'src/tools/%')."
-                },
-                "detail_level": {
-                    "type": "string",
-                    "enum": ["exploring", "full"],
-                    "description": "Drift output detail. 'full' includes most-drifted chunk content."
-                }
-            }
-        })
+        json!({ "type": "object", "properties": {} })
     }
 
-    async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
-        // --- Config + library section ---
-        let (root, config_val, lib_count, lib_indexed) = ctx
+    async fn call(&self, _input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
+        use crate::agent::IndexingState;
+
+        // --- Essential config + library section ---
+        let (root, languages, embeddings_model, lib_count, lib_indexed) = ctx
             .agent
             .with_project(|p| {
                 let lib_count = p.library_registry.all().len();
@@ -123,7 +108,8 @@ impl Tool for ProjectStatus {
                     .count();
                 Ok((
                     p.root.clone(),
-                    serde_json::to_value(&p.config)?,
+                    p.config.project.languages.clone(),
+                    p.config.embeddings.model.clone(),
                     lib_count,
                     lib_indexed,
                 ))
@@ -132,107 +118,70 @@ impl Tool for ProjectStatus {
 
         let mut result = json!({
             "project_root": root.display().to_string(),
-            "config": config_val,
+            "languages": languages,
+            "embeddings_model": embeddings_model,
             "libraries": { "count": lib_count, "indexed": lib_indexed },
         });
 
         // --- Index section ---
-        let db_path = crate::embed::index::db_path(&root);
-        if !db_path.exists() {
-            result["index"] = json!({ "indexed": false });
+        // Running state takes priority over DB stats.
+        let indexing_state = ctx
+            .agent
+            .indexing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+
+        if let IndexingState::Running {
+            done,
+            total,
+            eta_secs,
+        } = indexing_state
+        {
+            result["index"] = json!({
+                "status": "running",
+                "done": done,
+                "total": total,
+                "eta_secs": eta_secs,
+                "hint": "Call index_status() for detailed breakdown.",
+            });
         } else {
-            let root2 = root.clone();
-            let index_result = tokio::task::spawn_blocking(move || {
-                let conn = crate::embed::index::open_db(&root2)?;
-                let stats = crate::embed::index::index_stats(&conn)?;
-                let staleness = crate::embed::index::check_index_staleness(&conn, &root2).ok();
-                anyhow::Ok((stats, staleness))
-            })
-            .await;
+            let db_path = crate::embed::index::db_path(&root);
+            if !db_path.exists() {
+                result["index"] = json!({
+                    "status": "not_indexed",
+                    "hint": "Run index_project() to build the index.",
+                });
+            } else {
+                let root2 = root.clone();
+                let index_result = tokio::task::spawn_blocking(move || {
+                    let conn = crate::embed::index::open_db(&root2)?;
+                    let stats = crate::embed::index::index_stats(&conn)?;
+                    let staleness = crate::embed::index::check_index_staleness(&conn, &root2).ok();
+                    anyhow::Ok((stats, staleness))
+                })
+                .await;
 
-            match index_result {
-                Ok(Ok((stats, staleness))) => {
-                    let mut index_section = json!({
-                        "indexed": true,
-                        "files": stats.file_count,
-                        "chunks": stats.chunk_count,
-                        "last_updated": stats.indexed_at,
-                        "model": stats.model,
-                    });
-                    if let Some(s) = staleness {
-                        index_section["git_sync"] = if s.stale {
-                            json!({
-                                "status": "behind",
-                                "behind_commits": s.behind_commits,
-                                "note": "Recent commits are not yet indexed. All previously indexed code is still queryable."
-                            })
-                        } else {
-                            json!({ "status": "up_to_date" })
+                match index_result {
+                    Ok(Ok((stats, staleness))) => {
+                        let status = match staleness.as_ref() {
+                            Some(s) if s.stale => "behind",
+                            _ => "up_to_date",
                         };
+                        result["index"] = json!({
+                            "status": status,
+                            "files": stats.file_count,
+                            "chunks": stats.chunk_count,
+                            "last_updated": stats.indexed_at,
+                            "hint": "Call index_status() for model info, by_source breakdown, drift, and progress details.",
+                        });
                     }
-
-                    // Drift — only if threshold or path param provided
-                    let wants_drift =
-                        input.get("threshold").is_some() || input.get("path").is_some();
-                    if wants_drift {
-                        use crate::tools::output::OutputGuard;
-                        let (root3, drift_enabled) = ctx
-                            .agent
-                            .with_project(|p| {
-                                Ok((p.root.clone(), p.config.embeddings.drift_detection_enabled))
-                            })
-                            .await?;
-                        if !drift_enabled {
-                            index_section["drift"] = json!({
-                                "status": "disabled",
-                                "hint": "Set embeddings.drift_detection_enabled = true in .codescout/project.toml"
-                            });
-                        } else {
-                            let threshold =
-                                input["threshold"].as_f64().map(|v| v as f32).unwrap_or(0.1);
-                            let path_filter = input["path"].as_str().map(|s| s.to_string());
-                            let guard = OutputGuard::from_input(&input);
-                            let rows = tokio::task::spawn_blocking(move || {
-                                let conn = crate::embed::index::open_db(&root3)?;
-                                crate::embed::index::query_drift_report(
-                                    &conn,
-                                    Some(threshold),
-                                    path_filter.as_deref(),
-                                )
-                            })
-                            .await??;
-                            let items: Vec<Value> = rows
-                                .iter()
-                                .map(|r| {
-                                    let mut obj = serde_json::Map::new();
-                                    obj.insert("file_path".into(), json!(r.file_path));
-                                    obj.insert("avg_drift".into(), json!(r.avg_drift));
-                                    obj.insert("max_drift".into(), json!(r.max_drift));
-                                    if guard.should_include_body() {
-                                        if let Some(chunk) = &r.max_drift_chunk {
-                                            obj.insert("max_drift_chunk".into(), json!(chunk));
-                                        }
-                                    }
-                                    Value::Object(obj)
-                                })
-                                .collect();
-                            let (items, overflow) = guard.cap_items(
-                                items,
-                                "Use detail_level='full' with offset for pagination",
-                            );
-                            let total = overflow.as_ref().map_or(items.len(), |o| o.total);
-                            let mut drift_result = json!({ "results": items, "total": total });
-                            if let Some(ov) = overflow {
-                                drift_result["overflow"] = OutputGuard::overflow_json(&ov);
-                            }
-                            index_section["drift"] = drift_result;
-                        }
+                    _ => {
+                        result["index"] = json!({
+                            "status": "not_indexed",
+                            "hint": "Run index_project() to build the index.",
+                        });
                     }
-
-                    result["index"] = index_section;
-                }
-                _ => {
-                    result["index"] = json!({ "indexed": false, "error": "failed to read index" });
                 }
             }
         }
@@ -284,13 +233,19 @@ fn format_project_status(result: &Value) -> String {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(root);
-    let indexed = result["index"]["indexed"].as_bool().unwrap_or(false);
-    let index_str = if indexed {
-        let files = result["index"]["files"].as_u64().unwrap_or(0);
-        let chunks = result["index"]["chunks"].as_u64().unwrap_or(0);
-        format!("index:{files}f/{chunks}c")
-    } else {
-        "index:none".to_string()
+    let status = result["index"]["status"].as_str().unwrap_or("unknown");
+    let index_str = match status {
+        "up_to_date" | "behind" => {
+            let files = result["index"]["files"].as_u64().unwrap_or(0);
+            let chunks = result["index"]["chunks"].as_u64().unwrap_or(0);
+            format!("index:{files}f/{chunks}c ({status})")
+        }
+        "running" => {
+            let done = result["index"]["done"].as_u64().unwrap_or(0);
+            let total = result["index"]["total"].as_u64().unwrap_or(0);
+            format!("index:running {done}/{total}")
+        }
+        _ => "index:none".to_string(),
     };
     format!("status · {name} · {index_str}")
 }
@@ -335,7 +290,8 @@ mod tests {
         // Now project_status works
         let status = ProjectStatus.call(json!({}), &ctx).await.unwrap();
         assert!(status["project_root"].as_str().unwrap().len() > 0);
-        assert!(status["config"]["project"]["name"].is_string());
+        assert!(status["languages"].is_array());
+        assert!(status["embeddings_model"].is_string());
     }
 
     #[tokio::test]
@@ -401,12 +357,54 @@ mod tests {
         let tool = ProjectStatus;
         let result = tool.call(json!({}), &ctx).await.unwrap();
         assert!(result["project_root"].is_string(), "missing project_root");
-        assert!(result["config"].is_object(), "missing config section");
+        assert!(result["languages"].is_array(), "missing languages field");
+        assert!(
+            result["embeddings_model"].is_string(),
+            "missing embeddings_model field"
+        );
         assert!(result.get("index").is_some(), "missing index section");
         assert!(
             result.get("libraries").is_some(),
             "missing libraries section"
         );
+    }
+
+    #[tokio::test]
+    async fn project_status_compact_shape() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        let ctx = ToolContext {
+            agent,
+            lsp: lsp(),
+            output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
+            progress: None,
+        };
+        let result = ProjectStatus.call(json!({}), &ctx).await.unwrap();
+
+        // Flat config fields — no blob
+        assert!(result["languages"].is_array(), "missing languages");
+        assert!(
+            result["embeddings_model"].is_string(),
+            "missing embeddings_model"
+        );
+        assert!(
+            result.get("config").is_none(),
+            "config blob must be removed"
+        );
+
+        // Index section has status field, no drift
+        assert!(
+            result["index"]["status"].is_string(),
+            "index.status must be present"
+        );
+        assert!(
+            result["index"].get("drift").is_none(),
+            "drift must not appear in project_status"
+        );
+
+        // Libraries section still present
+        assert!(result["libraries"].is_object(), "libraries section missing");
     }
 
     #[tokio::test]
