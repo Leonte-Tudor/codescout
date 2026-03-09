@@ -209,10 +209,14 @@ pub fn summarize_test_output(stdout: &str, stderr: &str, exit_code: i32) -> Valu
         "type": "test",
         "exit_code": exit_code,
         "passed": passed,
-        "failed": failed,
-        "ignored": ignored,
     });
 
+    if failed > 0 {
+        result["failed"] = json!(failed);
+    }
+    if ignored > 0 {
+        result["ignored"] = json!(ignored);
+    }
     if let Some(f) = failures {
         result["failures"] = Value::String(f);
     }
@@ -254,10 +258,14 @@ pub fn summarize_build_output(stdout: &str, stderr: &str, exit_code: i32) -> Val
     let mut result = json!({
         "type": "build",
         "exit_code": exit_code,
-        "errors": errors,
-        "warnings": warnings,
     });
 
+    if errors > 0 {
+        result["errors"] = json!(errors);
+    }
+    if warnings > 0 {
+        result["warnings"] = json!(warnings);
+    }
     if let Some(err) = first_error {
         result["first_error"] = Value::String(err);
     }
@@ -290,9 +298,11 @@ pub fn summarize_generic(stdout: &str, stderr: &str, exit_code: i32) -> Value {
     let mut result = json!({
         "type": "generic",
         "exit_code": exit_code,
-        "stdout": summarized_stdout,
     });
 
+    if !summarized_stdout.is_empty() {
+        result["stdout"] = Value::String(summarized_stdout);
+    }
     if !stderr.is_empty() {
         result["stderr"] = Value::String(stderr.to_string());
     }
@@ -494,7 +504,14 @@ mod tests {
         let stdout = "running 5 tests\ntest a ... ok\ntest b ... ok\ntest c ... ok\ntest d ... ok\ntest e ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s\n";
         let summary = summarize_test_output(stdout, "", 0);
         assert_eq!(summary["passed"], 5);
-        assert_eq!(summary["failed"], 0);
+        assert!(
+            summary.get("failed").is_none(),
+            "failed:0 should be omitted"
+        );
+        assert!(
+            summary.get("ignored").is_none(),
+            "ignored:0 should be omitted"
+        );
         assert!(summary.get("failures").is_none() || summary["failures"].is_null());
     }
 
@@ -553,7 +570,10 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
     fn summarize_build_no_errors() {
         let stderr = "warning: unused variable: `x`\n --> src/main.rs:2:9\n";
         let summary = summarize_build_output("", stderr, 0);
-        assert_eq!(summary["errors"], 0);
+        assert!(
+            summary.get("errors").is_none(),
+            "errors:0 should be omitted"
+        );
         assert_eq!(summary["warnings"], 1);
         assert!(summary.get("first_error").is_none() || summary["first_error"].is_null());
     }
@@ -591,6 +611,13 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
     fn summarize_generic_omits_empty_stderr() {
         let summary = summarize_generic("out\n", "", 0);
         assert!(summary.get("stderr").is_none() || summary["stderr"].is_null());
+    }
+
+    #[test]
+    fn summarize_generic_omits_empty_stdout() {
+        let summary = summarize_generic("", "err\n", 1);
+        assert!(summary.get("stdout").is_none() || summary["stdout"].is_null());
+        assert_eq!(summary["stderr"].as_str().unwrap(), "err\n");
     }
 
     // -- helpers --

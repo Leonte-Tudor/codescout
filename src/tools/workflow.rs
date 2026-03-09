@@ -894,14 +894,17 @@ async fn run_command_inner(
 
         let ref_id = ctx.output_buffer.store_background(log_path);
 
-        return Ok(serde_json::json!({
+        let mut bg_result = serde_json::json!({
             "output_id": ref_id,
-            "stdout": tail_50,
             "hint": format!(
                 "Process running. Output captured in {} — use run_command(\"tail -50 {}\") or grep/cat as needed.",
                 ref_id, ref_id
             )
-        }));
+        });
+        if !tail_50.is_empty() {
+            bg_result["stdout"] = json!(tail_50);
+        }
+        return Ok(bg_result);
     }
 
     // --- Step 4.5: Tee injection for terminal filter commands ---
@@ -1082,11 +1085,13 @@ async fn run_command_inner(
 
                     let was_truncated = stdout_shown < stdout_total || stderr_shown < stderr_total;
 
-                    let mut result = json!({
-                        "stdout": stdout_out,
-                        "stderr": stderr_out,
-                        "exit_code": exit_code,
-                    });
+                    let mut result = json!({"exit_code": exit_code});
+                    if !stdout_out.is_empty() {
+                        result["stdout"] = json!(stdout_out);
+                    }
+                    if !stderr_out.is_empty() {
+                        result["stderr"] = json!(stderr_out);
+                    }
                     if was_truncated {
                         result["truncated"] = json!(true);
                         result["stdout_shown"] = json!(stdout_shown);
@@ -1153,11 +1158,13 @@ async fn run_command_inner(
                         .saturating_sub(raw_stderr.len());
                     let (stdout_out, stdout_shown, stdout_total) =
                         truncate_lines_and_bytes(&raw_stdout, BUFFER_QUERY_INLINE_CAP, byte_budget);
-                    let mut r = json!({
-                        "stdout": stdout_out,
-                        "stderr": raw_stderr,
-                        "exit_code": exit_code,
-                    });
+                    let mut r = json!({"exit_code": exit_code});
+                    if !stdout_out.is_empty() {
+                        r["stdout"] = json!(stdout_out);
+                    }
+                    if !raw_stderr.is_empty() {
+                        r["stderr"] = json!(raw_stderr);
+                    }
                     if stdout_shown < stdout_total {
                         r["truncated"] = json!(true);
                         r["hint"] = json!(
@@ -1170,11 +1177,14 @@ async fn run_command_inner(
                     }
                     r
                 } else {
-                    json!({
-                        "stdout": raw_stdout,
-                        "stderr": raw_stderr,
-                        "exit_code": exit_code,
-                    })
+                    let mut r = json!({"exit_code": exit_code});
+                    if !raw_stdout.is_empty() {
+                        r["stdout"] = json!(raw_stdout);
+                    }
+                    if !raw_stderr.is_empty() {
+                        r["stderr"] = json!(raw_stderr);
+                    }
+                    r
                 }
             };
 
@@ -1193,7 +1203,6 @@ async fn run_command_inner(
         }
         Err(_) => Ok(json!({
             "timed_out": true,
-            "stdout": "",
             "stderr": format!("Command timed out after {} seconds", timeout_secs),
             "exit_code": null,
             "hint": "If the command launches background processes (e.g. with &), use run_in_background: true — shell & leaves background processes holding the stdout pipe open, so output() never gets EOF. run_in_background spawns via a log file instead and returns immediately."
@@ -2269,11 +2278,8 @@ mod tests {
             "must not create new buffer ref: {:?}",
             result
         );
-        assert!(
-            result.get("stdout").is_some(),
-            "must have stdout field: {:?}",
-            result
-        );
+        // stdout may be absent when the single line exceeded the byte budget entirely
+        // (stdout_shown=0, stdout_total=1) — truncated+hint communicate the situation.
         assert_eq!(
             result.get("truncated").and_then(|v| v.as_bool()),
             Some(true),
