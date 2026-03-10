@@ -108,8 +108,8 @@ impl Tool for SemanticSearch {
         })
         .await??;
 
-        // Transform code results based on mode
-        let mut result_items: Vec<Value> = results
+        // Transform code results based on mode; keep score alongside for sorting
+        let mut scored_items: Vec<(f32, Value)> = results
             .iter()
             .map(|r| {
                 let content_field = if guard.should_include_body() {
@@ -126,13 +126,15 @@ impl Tool for SemanticSearch {
                         first_line.to_string()
                     }
                 };
-                format_search_result_item(
-                    &r.file_path,
+                (
                     r.score,
-                    r.start_line,
-                    r.end_line,
-                    &r.source,
-                    content_field,
+                    format_search_result_item(
+                        &r.file_path,
+                        r.start_line,
+                        r.end_line,
+                        &r.source,
+                        content_field,
+                    ),
                 )
             })
             .collect();
@@ -149,22 +151,22 @@ impl Tool for SemanticSearch {
                     first_line.to_string()
                 }
             };
-            result_items.push(format_search_result_item(
-                &format!("[memory:{}]", mr.title),
+            scored_items.push((
                 mr.similarity,
-                0,
-                0,
-                "memory",
-                content_field,
+                format_search_result_item(
+                    &format!("[memory:{}]", mr.title),
+                    0,
+                    0,
+                    "memory",
+                    content_field,
+                ),
             ));
         }
 
-        // Sort merged results by score descending
-        result_items.sort_by(|a, b| {
-            let sa = a["score"].as_f64().unwrap_or(0.0);
-            let sb = b["score"].as_f64().unwrap_or(0.0);
-            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        // Sort by score descending (high first), then discard scores — order is the signal
+        scored_items
+            .sort_by(|(sa, _), (sb, _)| sb.partial_cmp(sa).unwrap_or(std::cmp::Ordering::Equal));
+        let result_items: Vec<Value> = scored_items.into_iter().map(|(_, item)| item).collect();
 
         // Apply pagination/capping
         let (result_items, overflow) = guard.cap_items(
@@ -565,16 +567,14 @@ impl Tool for IndexStatus {
 /// LLM assess relevance before paying the token cost of reading the chunk)
 fn format_search_result_item(
     file_path: &str,
-    score: f32,
     start_line: usize,
     end_line: usize,
     source: &str,
     content: String,
 ) -> Value {
-    // Field order: identity → quality signal → location → metadata → content (bulk payload last)
+    // Field order: identity → location → metadata → content (bulk payload last)
     let mut map = serde_json::Map::new();
     map.insert("file_path".into(), json!(file_path));
-    map.insert("score".into(), json!(score));
     map.insert("start_line".into(), json!(start_line));
     map.insert("end_line".into(), json!(end_line));
     if source != "project" {
@@ -598,12 +598,10 @@ fn format_semantic_search(val: &Value) -> String {
     let result_word = if total == 1 { "result" } else { "results" };
     let mut out = format!("{total} {result_word}\n");
 
-    // Build rows: (score_str, location, preview)
-    let rows: Vec<(String, String, String)> = results
+    // Build rows: (location, preview)
+    let rows: Vec<(String, String)> = results
         .iter()
         .map(|r| {
-            let score = r["score"].as_f64().unwrap_or(0.0);
-            let score_str = format!("{:.2}", score);
             let file = r["file_path"].as_str().unwrap_or("?");
             let start = r["start_line"].as_u64().unwrap_or(0);
             let end = r["end_line"].as_u64().unwrap_or(0);
@@ -624,29 +622,21 @@ fn format_semantic_search(val: &Value) -> String {
                 first_line.to_string()
             };
 
-            (score_str, location, preview)
+            (location, preview)
         })
         .collect();
 
-    // Compute column widths for alignment
-    let max_score_len = rows.iter().map(|(s, _, _)| s.len()).max().unwrap_or(0);
-    let max_loc_len = rows.iter().map(|(_, l, _)| l.len()).max().unwrap_or(0);
+    let max_loc_len = rows.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
 
-    for (score_str, location, preview) in &rows {
+    for (location, preview) in &rows {
         out.push('\n');
-        let score_pad = max_score_len - score_str.len();
-        out.push_str("  ");
-        for _ in 0..score_pad {
-            out.push(' ');
-        }
-        out.push_str(score_str);
         out.push_str("  ");
         out.push_str(location);
-        let loc_pad = max_loc_len - location.len();
-        for _ in 0..loc_pad {
-            out.push(' ');
-        }
         if !preview.is_empty() {
+            let loc_pad = max_loc_len - location.len();
+            for _ in 0..loc_pad {
+                out.push(' ');
+            }
             out.push_str("  ");
             out.push_str(preview);
         }
@@ -1123,8 +1113,6 @@ mod tests {
         });
         let result = format_semantic_search(&val);
         assert!(result.starts_with("2 results\n"));
-        assert!(result.contains("0.92"));
-        assert!(result.contains("0.81"));
         assert!(result.contains("src/tools/output.rs:35-50"));
         assert!(result.contains("src/tools/mod.rs:120-140"));
         assert!(result.contains("pub struct OutputGuard {"));
@@ -1150,7 +1138,6 @@ mod tests {
         let result = format_semantic_search(&val);
         assert!(result.starts_with("1 result\n"));
         assert!(!result.starts_with("1 results"));
-        assert!(result.contains("0.95"));
         assert!(result.contains("src/main.rs:1"));
     }
 
@@ -1306,18 +1293,11 @@ mod tests {
     }
 
     #[test]
-    fn search_result_item_field_order_score_before_content() {
-        // Regression: score (the primary quality signal) must appear before content
-        // so the LLM can assess relevance before paying the token cost of reading the chunk.
-        // content must be last — it is the bulk payload.
-        let item = format_search_result_item(
-            "src/foo.rs",
-            0.95,
-            10,
-            20,
-            "project",
-            "fn hello() {}".to_string(),
-        );
+    fn search_result_item_content_is_last_field() {
+        // Regression: content must be last — it is the bulk payload.
+        // Score is excluded from output; ranking is communicated by result order.
+        let item =
+            format_search_result_item("src/foo.rs", 10, 20, "project", "fn hello() {}".to_string());
         let keys: Vec<&str> = item
             .as_object()
             .unwrap()
@@ -1325,13 +1305,11 @@ mod tests {
             .map(|s| s.as_str())
             .collect();
 
-        let score_pos = keys.iter().position(|k| *k == "score").unwrap();
-        let content_pos = keys.iter().position(|k| *k == "content").unwrap();
-
         assert!(
-            score_pos < content_pos,
-            "score must appear before content, got key order: {keys:?}"
+            keys.iter().all(|k| *k != "score"),
+            "score must not appear in output, got key order: {keys:?}"
         );
+        let content_pos = keys.iter().position(|k| *k == "content").unwrap();
         assert_eq!(
             content_pos,
             keys.len() - 1,
