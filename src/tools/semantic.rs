@@ -80,8 +80,17 @@ impl Tool for SemanticSearch {
 
         // Sync SQLite off async runtime
         let root2 = root.clone();
+        let model2 = model.clone();
         let (results, memory_results, staleness) = tokio::task::spawn_blocking(move || {
             let conn = crate::embed::index::open_db(&root2)?;
+            // Guard: catch model/dimension mismatch before sqlite-vec sees the
+            // wrong-dimensioned query vector and emits a cryptic error.
+            crate::embed::index::check_model_mismatch(&conn, &model2).map_err(|e| {
+                super::RecoverableError::with_hint(
+                    e.to_string(),
+                    "Run index_project(force: true) to rebuild the index with the current model.",
+                )
+            })?;
             let results = crate::embed::index::search_scoped(
                 &conn,
                 &query_embedding,
@@ -122,7 +131,6 @@ impl Tool for SemanticSearch {
                     r.score,
                     r.start_line,
                     r.end_line,
-                    &r.language,
                     &r.source,
                     content_field,
                 )
@@ -146,7 +154,6 @@ impl Tool for SemanticSearch {
                 mr.similarity,
                 0,
                 0,
-                "memory",
                 "memory",
                 content_field,
             ));
@@ -561,7 +568,6 @@ fn format_search_result_item(
     score: f32,
     start_line: usize,
     end_line: usize,
-    language: &str,
     source: &str,
     content: String,
 ) -> Value {
@@ -571,7 +577,6 @@ fn format_search_result_item(
     map.insert("score".into(), json!(score));
     map.insert("start_line".into(), json!(start_line));
     map.insert("end_line".into(), json!(end_line));
-    map.insert("language".into(), json!(language));
     if source != "project" {
         map.insert("source".into(), json!(source));
     }
@@ -1310,7 +1315,6 @@ mod tests {
             0.95,
             10,
             20,
-            "rust",
             "project",
             "fn hello() {}".to_string(),
         );

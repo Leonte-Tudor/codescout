@@ -1489,6 +1489,7 @@ async fn perform_edit(
 
     let new_content = content.replace(old_string, new_string);
     std::fs::write(&resolved, &new_content)?;
+    ctx.agent.reload_config_if_project_toml(&resolved).await;
     ctx.lsp.notify_file_changed(&resolved).await;
 
     Ok(json!("ok"))

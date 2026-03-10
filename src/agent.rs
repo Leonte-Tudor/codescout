@@ -221,6 +221,22 @@ impl Agent {
         let path = project.root.join(".codescout").join("libraries.json");
         project.library_registry.save(&path)
     }
+
+    /// If `path` is the active project's `.codescout/project.toml`, reload the
+    /// in-memory config from disk. Called by `edit_file` after every successful
+    /// write so that tools like `semantic_search` see the updated model immediately
+    /// without requiring a session restart.
+    pub async fn reload_config_if_project_toml(&self, path: &std::path::Path) {
+        let mut inner = self.inner.write().await;
+        if let Some(ref mut p) = inner.active_project {
+            let toml_path = p.root.join(".codescout").join("project.toml");
+            if path == toml_path {
+                if let Ok(fresh) = crate::config::project::ProjectConfig::load_or_default(&p.root) {
+                    p.config = fresh;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
