@@ -2,6 +2,40 @@
 
 All notable changes to codescout are documented here.
 
+## [0.2.2] — 2026-03-11
+
+### Added
+
+- **Hardware-aware embedding model selection** — `onboarding` now picks the best
+  available embedding model based on detected hardware (GPU/CPU/Apple Silicon),
+  writing the optimal `embedding_model` into `project.toml` automatically.
+- **`index_project` progress reporting** — live progress output during indexing
+  (files processed, ETA) so long runs are no longer silent.
+- **`project_status` trimmed output** — cleaner, more scannable status view with
+  memory staleness section (`stale` / `fresh` / `untracked`).
+- **Memory staleness detection** — `memory` tool tracks path anchors and semantic
+  anchors; `project_status` reports which memories have drifted from their
+  source files since last write.
+- **Pre-onboarding semantic index gate** — prevents `semantic_search` from
+  returning empty results on a freshly cloned project before indexing completes.
+- **`language-patterns` shared memory** — curated per-language anti-patterns and
+  correct idioms for 7 languages, consulted automatically before code changes.
+- **CWD awareness in Agent** — `home_root` tracking so tools resolve relative
+  paths correctly when invoked from a subdirectory.
+- **LSP `RequestCancelled` retry** — LSP `-32800` errors are now retried
+  automatically instead of surfacing as failures.
+
+### Fixed
+
+- **UTF-8 byte-slice crash in onboarding** (BUG-026) — preference text was
+  sliced at a byte offset that could fall inside a multi-byte character, causing
+  a panic. Now uses `char_indices` for safe truncation.
+- **Stale `@bg_*` refs** — background command refs that have expired now return
+  a `RecoverableError` with a descriptive hint instead of an opaque failure.
+- **`.env` accidentally tracked** — added `.env` to `.gitignore`.
+
+---
+
 ## [0.2.1] — 2026-03-09
 
 ### Fixed
