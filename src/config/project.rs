@@ -190,6 +190,10 @@ pub struct MemorySection {
     /// Number of top chunks to consider for semantic anchoring
     #[serde(default = "default_semantic_anchor_top_n")]
     pub semantic_anchor_top_n: usize,
+    /// Memory topics protected from blind overwrite during force re-onboarding.
+    /// Protected topics go through a staleness-check + merge + user-approval flow.
+    #[serde(default = "default_protected_topics")]
+    pub protected: Vec<String>,
 }
 
 fn default_staleness_drift_threshold() -> f32 {
@@ -201,6 +205,9 @@ fn default_semantic_anchor_min_similarity() -> f32 {
 fn default_semantic_anchor_top_n() -> usize {
     10
 }
+fn default_protected_topics() -> Vec<String> {
+    vec!["gotchas".to_string()]
+}
 
 impl Default for MemorySection {
     fn default() -> Self {
@@ -208,6 +215,7 @@ impl Default for MemorySection {
             staleness_drift_threshold: default_staleness_drift_threshold(),
             semantic_anchor_min_similarity: default_semantic_anchor_min_similarity(),
             semantic_anchor_top_n: default_semantic_anchor_top_n(),
+            protected: default_protected_topics(),
         }
     }
 }
@@ -373,5 +381,38 @@ mod tests {
         let toml = "[project]\nname = \"test\"\n[memory]\nstaleness_drift_threshold = 0.5\n";
         let config: ProjectConfig = toml::from_str(toml).unwrap();
         assert!((config.memory.staleness_drift_threshold - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn memory_section_default_includes_gotchas() {
+        let section = MemorySection::default();
+        assert_eq!(section.protected, vec!["gotchas".to_string()]);
+    }
+
+    #[test]
+    fn memory_section_serde_roundtrip_with_protected() {
+        let toml_str = r#"
+staleness_drift_threshold = 0.3
+protected = ["gotchas", "conventions"]
+"#;
+        let section: MemorySection = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            section.protected,
+            vec!["gotchas".to_string(), "conventions".to_string()]
+        );
+
+        // Round-trip
+        let serialized = toml::to_string_pretty(&section).unwrap();
+        let deserialized: MemorySection = toml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.protected, section.protected);
+    }
+
+    #[test]
+    fn memory_section_missing_protected_uses_default() {
+        let toml_str = r#"
+staleness_drift_threshold = 0.3
+"#;
+        let section: MemorySection = toml::from_str(toml_str).unwrap();
+        assert_eq!(section.protected, vec!["gotchas".to_string()]);
     }
 }

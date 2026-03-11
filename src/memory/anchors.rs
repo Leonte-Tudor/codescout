@@ -117,13 +117,14 @@ pub fn merge_anchors(
     Ok(AnchorFile { anchors })
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AnchorStatus {
     Changed,
     Deleted,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct StaleFile {
     pub path: String,
     pub status: AnchorStatus,
@@ -660,5 +661,23 @@ mod tests {
         // The valid file must appear as untracked (no sidecar).
         assert_eq!(untracked.len(), 1);
         assert_eq!(untracked[0].as_str().unwrap(), "topics");
+    }
+
+    #[test]
+    fn stale_file_serializes_to_json() {
+        let sf = super::StaleFile {
+            path: "src/foo.rs".to_string(),
+            status: super::AnchorStatus::Changed,
+        };
+        let json = serde_json::to_value(&sf).unwrap();
+        assert_eq!(json["path"], "src/foo.rs");
+        assert_eq!(json["status"], "changed");
+
+        let sf_deleted = super::StaleFile {
+            path: "src/bar.rs".to_string(),
+            status: super::AnchorStatus::Deleted,
+        };
+        let json = serde_json::to_value(&sf_deleted).unwrap();
+        assert_eq!(json["status"], "deleted");
     }
 }

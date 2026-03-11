@@ -293,6 +293,40 @@ Now write the memories. Your Phase 1 exploration must inform every memory — es
 6. **Confirm with the user** — After creating all 6 memories, summarize what you wrote and ask if anything needs correction.
 7. **Private memories** — Use `memory(action: "write", topic: ..., content: ..., private: true)` for project-local notes that should not appear in system instructions (e.g. personal debugging notes, temporary state). Standard `memory(action: "write", ...)` creates shared memories visible to all agents.
 
+### Protected Memories
+
+Check the `protected_memories` field from the onboarding tool response above. For
+each memory you are about to write, check whether it appears there:
+
+**If `protected_memories[topic].exists == false`:** Create fresh as normal.
+
+**If `protected_memories[topic].exists == true` AND `staleness.untracked == false`
+AND `staleness.stale_files` is empty:** The memory is fresh — all anchored source
+files are unchanged. **Skip writing this topic entirely.** Tell the user:
+> "Kept `[topic]` unchanged (all references still valid)."
+
+**If `protected_memories[topic].exists == true` AND (`staleness.untracked == true`
+OR `staleness.stale_files` is non-empty):** Run the merge flow:
+
+1. The existing content is in `protected_memories[topic].content`.
+2. For entries referencing files listed in `staleness.stale_files` (or all
+   entries if `untracked`): use `find_symbol`, `read_file`, `search_pattern`
+   to verify whether each entry is still accurate.
+3. Identify new discoveries from your Phase 1 exploration that belong in
+   this memory.
+4. Present a diff-style summary to the user:
+   - **Stale (recommend removing):** [entries no longer accurate, with reason]
+   - **Still valid (keeping):** [verified entries]
+   - **New findings:** [discoveries from exploration]
+   - **Proposed merged version:** [full content]
+5. **Wait for user approval** before calling `memory(action="write")`.
+
+**If a topic is NOT in `protected_memories`:** Write it as normal (overwrite).
+
+The protected topics list is configured in `project.toml` under `[memory] protected`.
+Users can add custom topics. The programmatic memories (`onboarding`, `language-patterns`)
+are always excluded from protection.
+
 ### Memories to Create
 
 ### 1. `project-overview`
@@ -438,6 +472,10 @@ Now write the memories. Your Phase 1 exploration must inform every memory — es
 ---
 
 ### 6. `gotchas`
+
+> **Note:** `gotchas` is protected by default. If it already exists and the
+> onboarding result shows it in `protected_memories`, follow the Protected
+> Memories flow above instead of overwriting.
 
 **What:** Known issues, common mistakes, things that trip people up.
 

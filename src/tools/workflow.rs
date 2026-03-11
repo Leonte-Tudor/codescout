@@ -686,6 +686,70 @@ fn build_system_prompt_draft(
     draft
 }
 
+/// Gather staleness state for protected memory topics.
+/// Returns a JSON object keyed by topic name, suitable for inclusion
+/// in the onboarding result.
+fn gather_protected_memory_state(
+    memory: &crate::memory::MemoryStore,
+    memories_dir: &std::path::Path,
+    project_root: &std::path::Path,
+    protected: &[String],
+) -> Value {
+    use crate::memory::anchors::{anchor_path_for_topic, check_path_staleness, read_anchor_file};
+
+    // Programmatic topics are always machine-generated — exclude from protection
+    const PROGRAMMATIC: &[&str] = &["onboarding", "language-patterns"];
+
+    let mut result = serde_json::Map::new();
+
+    for topic in protected {
+        if PROGRAMMATIC.contains(&topic.as_str()) {
+            continue;
+        }
+
+        let content = match memory.read(topic) {
+            Ok(Some(c)) => c,
+            _ => {
+                // Topic doesn't exist — signal to create fresh
+                result.insert(topic.clone(), json!({ "exists": false }));
+                continue;
+            }
+        };
+
+        let anchor_path = anchor_path_for_topic(memories_dir, topic);
+        let staleness = if anchor_path.exists() {
+            match read_anchor_file(&anchor_path)
+                .and_then(|af| check_path_staleness(project_root, &af))
+            {
+                Ok(report) => json!({
+                    "stale_files": report.stale_files,
+                    "untracked": false,
+                }),
+                Err(_) => json!({
+                    "stale_files": [],
+                    "untracked": true,
+                }),
+            }
+        } else {
+            json!({
+                "stale_files": [],
+                "untracked": true,
+            })
+        };
+
+        result.insert(
+            topic.clone(),
+            json!({
+                "exists": true,
+                "content": content,
+                "staleness": staleness,
+            }),
+        );
+    }
+
+    Value::Object(result)
+}
+
 #[async_trait::async_trait]
 impl Tool for Onboarding {
     fn name(&self) -> &str {
@@ -880,6 +944,21 @@ impl Tool for Onboarding {
             })
             .await?;
 
+        // Gather protected memory state for the LLM merge flow
+        let protected_memories = ctx
+            .agent
+            .with_project(|p| {
+                let memories_dir = p.root.join(".codescout").join("memories");
+                let protected = &p.config.memory.protected;
+                Ok(gather_protected_memory_state(
+                    &p.memory,
+                    &memories_dir,
+                    &p.root,
+                    protected,
+                ))
+            })
+            .await?;
+
         // Build the key-files manifest for the prompt (paths only, no content)
         let mut key_files: Vec<String> = Vec::new();
         if let Some(ref p) = gathered.readme_path {
@@ -932,6 +1011,7 @@ impl Tool for Onboarding {
             "system_prompt_draft": system_prompt_draft,
             "hardware": serde_json::to_value(&hw).unwrap_or(serde_json::Value::Null),
             "model_options": serde_json::to_value(&model_options).unwrap_or(serde_json::Value::Null),
+            "protected_memories": protected_memories,
         }))
     }
 
@@ -3608,5 +3688,257 @@ mod tests {
             !toml.contains("mxbai-embed-large"),
             "project.toml should not contain mxbai-embed-large\ntoml:\n{toml}"
         );
+    }
+
+    #[tokio::test]
+    async fn onboarding_includes_protected_memories_for_existing_topic() {
+        let (dir, ctx) = project_ctx().await;
+
+        // Pre-populate a protected memory with content
+        let memories_dir = dir.path().join(".codescout").join("memories");
+        std::fs::create_dir_all(&memories_dir).unwrap();
+        std::fs::write(
+            memories_dir.join("gotchas.md"),
+            "# Gotchas\n\n- **Problem:** foo\n  **Fix:** bar\n",
+        )
+        .unwrap();
+
+        // Create config with protected = ["gotchas"]
+        let config_path = dir.path().join(".codescout").join("project.toml");
+        std::fs::write(
+            &config_path,
+            "[project]\nname = \"test\"\nlanguages = [\"rust\"]\n\n[memory]\nprotected = [\"gotchas\"]\n",
+        )
+        .unwrap();
+
+        // Force onboarding
+        let result = Onboarding
+            .call(json!({ "force": true }), &ctx)
+            .await
+            .unwrap();
+
+        let pm = &result["protected_memories"]["gotchas"];
+        assert_eq!(pm["exists"], true);
+        assert!(pm["content"].as_str().unwrap().contains("# Gotchas"));
+        // No anchors file → untracked
+        assert_eq!(pm["staleness"]["untracked"], true);
+    }
+
+    #[tokio::test]
+    async fn onboarding_protected_memory_missing_topic() {
+        let (dir, ctx) = project_ctx().await;
+
+        // Config protects "gotchas" but no gotchas.md exists
+        let config_path = dir.path().join(".codescout").join("project.toml");
+        std::fs::write(
+            &config_path,
+            "[project]\nname = \"test\"\nlanguages = [\"rust\"]\n\n[memory]\nprotected = [\"gotchas\"]\n",
+        )
+        .unwrap();
+
+        let result = Onboarding
+            .call(json!({ "force": true }), &ctx)
+            .await
+            .unwrap();
+
+        let pm = &result["protected_memories"]["gotchas"];
+        assert_eq!(pm["exists"], false);
+        assert!(pm.get("content").is_none());
+    }
+
+    #[tokio::test]
+    async fn onboarding_excludes_programmatic_from_protected() {
+        let (dir, ctx) = project_ctx().await;
+
+        let config_path = dir.path().join(".codescout").join("project.toml");
+        std::fs::write(
+            &config_path,
+            "[project]\nname = \"test\"\nlanguages = [\"rust\"]\n\n[memory]\nprotected = [\"onboarding\", \"language-patterns\", \"gotchas\"]\n",
+        )
+        .unwrap();
+
+        let result = Onboarding
+            .call(json!({ "force": true }), &ctx)
+            .await
+            .unwrap();
+
+        let pm = &result["protected_memories"];
+        // Programmatic topics excluded
+        assert!(pm.get("onboarding").is_none());
+        assert!(pm.get("language-patterns").is_none());
+        // Non-programmatic topic still present
+        assert!(pm.get("gotchas").is_some());
+    }
+
+    #[tokio::test]
+    async fn onboarding_protected_memory_untracked_no_anchors() {
+        let (dir, ctx) = project_ctx().await;
+
+        let memories_dir = dir.path().join(".codescout").join("memories");
+        std::fs::create_dir_all(&memories_dir).unwrap();
+        std::fs::write(
+            memories_dir.join("gotchas.md"),
+            "# Gotchas\n\n- Some gotcha referencing src/main.rs\n",
+        )
+        .unwrap();
+        // No .anchors.toml file created
+
+        let config_path = dir.path().join(".codescout").join("project.toml");
+        std::fs::write(
+            &config_path,
+            "[project]\nname = \"test\"\nlanguages = [\"rust\"]\n\n[memory]\nprotected = [\"gotchas\"]\n",
+        )
+        .unwrap();
+
+        let result = Onboarding
+            .call(json!({ "force": true }), &ctx)
+            .await
+            .unwrap();
+
+        let staleness = &result["protected_memories"]["gotchas"]["staleness"];
+        assert_eq!(staleness["untracked"], true);
+        assert_eq!(staleness["stale_files"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn onboarding_protected_memory_stale_anchors() {
+        let (dir, ctx) = project_ctx().await;
+
+        // Write a source file and compute its hash
+        let src_file = dir.path().join("main.rs");
+        std::fs::write(&src_file, "fn main() {}").unwrap();
+        let original_hash = crate::embed::index::hash_file(&src_file).unwrap();
+
+        // Create a protected memory referencing that file
+        let memories_dir = dir.path().join(".codescout").join("memories");
+        std::fs::create_dir_all(&memories_dir).unwrap();
+        std::fs::write(
+            memories_dir.join("gotchas.md"),
+            "# Gotchas\n\n- **Problem:** main.rs has issue\n  **Fix:** fix it\n",
+        )
+        .unwrap();
+
+        // Create anchor sidecar with the original hash
+        use crate::memory::anchors::{
+            anchor_path_for_topic, write_anchor_file, AnchorFile, PathAnchor,
+        };
+        let anchor_file = AnchorFile {
+            anchors: vec![PathAnchor {
+                path: "main.rs".to_string(),
+                hash: original_hash,
+            }],
+        };
+        let anchor_path = anchor_path_for_topic(&memories_dir, "gotchas");
+        write_anchor_file(&anchor_path, &anchor_file).unwrap();
+
+        // Now modify the source file so the hash changes
+        std::fs::write(&src_file, "fn main() { println!(\"changed\"); }").unwrap();
+
+        // Config
+        let config_path = dir.path().join(".codescout").join("project.toml");
+        std::fs::write(
+            &config_path,
+            "[project]\nname = \"test\"\nlanguages = [\"rust\"]\n\n[memory]\nprotected = [\"gotchas\"]\n",
+        )
+        .unwrap();
+
+        let result = Onboarding
+            .call(json!({ "force": true }), &ctx)
+            .await
+            .unwrap();
+
+        let staleness = &result["protected_memories"]["gotchas"]["staleness"];
+        assert_eq!(staleness["untracked"], false);
+        let stale_files = staleness["stale_files"].as_array().unwrap();
+        assert_eq!(stale_files.len(), 1);
+        assert_eq!(stale_files[0]["path"], "main.rs");
+        assert_eq!(stale_files[0]["status"], "changed");
+    }
+
+    #[tokio::test]
+    async fn onboarding_protected_memory_fresh_anchors() {
+        let (dir, ctx) = project_ctx().await;
+
+        // Write a source file and compute its hash
+        let src_file = dir.path().join("main.rs");
+        std::fs::write(&src_file, "fn main() {}").unwrap();
+        let current_hash = crate::embed::index::hash_file(&src_file).unwrap();
+
+        // Create a protected memory referencing that file
+        let memories_dir = dir.path().join(".codescout").join("memories");
+        std::fs::create_dir_all(&memories_dir).unwrap();
+        std::fs::write(
+            memories_dir.join("gotchas.md"),
+            "# Gotchas\n\n- **Problem:** main.rs has issue\n  **Fix:** fix it\n",
+        )
+        .unwrap();
+
+        // Create anchor sidecar with the CURRENT hash (file hasn't changed)
+        use crate::memory::anchors::{
+            anchor_path_for_topic, write_anchor_file, AnchorFile, PathAnchor,
+        };
+        let anchor_file = AnchorFile {
+            anchors: vec![PathAnchor {
+                path: "main.rs".to_string(),
+                hash: current_hash,
+            }],
+        };
+        let anchor_path = anchor_path_for_topic(&memories_dir, "gotchas");
+        write_anchor_file(&anchor_path, &anchor_file).unwrap();
+
+        // Do NOT modify the source file — it stays the same
+
+        // Config
+        let config_path = dir.path().join(".codescout").join("project.toml");
+        std::fs::write(
+            &config_path,
+            "[project]\nname = \"test\"\nlanguages = [\"rust\"]\n\n[memory]\nprotected = [\"gotchas\"]\n",
+        )
+        .unwrap();
+
+        let result = Onboarding
+            .call(json!({ "force": true }), &ctx)
+            .await
+            .unwrap();
+
+        let staleness = &result["protected_memories"]["gotchas"]["staleness"];
+        assert_eq!(staleness["untracked"], false);
+        assert_eq!(staleness["stale_files"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn onboarding_force_with_protected_memory_full_flow() {
+        let (dir, ctx) = project_ctx().await;
+
+        // First onboarding — creates everything fresh
+        let _ = Onboarding.call(json!({}), &ctx).await.unwrap();
+
+        // Manually write a gotchas memory to simulate user curation
+        let memories_dir = dir.path().join(".codescout").join("memories");
+        std::fs::write(
+            memories_dir.join("gotchas.md"),
+            "# Gotchas\n\n- **Problem:** custom user gotcha\n  **Fix:** do the thing\n",
+        )
+        .unwrap();
+
+        // Force re-onboarding
+        let result = Onboarding
+            .call(json!({ "force": true }), &ctx)
+            .await
+            .unwrap();
+
+        // Should have both standard fields and protected_memories
+        assert!(result.get("languages").is_some());
+        assert!(result.get("instructions").is_some());
+        assert!(result.get("protected_memories").is_some());
+
+        let pm = &result["protected_memories"]["gotchas"];
+        assert_eq!(pm["exists"], true);
+        assert!(pm["content"]
+            .as_str()
+            .unwrap()
+            .contains("custom user gotcha"));
+        // No anchor sidecar was created, so staleness should be untracked
+        assert_eq!(pm["staleness"]["untracked"], true);
     }
 }
