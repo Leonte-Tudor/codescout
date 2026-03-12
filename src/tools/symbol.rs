@@ -1797,6 +1797,13 @@ impl Tool for RenameSymbol {
             }
         }
 
+        // Notify LSP of all changed files so its symbol state is refreshed.
+        // Without this, list_symbols can still return old names even though the
+        // file on disk is correct (stale textDocument cache in the LSP server).
+        for path in &lsp_files {
+            ctx.lsp.notify_file_changed(path).await;
+        }
+
         // Phase 1.5: post-edit corruption scan.
         // If the LSP produced a wrong edit range (e.g. rust-analyzer off-by-N column), the
         // new name can end up embedded inside an existing token: "assertmy_new_fn()" instead
