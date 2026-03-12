@@ -58,7 +58,7 @@ These are non-negotiable. Violating the letter IS violating the spirit.
 | Persistent notes | `memory(action="read\|write\|list\|delete")` | — |
 | Search memories by meaning | `memory(action="recall", query="...")` | — |
 | Store knowledge for later | `memory(action="remember", content="...")` | — |
-| Local git (blame, log, diff) | `run_command("git blame/log/diff ...")` | — |
+| Local git (blame, log, diff) | `run_command("git blame/log/diff ...")` | ~~`github_repo(list_commits)`~~ — local git is faster, has full history |
 | GitHub identity / teams | `github_identity(method, ...)` | — |
 | GitHub issues | `github_issue(method, owner, repo, ...)` | — |
 | GitHub pull requests | `github_pr(method, owner, repo, ...)` | — |
@@ -81,6 +81,7 @@ These are non-negotiable. Violating the letter IS violating the spirit.
 | Repeat a broad `find_symbol` after overflow | Narrow with `path=`, `kind=`, or more specific pattern | Follow the overflow hint |
 | Ignore `by_file` in overflow response | Use top file from `by_file` as `path=` filter | The hint tells you exactly where to look |
 | `run_command("gh issue list")` or `run_command("gh pr ...")` | `github_issue(method, owner, repo, ...)` / `github_pr(...)` | Structured output, pagination, buffer handling built-in |
+| `github_repo(list_commits)` for local file history | `run_command("git log src/foo.rs")` | Local git has full history; GitHub API is paginated and rate-limited |
 
 **If you catch yourself rationalizing** ("I'll just quickly read the file", "this edit is
 too small for replace_symbol", "one pipe won't hurt") — that's the signal to stop and
