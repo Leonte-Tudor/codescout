@@ -926,7 +926,7 @@ boundary. `truncate_compact` now uses it for both slice points.
 
 **Date:** 2026-03-04
 **Severity:** Medium — wastes 30s agent time before timeout, no data corruption
-**Status:** Open
+**Status:** ✅ FIXED — `GIT_PAGER=cat` injected into all three subprocess spawn sites in `run_command_inner` (background detach, foreground Unix, foreground Windows). Git-specific env var; ignored by all non-git commands.
 
 **What happened:**
 Subagent code reviewer ran `git diff 368ffbe..d599093 -- src/tools/workflow.rs` inside
@@ -941,9 +941,6 @@ where `core.pager` is configured or git defaults to `less`.
 Git reads pager config from `~/.gitconfig` and falls back to `less` unless `GIT_PAGER=cat`
 or `--no-pager` is specified. Subprocess has no TTY but git doesn't check for one before
 invoking the pager.
-
-**Workaround:**
-Always use `git --no-pager diff` or set `GIT_PAGER=cat` prefix: `GIT_PAGER=cat git diff ...`.
 
 ---
 

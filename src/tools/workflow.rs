@@ -1425,6 +1425,7 @@ async fn run_command_inner(
             .arg("-c")
             .arg(resolved_command)
             .current_dir(&work_dir)
+            .env("GIT_PAGER", "cat")
             .stdout(std::process::Stdio::from(log_file))
             .stderr(std::process::Stdio::from(log_stderr))
             .spawn()?;
@@ -1520,6 +1521,7 @@ async fn run_command_inner(
         cmd.arg("-c")
             .arg(&effective_command)
             .current_dir(&work_dir)
+            .env("GIT_PAGER", "cat")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .process_group(0); // new process group; PGID = child PID
@@ -1548,6 +1550,7 @@ async fn run_command_inner(
                 .arg("/C")
                 .arg(&effective_command)
                 .current_dir(&work_dir)
+                .env("GIT_PAGER", "cat")
                 .output(),
         );
         (fut, None::<i32>)
