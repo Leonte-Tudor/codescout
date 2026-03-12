@@ -1312,10 +1312,56 @@ impl Tool for Hover {
 /// Rust (#[...]), Python/Java/TS (@decorator), JSDoc/JavaDoc (/** ... */),
 /// and Rust module-level doc comments (//!). Does NOT consume blank lines —
 /// blank lines are structural separators and are left in place.
+/// Compute the true start of a symbol declaration for editing (remove/replace).
+///
+/// Uses the LSP `range.start` (which includes attributes, doc comments, decorators)
+/// when available. Falls back to the heuristic `find_insert_before_line` when the
+/// LSP doesn't provide a separate full range (workspace/symbol, tree-sitter).
+fn editing_start_line(sym: &crate::lsp::SymbolInfo, lines: &[&str]) -> usize {
+    sym.range_start_line
+        .map(|r| r as usize)
+        .unwrap_or_else(|| find_insert_before_line(lines, sym.start_line as usize))
+}
+
+/// Walk backwards from `symbol_start` past attributes, decorators, and doc comments.
+///
+/// This is the **fallback** heuristic used when the LSP doesn't provide a separate
+/// `range.start` (workspace/symbol, tree-sitter). The primary mechanism is
+/// `editing_start_line` which uses `range_start_line` from `documentSymbol`.
+///
+/// Handles:
+/// - Single-line attributes: `#[test]`, `#[derive(Debug)]`
+/// - Multi-line attributes: `#[cfg(\n    ...\n)]` (tracks bracket nesting)
+/// - Python/Java decorators: `@decorator`, `@app.route("/path")`
+/// - Doc comments: `///`, `//!`, `/** ... */`
+/// - Block comments: `/* ... */` (multi-line)
 fn find_insert_before_line(lines: &[&str], symbol_start: usize) -> usize {
     let mut cursor = symbol_start;
+    // Track unclosed brackets when scanning upward through multi-line attributes.
+    // When we see `)` or `]` without a matching opener on the same line, we know
+    // we're inside a multi-line attribute and must keep scanning up.
+    let mut pending_open_brackets: usize = 0;
+
     while cursor > 0 {
         let trimmed = lines[cursor - 1].trim();
+
+        // If we're inside a multi-line attribute (have pending brackets to close),
+        // keep scanning upward regardless of what the line looks like.
+        if pending_open_brackets > 0 {
+            // Count bracket balance on this line (scanning left-to-right)
+            for ch in trimmed.chars() {
+                match ch {
+                    '(' | '[' => {
+                        pending_open_brackets = pending_open_brackets.saturating_sub(1);
+                    }
+                    ')' | ']' => pending_open_brackets += 1,
+                    _ => {}
+                }
+            }
+            cursor -= 1;
+            continue;
+        }
+
         let is_attr_or_doc = trimmed.starts_with("#[")
             || trimmed.starts_with('@')
             || trimmed.starts_with("///")
@@ -1324,7 +1370,28 @@ fn find_insert_before_line(lines: &[&str], symbol_start: usize) -> usize {
             || trimmed.starts_with("* ")
             || trimmed == "*/"
             || trimmed.starts_with("/*");
-        if is_attr_or_doc {
+
+        // Lines consisting purely of closing brackets (e.g. `)]`, `)`, `])`)
+        // are continuations of multi-line attributes — they close the bracket
+        // opened on a `#[attr(` line above.
+        let is_bracket_closer =
+            !trimmed.is_empty() && trimmed.chars().all(|c| matches!(c, ')' | ']'));
+
+        if is_attr_or_doc || is_bracket_closer {
+            // Check if this line has unmatched close brackets — indicates the
+            // start of a multi-line attribute above this line.
+            let mut depth: isize = 0;
+            for ch in trimmed.chars() {
+                match ch {
+                    '(' | '[' => depth += 1,
+                    ')' | ']' => depth -= 1,
+                    _ => {}
+                }
+            }
+            // Negative depth means more closers than openers — multi-line continues up
+            if depth < 0 {
+                pending_open_brackets = (-depth) as usize;
+            }
             cursor -= 1;
         } else {
             break;
@@ -1372,7 +1439,7 @@ impl Tool for ReplaceSymbol {
         let content = std::fs::read_to_string(&full_path)?;
         let lines: Vec<&str> = content.lines().collect();
 
-        let start = sym.start_line as usize;
+        let start = editing_start_line(sym, &lines);
         let end = (sym.end_line as usize + 1).min(lines.len());
 
         if start >= lines.len() {
@@ -1386,10 +1453,6 @@ impl Tool for ReplaceSymbol {
             )
             .into());
         }
-
-        // Note: the BUG-019 keyword guard was removed because the allowlist was Rust-only
-        // and caused false "stale" errors for Python, TypeScript, Go, and Java symbols.
-        // validate_symbol_range (AST cross-check above) is the canonical staleness defense.
 
         let mut new_lines = Vec::new();
         new_lines.extend_from_slice(&lines[..start]);
@@ -1449,7 +1512,7 @@ impl Tool for RemoveSymbol {
         let content = std::fs::read_to_string(&full_path)?;
         let lines: Vec<&str> = content.lines().collect();
 
-        let start = sym.start_line as usize;
+        let start = editing_start_line(sym, &lines);
         let end = (sym.end_line as usize + 1).min(lines.len());
 
         if start >= lines.len() {
@@ -1531,7 +1594,7 @@ impl Tool for InsertCode {
         let lines: Vec<&str> = content.lines().collect();
         let code_lines: Vec<&str> = code.lines().collect();
         let insert_at = match position {
-            "before" => find_insert_before_line(&lines, sym.start_line as usize),
+            "before" => editing_start_line(sym, &lines),
             _ => (sym.end_line as usize + 1).min(lines.len()),
         };
 
@@ -2740,6 +2803,7 @@ impl Point {
             end_line: 0, // degenerate — only the fn-name line
             start_col: 3,
             children: vec![],
+            range_start_line: None,
             detail: None,
         };
 
@@ -2770,6 +2834,7 @@ impl Point {
             end_line: 5, // already a real range
             start_col: 3,
             children: vec![],
+            range_start_line: None,
             detail: None,
         };
 
@@ -2796,6 +2861,7 @@ impl Point {
             end_line: 1, // truncated — inside body, misses closing `}` at line 2
             start_col: 0,
             children: vec![],
+            range_start_line: None,
             detail: None,
         };
 
@@ -2833,6 +2899,7 @@ impl Point {
             end_line: 0, // degenerate
             start_col: 4,
             children: vec![],
+            range_start_line: None,
             detail: None,
         };
 
@@ -2865,6 +2932,7 @@ impl Point {
             end_line: 0, // degenerate
             start_col: 9,
             children: vec![],
+            range_start_line: None,
             detail: None,
         };
 
@@ -2897,6 +2965,7 @@ impl Point {
             end_line: 2,   // degenerate
             start_col: 5,
             children: vec![],
+            range_start_line: None,
             detail: None,
         };
 
@@ -2927,6 +2996,7 @@ impl Point {
             end_line: 1,   // degenerate
             start_col: 3,
             children: vec![],
+            range_start_line: None,
             detail: None,
         };
 
@@ -2960,6 +3030,7 @@ impl Point {
             end_line: 4, // degenerate
             start_col: 3,
             children: vec![],
+            range_start_line: None,
             detail: None,
         };
 
@@ -2992,6 +3063,7 @@ impl Point {
             end_line: 0, // degenerate, but name not in AST
             start_col: 3,
             children: vec![],
+            range_start_line: None,
             detail: None,
         };
 
@@ -3024,6 +3096,7 @@ impl Point {
             end_line: 2,   // degenerate
             start_col: 7,
             children: vec![],
+            range_start_line: None,
             detail: None,
         };
 
@@ -3363,8 +3436,10 @@ impl Point {
                 end_line: 4,
                 start_col: 4,
                 children: vec![],
+                range_start_line: None,
                 detail: None,
             }],
+            range_start_line: None,
             detail: None,
         }];
 
@@ -3393,8 +3468,10 @@ impl Point {
                 end_line: 5,
                 start_col: 4,
                 children: vec![],
+                range_start_line: None,
                 detail: None,
             }],
+            range_start_line: None,
             detail: None,
         }];
 
@@ -3429,6 +3506,7 @@ impl Point {
             end_line: 10,
             start_col: 0,
             children: vec![],
+            range_start_line: None,
             detail: None,
         };
 
@@ -3476,8 +3554,10 @@ impl Point {
                     end_line: 3,
                     start_col: 4,
                     children: vec![],
+                    range_start_line: None,
                     detail: None,
                 }],
+                range_start_line: None,
                 detail: None,
             },
             SymbolInfo {
@@ -3489,6 +3569,7 @@ impl Point {
                 end_line: 30,
                 start_col: 0,
                 children: vec![],
+                range_start_line: None,
                 detail: None,
             },
         ];
@@ -3521,6 +3602,7 @@ impl Point {
             end_line: 5,
             start_col: 0,
             children: vec![],
+            range_start_line: None,
             detail: None,
         };
         let symbols = vec![
@@ -3533,6 +3615,7 @@ impl Point {
                 end_line: 20,
                 start_col: 0,
                 children: vec![make_method("ToolA", "call")],
+                range_start_line: None,
                 detail: None,
             },
             SymbolInfo {
@@ -3544,6 +3627,7 @@ impl Point {
                 end_line: 45,
                 start_col: 0,
                 children: vec![make_method("ToolB", "call")],
+                range_start_line: None,
                 detail: None,
             },
         ];
@@ -3808,8 +3892,10 @@ fn main() {
                 end_line: 5,
                 start_col: 4,
                 children: vec![],
+                range_start_line: None,
                 detail: None,
             }],
+            range_start_line: None,
             detail: None,
         }];
 
@@ -4029,8 +4115,10 @@ fn main() {
                 end_line: 5,
                 start_col: 4,
                 children: vec![],
+                range_start_line: None,
                 detail: None,
             }],
+            range_start_line: None,
             detail: None,
         }];
 
@@ -4094,6 +4182,7 @@ fn main() {
                 end_line: 10,
                 start_col: 0,
                 children: vec![],
+                range_start_line: None,
                 detail: None,
             },
             SymbolInfo {
@@ -4105,6 +4194,7 @@ fn main() {
                 end_line: 12,
                 start_col: 0,
                 children: vec![],
+                range_start_line: None,
                 detail: None,
             },
             SymbolInfo {
@@ -4116,6 +4206,7 @@ fn main() {
                 end_line: 20,
                 start_col: 0,
                 children: vec![],
+                range_start_line: None,
                 detail: None,
             },
         ];
@@ -4148,6 +4239,7 @@ fn main() {
                 end_line: 5,
                 start_col: 0,
                 children: vec![],
+                range_start_line: None,
                 detail: None,
             },
             SymbolInfo {
@@ -4159,6 +4251,7 @@ fn main() {
                 end_line: 7,
                 start_col: 0,
                 children: vec![],
+                range_start_line: None,
                 detail: None,
             },
         ];
@@ -4255,6 +4348,7 @@ fn main() {
             end_line: 5,
             start_col: 0,
             children: vec![],
+            range_start_line: None,
             detail: detail.map(|s| s.to_string()),
         }
     }
@@ -4815,6 +4909,119 @@ fn main() {
     fn find_insert_before_line_at_start_of_file() {
         let lines = vec!["/// Doc", "fn foo() {}"];
         assert_eq!(find_insert_before_line(&lines, 1), 0);
+    }
+
+    #[test]
+    fn editing_start_line_uses_range_start_line_when_present() {
+        let sym = crate::lsp::SymbolInfo {
+            name: "foo".to_string(),
+            name_path: "foo".to_string(),
+            kind: crate::lsp::SymbolKind::Function,
+            file: std::path::PathBuf::from("test.rs"),
+            start_line: 8,
+            end_line: 12,
+            start_col: 0,
+            children: vec![],
+            range_start_line: Some(5),
+            detail: None,
+        };
+        let lines = vec![
+            "other code",
+            "",
+            "/// doc1",
+            "/// doc2",
+            "#[test]",
+            "#[ignore]", // line 5 — range_start_line
+            "// between",
+            "// gap",
+            "fn foo() {", // line 8 — start_line (selectionRange)
+            "    body",
+            "}",
+        ];
+        // Should use range_start_line (5), NOT heuristic or start_line
+        assert_eq!(editing_start_line(&sym, &lines), 5);
+    }
+
+    #[test]
+    fn editing_start_line_falls_back_to_heuristic_when_none() {
+        let sym = crate::lsp::SymbolInfo {
+            name: "foo".to_string(),
+            name_path: "foo".to_string(),
+            kind: crate::lsp::SymbolKind::Function,
+            file: std::path::PathBuf::from("test.rs"),
+            start_line: 3,
+            end_line: 5,
+            start_col: 0,
+            children: vec![],
+            range_start_line: None,
+            detail: None,
+        };
+        let lines = vec![
+            "other code",
+            "#[test]",
+            "#[ignore]",
+            "fn foo() {", // line 3
+            "    body",
+            "}",
+        ];
+        // No range_start_line → heuristic walks back past #[test] #[ignore]
+        assert_eq!(editing_start_line(&sym, &lines), 1);
+    }
+
+    #[test]
+    fn find_insert_before_line_walks_past_multiline_attribute() {
+        // #[cfg(
+        //     target_os = "linux"
+        // )]
+        // fn foo() {}
+        let lines = vec![
+            "other code",
+            "#[cfg(",
+            "    target_os = \"linux\"",
+            ")]",
+            "fn foo() {}",
+        ];
+        assert_eq!(find_insert_before_line(&lines, 4), 1);
+    }
+
+    #[test]
+    fn find_insert_before_line_walks_past_nested_multiline_attributes() {
+        // #[cfg(all(
+        //     target_os = "linux",
+        //     feature = "nightly"
+        // ))]
+        // #[inline]
+        // fn foo() {}
+        let lines = vec![
+            "other code",
+            "#[cfg(all(",
+            "    target_os = \"linux\",",
+            "    feature = \"nightly\"",
+            "))]",
+            "#[inline]",
+            "fn foo() {}",
+        ];
+        assert_eq!(find_insert_before_line(&lines, 6), 1);
+    }
+
+    #[test]
+    fn find_insert_before_line_walks_past_python_multiline_decorator() {
+        // @app.route(
+        //     "/api/v1/users",
+        //     methods=["GET"]
+        // )
+        // def get_users():
+        let lines = vec![
+            "other code",
+            "@app.route(",
+            "    \"/api/v1/users\",",
+            "    methods=[\"GET\"]",
+            ")",
+            "def get_users():",
+        ];
+        // The `)` on line 4 is recognized as a bracket closer, triggering
+        // upward scanning through the multi-line decorator.
+        assert_eq!(find_insert_before_line(&lines, 5), 1);
     }
 
     #[test]
@@ -5454,6 +5661,7 @@ fn main() {
             end_line: 0,
             start_col: 3,
             children: vec![],
+            range_start_line: None,
             detail: None,
         };
 
@@ -5467,6 +5675,7 @@ fn main() {
             end_line: 3,
             start_col: 3,
             children: vec![],
+            range_start_line: None,
             detail: None,
         };
 
@@ -5516,6 +5725,7 @@ fn main() {
             end_line: 20,
             start_col: 0,
             children: vec![],
+            range_start_line: None,
             detail: None,
         }];
         let result = find_matching_symbol(&symbols, "foo", 10);
@@ -5535,6 +5745,7 @@ fn main() {
             end_line: 18,
             start_col: 4,
             children: vec![],
+            range_start_line: None,
             detail: None,
         };
         let parent = SymbolInfo {
@@ -5546,6 +5757,7 @@ fn main() {
             end_line: 20,
             start_col: 0,
             children: vec![child],
+            range_start_line: None,
             detail: None,
         };
         let result = find_matching_symbol(&[parent], "bar", 15);
@@ -5565,6 +5777,7 @@ fn main() {
             end_line: 20,
             start_col: 0,
             children: vec![],
+            range_start_line: None,
             detail: None,
         }];
         let result = find_matching_symbol(&symbols, "bar", 10);
@@ -5583,6 +5796,7 @@ fn main() {
             end_line: 20,
             start_col: 0,
             children: vec![],
+            range_start_line: None,
             detail: None,
         }];
         // lsp_start=13 → abs_diff(10, 13) = 3 > 1 → no match
@@ -5614,6 +5828,7 @@ fn main() {
             end_line: 0,
             start_col: 3,
             children: vec![],
+            range_start_line: None,
             detail: None,
         };
 

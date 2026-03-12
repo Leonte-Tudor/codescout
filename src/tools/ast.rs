@@ -266,6 +266,7 @@ mod tests {
             end_line: 5,
             start_col: 0,
             children: vec![],
+            range_start_line: None,
             detail: None,
         }];
 

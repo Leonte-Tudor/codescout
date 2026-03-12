@@ -12,10 +12,16 @@ pub struct SymbolInfo {
     pub name_path: String,
     pub kind: SymbolKind,
     pub file: PathBuf,
-    /// 0-indexed start line
+    /// 0-indexed start line (from LSP selectionRange — points to the symbol name).
     pub start_line: u32,
     /// 0-indexed end line
     pub end_line: u32,
+    /// Full declaration start line (from LSP range.start — includes attributes, doc
+    /// comments, decorators). `None` when the source doesn't distinguish selection
+    /// vs full range (tree-sitter, workspace/symbol), meaning `start_line` already
+    /// covers the full declaration.
+    #[serde(default)]
+    pub range_start_line: Option<u32>,
     /// 0-indexed start column
     pub start_col: u32,
     /// Children symbols (e.g. methods of a class)

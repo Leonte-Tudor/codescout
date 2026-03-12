@@ -59,6 +59,30 @@ fn sym(
         end_line,
         start_col: 0,
         children: vec![],
+        range_start_line: None,
+        detail: None,
+    }
+}
+
+/// Like `sym`, but with an explicit `range_start_line` (simulates documentSymbol
+/// which provides both `selectionRange` and `range`).
+fn sym_with_range(
+    name: &str,
+    start_line: u32,
+    end_line: u32,
+    range_start: u32,
+    path: impl Into<std::path::PathBuf>,
+) -> SymbolInfo {
+    SymbolInfo {
+        name: name.to_string(),
+        name_path: name.to_string(),
+        kind: SymbolKind::Function,
+        file: path.into(),
+        start_line,
+        end_line,
+        start_col: 0,
+        children: vec![],
+        range_start_line: Some(range_start),
         detail: None,
     }
 }
@@ -472,6 +496,7 @@ async fn insert_code_after_rejects_truncated_end_in_nested_fn() {
             end_line: 4, // truncated — true end is line 6
             start_col: 4,
             children: vec![],
+            range_start_line: None,
             detail: None,
         };
         let module = SymbolInfo {
@@ -483,6 +508,7 @@ async fn insert_code_after_rejects_truncated_end_in_nested_fn() {
             end_line: 7,
             start_col: 0,
             children: vec![inner],
+            range_start_line: None,
             detail: None,
         };
         MockLspClient::new().with_symbols(file, vec![module])
@@ -556,24 +582,73 @@ async fn remove_symbol_trusts_lsp_range_even_when_overextended() {
     );
 }
 
-/// With "trust LSP", a `const` item is removed using the raw LSP range (line 6 only).
-/// Doc comments are NOT removed unless the LSP includes them in the range.
-/// No more panic/corruption risk from missing closing brace.
+/// When `range_start_line` is set (documentSymbol path), remove_symbol uses it
+/// to include attributes and doc comments in the removal range.
 #[tokio::test]
-async fn remove_symbol_const_trusts_lsp_range() {
+async fn remove_symbol_uses_range_start_line_to_include_doc_comment() {
     // File layout (0-indexed):
     //  0: "fn preceding() {"
     //  1: "    // body"
     //  2: "}"
     //  3: "use std::fmt;"
     //  4: ""                                   <- blank line
-    //  5: "/// A constant."
-    //  6: "const TARGET: bool = false;"        <- LSP says start=6, end=6
+    //  5: "/// A constant."                    <- range.start = 5
+    //  6: "const TARGET: bool = false;"        <- selectionRange.start = 6, end = 6
     //  7: "fn following() {}"
     let src = "fn preceding() {\n    // body\n}\nuse std::fmt;\n\n/// A constant.\nconst TARGET: bool = false;\nfn following() {}\n";
 
     let (dir, ctx) = ctx_with_mock(&[("src/lib.rs", src)], |root| {
         let file = root.join("src/lib.rs");
+        // range_start=5 includes the doc comment
+        MockLspClient::new()
+            .with_symbols(file.clone(), vec![sym_with_range("TARGET", 6, 6, 5, file)])
+    })
+    .await;
+
+    RemoveSymbol
+        .call(
+            json!({
+                "path": "src/lib.rs",
+                "name_path": "TARGET"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    let result = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+    assert!(
+        !result.contains("TARGET"),
+        "const must be removed; got:\n{result}"
+    );
+    assert!(
+        !result.contains("A constant"),
+        "doc comment included in range_start_line — must also be removed; got:\n{result}"
+    );
+    assert!(
+        result.contains("fn preceding()"),
+        "preceding function must survive; got:\n{result}"
+    );
+    assert!(
+        result.contains("fn following()"),
+        "following function must survive; got:\n{result}"
+    );
+    let use_count = result.matches("use std::fmt;").count();
+    assert_eq!(
+        use_count, 1,
+        "use import must not be duplicated; found {use_count} occurrences in:\n{result}"
+    );
+}
+
+/// When `range_start_line` is `None` (workspace/symbol or tree-sitter), the
+/// heuristic fallback walks backwards past doc comments and attributes.
+#[tokio::test]
+async fn remove_symbol_heuristic_fallback_includes_doc_comment() {
+    let src = "fn preceding() {\n    // body\n}\nuse std::fmt;\n\n/// A constant.\nconst TARGET: bool = false;\nfn following() {}\n";
+
+    let (dir, ctx) = ctx_with_mock(&[("src/lib.rs", src)], |root| {
+        let file = root.join("src/lib.rs");
+        // No range_start_line — triggers heuristic fallback
         MockLspClient::new().with_symbols(file.clone(), vec![sym("TARGET", 6, 6, file)])
     })
     .await;
@@ -595,8 +670,8 @@ async fn remove_symbol_const_trusts_lsp_range() {
         "const must be removed; got:\n{result}"
     );
     assert!(
-        result.contains("A constant"),
-        "doc comment is outside LSP range — survives (trust LSP); got:\n{result}"
+        !result.contains("A constant"),
+        "heuristic should walk back past doc comment; got:\n{result}"
     );
     assert!(
         result.contains("fn preceding()"),
@@ -606,11 +681,40 @@ async fn remove_symbol_const_trusts_lsp_range() {
         result.contains("fn following()"),
         "following function must survive; got:\n{result}"
     );
-    // Count occurrences of "use std::fmt;" — must be exactly 1 (no duplication)
-    let use_count = result.matches("use std::fmt;").count();
-    assert_eq!(
-        use_count, 1,
-        "use import must not be duplicated; found {use_count} occurrences in:\n{result}"
+}
+
+/// When `range_start_line` explicitly excludes the doc comment, trust it.
+#[tokio::test]
+async fn remove_symbol_range_start_line_excludes_doc_comment() {
+    let src = "fn preceding() {\n    // body\n}\nuse std::fmt;\n\n/// A constant.\nconst TARGET: bool = false;\nfn following() {}\n";
+
+    let (dir, ctx) = ctx_with_mock(&[("src/lib.rs", src)], |root| {
+        let file = root.join("src/lib.rs");
+        // range_start=6 (same as selectionRange) — LSP explicitly says no doc comment
+        MockLspClient::new()
+            .with_symbols(file.clone(), vec![sym_with_range("TARGET", 6, 6, 6, file)])
+    })
+    .await;
+
+    RemoveSymbol
+        .call(
+            json!({
+                "path": "src/lib.rs",
+                "name_path": "TARGET"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    let result = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+    assert!(
+        !result.contains("TARGET"),
+        "const must be removed; got:\n{result}"
+    );
+    assert!(
+        result.contains("A constant"),
+        "doc comment outside explicit range_start_line — survives; got:\n{result}"
     );
 }
 
@@ -638,6 +742,7 @@ async fn find_symbol_name_path_does_not_return_local_variable_children() {
             end_line: 1,
             start_col: 4,
             children: vec![],
+            range_start_line: None,
             detail: None,
         };
         let parent = SymbolInfo {
@@ -649,6 +754,7 @@ async fn find_symbol_name_path_does_not_return_local_variable_children() {
             end_line: 2,
             start_col: 0,
             children: vec![child],
+            range_start_line: None,
             detail: None,
         };
         MockLspClient::new().with_symbols(file, vec![parent])

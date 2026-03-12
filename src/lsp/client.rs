@@ -73,6 +73,7 @@ fn convert_document_symbols(
                 start_line: ds.selection_range.start.line,
                 end_line: ds.range.end.line,
                 start_col: ds.selection_range.start.character,
+                range_start_line: Some(ds.range.start.line),
                 children,
                 detail: ds.detail.clone().filter(|s| !s.is_empty()),
             }
@@ -523,6 +524,7 @@ impl LspClient {
                     start_line: si.location.range.start.line,
                     end_line: si.location.range.end.line,
                     start_col: si.location.range.start.character,
+                    range_start_line: None,
                     children: vec![],
                     detail: None,
                 }
@@ -620,6 +622,7 @@ impl LspClient {
                         start_line: si.location.range.start.line,
                         end_line: si.location.range.end.line,
                         start_col: si.location.range.start.character,
+                        range_start_line: None,
                         children: vec![],
                         detail: None,
                     }
@@ -1148,6 +1151,11 @@ struct Point {
             result[0].end_line, 10,
             "end_line should use range for body extent"
         );
+        assert_eq!(
+            result[0].range_start_line,
+            Some(5),
+            "range_start_line should use range.start for full declaration (including attributes)"
+        );
     }
 
     #[test]
@@ -1315,6 +1323,7 @@ struct Point {
                     start_line: si.location.range.start.line,
                     end_line: si.location.range.end.line,
                     start_col: si.location.range.start.character,
+                    range_start_line: None,
                     children: vec![],
                     detail: None,
                 }
