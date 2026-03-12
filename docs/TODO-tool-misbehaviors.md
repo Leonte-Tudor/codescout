@@ -755,7 +755,7 @@ catch the stale-LSP class of errors.
 
 **Date:** 2026-03-04
 **Severity:** Medium — compiles with warnings/errors; requires manual cleanup of orphaned text
-**Status:** Open
+**Status:** ✅ FIXED — 2026-03-12
 
 **What happened:**
 Called `replace_symbol("truncate_compact", …)` twice in succession to update the function.
@@ -771,10 +771,12 @@ LSP `documentSymbol` range for a free function covers only the `fn` keyword thro
 (including doc) at the function range start, but leaves the old doc comment untouched just
 above it. On the second call the same thing happens again.
 
-**Workaround:**
-Call `replace_symbol` only once per symbol per session, or use `edit_file` with a
-sufficiently-anchored `old_string` that includes the doc comment text to be replaced.
-If duplication occurs, use `edit_file` with the full duplicated block as `old_string`.
+**Fix:** Added `range_start_line: Option<u32>` to `SymbolInfo`, populated from
+`DocumentSymbol.range.start.line` (the full declaration span including attributes and doc
+comments). `remove_symbol`, `replace_symbol`, and `insert_code` now use `editing_start_line()`
+which resolves to `range_start_line` when available, falling back to the improved
+`find_insert_before_line` heuristic (which now handles multi-line attributes via bracket
+nesting). Commit: d6a604a.
 
 ### BUG-018 — `replace_symbol`: duplicates body instead of replacing, leaves stray tokens
 
