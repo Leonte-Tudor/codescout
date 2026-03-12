@@ -79,6 +79,8 @@ pub struct PathSecurityConfig {
     pub file_write_enabled: bool,
     /// Enable semantic search and indexing tools (default: true)
     pub indexing_enabled: bool,
+    /// Enable GitHub tools (default: true)
+    pub github_enabled: bool,
     /// Read-only library paths (registered via LibraryRegistry).
     pub library_paths: Vec<PathBuf>,
     /// Command substrings that bypass dangerous-command detection.
@@ -97,6 +99,7 @@ impl Default for PathSecurityConfig {
             shell_enabled: true,
             file_write_enabled: true,
             indexing_enabled: true,
+            github_enabled: true,
             library_paths: Vec::new(),
             shell_allow_always: Vec::new(),
             shell_dangerous_patterns: Vec::new(),
@@ -334,6 +337,13 @@ pub fn check_tool_access(tool_name: &str, config: &PathSecurityConfig) -> Result
             if !config.indexing_enabled {
                 bail!(
                     "Indexing tools are disabled. Set security.indexing_enabled = true in .codescout/project.toml to enable."
+                );
+            }
+        }
+        "github_identity" | "github_issue" | "github_pr" | "github_file" | "github_repo" => {
+            if !config.github_enabled {
+                bail!(
+                    "GitHub tools are disabled. Set security.github_enabled = true in .codescout/project.toml to enable."
                 );
             }
         }
@@ -934,6 +944,7 @@ mod tests {
         config.shell_enabled = false;
         config.file_write_enabled = false;
         config.indexing_enabled = false;
+        config.github_enabled = false;
         // Read tools should always work
         for tool in &[
             "read_file",
@@ -978,6 +989,49 @@ mod tests {
             err.to_string().contains("project.toml"),
             "error should mention config file"
         );
+        config.github_enabled = false;
+        let err = check_tool_access("github_pr", &config).unwrap_err();
+        assert!(
+            err.to_string().contains("github_enabled"),
+            "error should mention config key"
+        );
+    }
+
+    #[test]
+    fn github_disabled_blocks_all_github_tools() {
+        let mut config = PathSecurityConfig::default();
+        config.github_enabled = false;
+        for tool in &[
+            "github_identity",
+            "github_issue",
+            "github_pr",
+            "github_file",
+            "github_repo",
+        ] {
+            assert!(
+                check_tool_access(tool, &config).is_err(),
+                "{} should be blocked",
+                tool
+            );
+        }
+    }
+
+    #[test]
+    fn github_enabled_allows_github_tools() {
+        let config = PathSecurityConfig::default();
+        for tool in &[
+            "github_identity",
+            "github_issue",
+            "github_pr",
+            "github_file",
+            "github_repo",
+        ] {
+            assert!(
+                check_tool_access(tool, &config).is_ok(),
+                "{} should be allowed by default",
+                tool
+            );
+        }
     }
 
     #[test]
