@@ -5,9 +5,16 @@
 
 # User Guide
 
+- [Why codescout?](why-codescout.md)
+
 - [Installation](getting-started/installation.md)
   - [Your First Project](getting-started/first-project.md)
   - [Routing Plugin](getting-started/routing-plugin.md)
+
+- [Agent Integrations](agents/overview.md)
+  - [Claude Code](agents/claude-code.md)
+  - [GitHub Copilot](agents/copilot.md)
+  - [Cursor](agents/cursor.md)
 
 - [Progressive Disclosure](concepts/progressive-disclosure.md)
   - [Output Modes](concepts/output-modes.md)

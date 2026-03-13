@@ -12,7 +12,6 @@
 /.codescout/usage.db-shm
 /.codescout/debug.log*
 # memories/ and system-prompt.md are intentionally tracked
-/docs/research/
 /docs/observations.md
 /scripts/node_modules/
 /scripts/package-lock.json
