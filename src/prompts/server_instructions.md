@@ -117,6 +117,8 @@ use the right tool. Small shortcuts compound into large context waste.
 ### Symbol Editing (LSP)
 
 - `replace_symbol(name_path, path, new_body)` — replace entire symbol body.
+  `new_body` must include the full declaration: attributes, doc comments, signature,
+  and body — matching what `find_symbol(include_body=true)` returns.
 - `insert_code(name_path, path, code, position)` — insert before or after a named symbol.
 - `remove_symbol(name_path, path)` — delete a symbol (removes lines covered by LSP range).
 - `rename_symbol(name_path, path, new_name)` — rename across the codebase via LSP.

@@ -515,6 +515,23 @@ blocked waiting for an LSP notification or response that never came.
 
 ---
 
+### BUG-029 — `find_symbol`/`replace_symbol`: read/write range asymmetry drops attributes
+
+**Date:** 2026-03-13
+**Severity:** High — silently drops `#[test]`, `@decorator`, `/// doc` on every replace_symbol round-trip
+**Status:** ✅ FIXED — `symbol_to_json` now uses `editing_start_line` (same as `replace_symbol`) for body extraction. Added `body_start_line` field. Round-trip tests for Rust, Python, Java.
+
+**What happened:**
+`find_symbol(include_body=true)` extracted body from `start_line` (selectionRange — the `fn` keyword), excluding preceding `#[test]`, `/// doc`, `@decorator`. But `replace_symbol` replaced from `editing_start_line` (range_start_line — includes attributes). When an agent read a function, modified its body, and passed it back to `replace_symbol`, the replacement range was wider than what was read, consuming the attributes.
+
+**Root cause:**
+The "Trust LSP" redesign (commit 3230834) correctly changed all three editing tools (`replace_symbol`, `remove_symbol`, `insert_code`) to use `editing_start_line`, but did not update the read path (`symbol_to_json`) to match. The original design spec noted "both paths use the same range" as a goal but only the write path was updated.
+
+**Fix:**
+Changed `symbol_to_json` to use `editing_start_line(sym, &lines)` instead of `sym.start_line` for body extraction. Added `body_start_line` field to JSON output (1-indexed). Read and write paths now use identical ranges.
+
+---
+
 ## Template for new entries
 
 ```

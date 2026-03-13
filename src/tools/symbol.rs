@@ -193,7 +193,6 @@ fn collect_matching(
     }
 }
 
-/// Convert a `SymbolInfo` tree to JSON with optional body inclusion.
 fn symbol_to_json(
     sym: &SymbolInfo,
     include_body: bool,
@@ -224,10 +223,15 @@ fn symbol_to_json(
     if include_body {
         if let Some(src) = source_code {
             let lines: Vec<&str> = src.lines().collect();
-            let start = sym.start_line as usize;
+            // Use the full range (including attributes and doc comments) so
+            // the body matches what replace_symbol would replace.
+            let body_start = editing_start_line(sym, &lines);
             let end = (sym.end_line as usize + 1).min(lines.len());
-            if start < lines.len() {
-                map.insert("body".into(), json!(lines[start..end].join("\n")));
+            if body_start < lines.len() {
+                map.insert("body".into(), json!(lines[body_start..end].join("\n")));
+                // 1-indexed line where body begins — may differ from start_line
+                // when attributes or doc comments precede the declaration.
+                map.insert("body_start_line".into(), json!(body_start + 1));
             }
         }
     }
@@ -1408,7 +1412,9 @@ impl Tool for ReplaceSymbol {
         "replace_symbol"
     }
     fn description(&self) -> &str {
-        "Replace the entire body of a named symbol with new source code."
+        "Replace the entire body of a named symbol with new source code. \
+         new_body should include the full declaration: attributes, doc comments, \
+         signature, and body — matching what find_symbol(include_body=true) returns."
     }
     fn input_schema(&self) -> Value {
         json!({
@@ -4966,6 +4972,86 @@ fn main() {
         ];
         // No range_start_line → heuristic walks back past #[test] #[ignore]
         assert_eq!(editing_start_line(&sym, &lines), 1);
+    }
+
+    // ── symbol_to_json body extraction: full-range (includes attributes) ─────
+
+    #[test]
+    fn symbol_to_json_body_includes_attributes_when_range_start_line_set() {
+        let source = "#[test]\n/// A doc comment\nfn foo() {\n    body();\n}\n";
+        let sym = crate::lsp::SymbolInfo {
+            name: "foo".into(),
+            name_path: "foo".into(),
+            kind: crate::lsp::SymbolKind::Function,
+            file: std::path::PathBuf::from("src/lib.rs"),
+            start_line: 2, // fn keyword (0-indexed)
+            end_line: 4,   // closing }
+            start_col: 0,
+            children: vec![],
+            range_start_line: Some(0), // #[test] line
+            detail: None,
+        };
+        let json = symbol_to_json(&sym, true, Some(source), 0, false);
+        let body = json["body"].as_str().unwrap();
+        assert!(
+            body.contains("#[test]"),
+            "body should include #[test] attribute; got:\n{body}"
+        );
+        assert!(
+            body.contains("/// A doc comment"),
+            "body should include doc comment; got:\n{body}"
+        );
+        assert!(
+            body.contains("fn foo()"),
+            "body should include fn declaration; got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn symbol_to_json_includes_body_start_line() {
+        let source = "#[test]\nfn foo() {}\n";
+        let sym = crate::lsp::SymbolInfo {
+            name: "foo".into(),
+            name_path: "foo".into(),
+            kind: crate::lsp::SymbolKind::Function,
+            file: std::path::PathBuf::from("src/lib.rs"),
+            start_line: 1,
+            end_line: 1,
+            start_col: 0,
+            children: vec![],
+            range_start_line: Some(0),
+            detail: None,
+        };
+        let json = symbol_to_json(&sym, true, Some(source), 0, false);
+        // body_start_line should be 1 (1-indexed, the #[test] line)
+        assert_eq!(
+            json["body_start_line"].as_u64(),
+            Some(1),
+            "body_start_line should be 1-indexed line where body begins (the attribute line)"
+        );
+    }
+
+    #[test]
+    fn symbol_to_json_body_uses_heuristic_when_range_start_line_none() {
+        let source = "#[test]\nfn foo() {\n    body();\n}\n";
+        let sym = crate::lsp::SymbolInfo {
+            name: "foo".into(),
+            name_path: "foo".into(),
+            kind: crate::lsp::SymbolKind::Function,
+            file: std::path::PathBuf::from("src/lib.rs"),
+            start_line: 1, // fn keyword
+            end_line: 3,
+            start_col: 0,
+            children: vec![],
+            range_start_line: None, // tree-sitter / workspace/symbol path
+            detail: None,
+        };
+        let json = symbol_to_json(&sym, true, Some(source), 0, false);
+        let body = json["body"].as_str().unwrap();
+        assert!(
+            body.contains("#[test]"),
+            "body should include #[test] via heuristic fallback; got:\n{body}"
+        );
     }
 
     #[test]

@@ -274,6 +274,212 @@ async fn replace_symbol_rejects_truncated_end_line() {
     );
 }
 
+// ── Read/write symmetry: find_symbol body → replace_symbol round-trip ────────
+
+/// Round-trip: find_symbol(include_body) → modify → replace_symbol preserves attributes.
+/// This is the bug that motivated the full-range body change: find_symbol returned
+/// body from start_line (no attributes), but replace_symbol replaced from
+/// editing_start_line (with attributes), consuming #[test] etc.
+#[tokio::test]
+async fn replace_symbol_round_trip_preserves_attributes() {
+    // File layout (0-indexed):
+    //  0: "#[test]"                     <- range_start = 0
+    //  1: "/// A test function"
+    //  2: "fn target() {"               <- selectionRange.start = 2
+    //  3: "    old_body();"
+    //  4: "}"                           <- end = 4
+    let src = "#[test]\n/// A test function\nfn target() {\n    old_body();\n}\n";
+
+    let (dir, ctx) = ctx_with_mock(&[("src/lib.rs", src)], |root| {
+        let file = root.join("src/lib.rs");
+        MockLspClient::new()
+            .with_symbols(file.clone(), vec![sym_with_range("target", 2, 4, 0, file)])
+    })
+    .await;
+
+    // Step 1: Read the symbol body (simulates what the agent does)
+    let find_result = FindSymbol
+        .call(
+            json!({
+                "name_path": "target",
+                "path": "src/lib.rs",
+                "include_body": true
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    // The body should include #[test] and /// doc
+    let body = find_result["symbols"][0]["body"].as_str().unwrap();
+    assert!(
+        body.contains("#[test]"),
+        "find_symbol body should include attribute; got:\n{body}"
+    );
+
+    // Step 2: Agent modifies the body (changes old_body to new_body, keeps attrs)
+    let new_body = body.replace("old_body()", "new_body()");
+
+    // Step 3: Replace with the modified body
+    ReplaceSymbol
+        .call(
+            json!({
+                "path": "src/lib.rs",
+                "name_path": "target",
+                "new_body": new_body
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    let result = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+    assert!(
+        result.contains("#[test]"),
+        "attribute must be preserved after round-trip; got:\n{result}"
+    );
+    assert!(
+        result.contains("/// A test function"),
+        "doc comment must be preserved after round-trip; got:\n{result}"
+    );
+    assert!(
+        result.contains("new_body()"),
+        "new body must be applied; got:\n{result}"
+    );
+    assert!(
+        !result.contains("old_body()"),
+        "old body must be gone; got:\n{result}"
+    );
+}
+
+/// Python: decorators above def are in range_start, docstrings are inside the body.
+#[tokio::test]
+async fn replace_symbol_round_trip_preserves_python_decorator() {
+    // File layout (0-indexed):
+    //  0: "@staticmethod"               <- range_start = 0
+    //  1: "def target():"               <- selectionRange.start = 1
+    //  2: "    old_body()"              <- end = 2
+    let src = "@staticmethod\ndef target():\n    old_body()\n";
+
+    let (dir, ctx) = ctx_with_mock(&[("src/lib.py", src)], |root| {
+        let file = root.join("src/lib.py");
+        MockLspClient::new()
+            .with_symbols(file.clone(), vec![sym_with_range("target", 1, 2, 0, file)])
+    })
+    .await;
+
+    let find_result = FindSymbol
+        .call(
+            json!({
+                "name_path": "target",
+                "path": "src/lib.py",
+                "include_body": true
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    let body = find_result["symbols"][0]["body"].as_str().unwrap();
+    assert!(
+        body.contains("@staticmethod"),
+        "body should include decorator; got:\n{body}"
+    );
+
+    let new_body = body.replace("old_body()", "new_body()");
+
+    ReplaceSymbol
+        .call(
+            json!({
+                "path": "src/lib.py",
+                "name_path": "target",
+                "new_body": new_body
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    let result = std::fs::read_to_string(dir.path().join("src/lib.py")).unwrap();
+    assert!(
+        result.contains("@staticmethod"),
+        "decorator must survive round-trip; got:\n{result}"
+    );
+    assert!(
+        result.contains("new_body()"),
+        "new body must be applied; got:\n{result}"
+    );
+}
+
+/// Java: @Override annotation + Javadoc above method.
+#[tokio::test]
+async fn replace_symbol_round_trip_preserves_java_annotation() {
+    // File layout (0-indexed):
+    //  0: "/** Javadoc comment */"       <- range_start = 0
+    //  1: "@Override"
+    //  2: "public void target() {"       <- selectionRange.start = 2
+    //  3: "    oldBody();"
+    //  4: "}"                            <- end = 4
+    let src = "/** Javadoc comment */\n@Override\npublic void target() {\n    oldBody();\n}\n";
+
+    let (dir, ctx) = ctx_with_mock(&[("src/Main.java", src)], |root| {
+        let file = root.join("src/Main.java");
+        MockLspClient::new()
+            .with_symbols(file.clone(), vec![sym_with_range("target", 2, 4, 0, file)])
+    })
+    .await;
+
+    let find_result = FindSymbol
+        .call(
+            json!({
+                "name_path": "target",
+                "path": "src/Main.java",
+                "include_body": true
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    let body = find_result["symbols"][0]["body"].as_str().unwrap();
+    assert!(
+        body.contains("@Override"),
+        "body should include annotation; got:\n{body}"
+    );
+    assert!(
+        body.contains("/** Javadoc"),
+        "body should include Javadoc; got:\n{body}"
+    );
+
+    let new_body = body.replace("oldBody()", "newBody()");
+
+    ReplaceSymbol
+        .call(
+            json!({
+                "path": "src/Main.java",
+                "name_path": "target",
+                "new_body": new_body
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    let result = std::fs::read_to_string(dir.path().join("src/Main.java")).unwrap();
+    assert!(
+        result.contains("@Override"),
+        "annotation must survive; got:\n{result}"
+    );
+    assert!(
+        result.contains("/** Javadoc"),
+        "Javadoc must survive; got:\n{result}"
+    );
+    assert!(
+        result.contains("newBody()"),
+        "new body applied; got:\n{result}"
+    );
+}
+
 // ── BUG-010: insert_code "before" must walk past #[attr] and /// doc lines ────
 
 /// `insert_code(position="before")` targeting a struct with a leading doc comment
