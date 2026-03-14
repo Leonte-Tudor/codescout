@@ -380,6 +380,17 @@ pub fn open_db(project_root: &Path) -> Result<Connection> {
         conn.execute_batch("ALTER TABLE chunks ADD COLUMN source TEXT NOT NULL DEFAULT 'project'")?;
     }
 
+    // Migration: add project_id column (workspace multi-project support)
+    let has_project_id: bool = conn
+        .prepare("SELECT project_id FROM chunks LIMIT 0")
+        .is_ok();
+    if !has_project_id {
+        conn.execute(
+            "ALTER TABLE chunks ADD COLUMN project_id TEXT NOT NULL DEFAULT 'root'",
+            [],
+        )?;
+    }
+
     maybe_migrate_to_vec0(&conn)?;
 
     Ok(conn)
@@ -766,8 +777,8 @@ pub fn file_mtime(path: &Path) -> Result<i64> {
 /// Insert a chunk and its embedding into the database.
 pub fn insert_chunk(conn: &Connection, chunk: &CodeChunk, embedding: &[f32]) -> Result<i64> {
     conn.execute(
-        "INSERT INTO chunks (file_path, language, content, start_line, end_line, file_hash, source)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO chunks (file_path, language, content, start_line, end_line, file_hash, source, project_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             chunk.file_path,
             chunk.language,
@@ -776,6 +787,7 @@ pub fn insert_chunk(conn: &Connection, chunk: &CodeChunk, embedding: &[f32]) -> 
             chunk.end_line,
             chunk.file_hash,
             chunk.source,
+            chunk.project_id,
         ],
     )?;
     let row_id = conn.last_insert_rowid();
@@ -929,13 +941,6 @@ fn is_vec0_active(conn: &Connection) -> bool {
     active
 }
 
-/// Scoped cosine similarity search with optional source filtering.
-///
-/// `source_filter`:
-///   - `None` → all sources (no filter)
-///   - `Some("project")` → only project chunks
-///   - `Some("libraries")` → all non-project chunks
-///   - `Some("lib:<name>")` → only chunks from that specific library
 pub fn search_scoped(
     conn: &Connection,
     query_embedding: &[f32],
@@ -965,12 +970,14 @@ pub fn search_scoped(
             end_line: row.get(4)?,
             source: row.get(5)?,
             score,
+            project_id: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
         })
     };
 
     // Common SELECT with sqlite-vec distance. ORDER BY + LIMIT pushed to SQLite.
     let sel = "SELECT c.file_path, c.language, c.content, c.start_line, c.end_line, c.source, \
-               COALESCE(vec_distance_cosine(vec_f32(ce.embedding), vec_f32(?1)), 1.0) AS distance \
+               COALESCE(vec_distance_cosine(vec_f32(ce.embedding), vec_f32(?1)), 1.0) AS distance, \
+               c.project_id \
                FROM chunks c JOIN chunk_embeddings ce ON c.id = ce.rowid";
 
     match source_filter {
@@ -1001,9 +1008,6 @@ pub fn search_scoped(
     }
 }
 
-/// KNN search via vec0 virtual table. Called by `search_scoped` when the
-/// table has been migrated. `ORDER BY + LIMIT` must live inside the vec0
-/// subquery — this is a vec0 requirement, not a SQL convention.
 fn search_scoped_vec0(
     conn: &Connection,
     query_embedding: &[f32],
@@ -1028,6 +1032,7 @@ fn search_scoped_vec0(
             end_line: row.get(4)?,
             source: row.get(5)?,
             score,
+            project_id: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
         })
     };
 
@@ -1054,12 +1059,12 @@ fn search_scoped_vec0(
 
     let sel_exact = format!(
         "SELECT c.file_path, c.language, c.content, c.start_line, c.end_line, c.source, \
-         COALESCE(knn.distance, 1.0) AS distance \
+         COALESCE(knn.distance, 1.0) AS distance, c.project_id \
          FROM chunks c JOIN ({knn_exact}) knn ON c.id = knn.rowid"
     );
     let sel_over = format!(
         "SELECT c.file_path, c.language, c.content, c.start_line, c.end_line, c.source, \
-         COALESCE(knn.distance, 1.0) AS distance \
+         COALESCE(knn.distance, 1.0) AS distance, c.project_id \
          FROM chunks c JOIN ({knn_over}) knn ON c.id = knn.rowid"
     );
 
@@ -1094,12 +1099,14 @@ fn search_scoped_vec0(
 
 /// Search across project and/or library embedding databases.
 /// Opens relevant DBs per scope, runs cosine search on each, merges results by score.
+/// When `project_filter` is `Some(id)`, only chunks whose `project_id` matches are returned.
 pub fn search_multi_db(
     project_root: &Path,
     query_embedding: &[f32],
     limit: usize,
     scope: &crate::library::scope::Scope,
     _library_registry: &crate::library::registry::LibraryRegistry,
+    project_filter: Option<&str>,
 ) -> Result<Vec<SearchResult>> {
     let mut db_paths: Vec<PathBuf> = Vec::new();
 
@@ -1138,6 +1145,15 @@ pub fn search_multi_db(
         }
     }
 
+    // When filtering by project we over-fetch from each DB so that after
+    // dropping non-matching rows there are still enough candidates to fill
+    // `limit`. Factor of 4 matches the over-fetch strategy used elsewhere.
+    let fetch_limit = if project_filter.is_some() {
+        (limit * 4).max(20)
+    } else {
+        limit
+    };
+
     let mut all_results: Vec<SearchResult> = Vec::new();
 
     for path in &db_paths {
@@ -1145,7 +1161,7 @@ pub fn search_multi_db(
             continue;
         }
         match Connection::open(path) {
-            Ok(conn) => match search(&conn, query_embedding, limit) {
+            Ok(conn) => match search(&conn, query_embedding, fetch_limit) {
                 Ok(results) => all_results.extend(results),
                 Err(e) => {
                     tracing::warn!("Search failed for {}: {}", path.display(), e);
@@ -1155,6 +1171,11 @@ pub fn search_multi_db(
                 tracing::warn!("Failed to open {}: {}", path.display(), e);
             }
         }
+    }
+
+    // Apply project filter as a post-filter on the merged result set.
+    if let Some(proj) = project_filter {
+        all_results.retain(|r| r.project_id == proj);
     }
 
     // Sort by score descending, truncate to limit
@@ -1378,6 +1399,9 @@ pub async fn build_index(
     // ── Phase 1: Detect changed files ─────────────────────────────────────────
     let change_set = find_changed_files(&conn, project_root, force)?;
 
+    // Discover workspace sub-projects for project_id tagging
+    let discovered_projects = crate::workspace::discover_projects(project_root, 3, &[]);
+
     struct FileWork {
         rel: String,
         hash: String,
@@ -1496,6 +1520,11 @@ pub async fn build_index(
             Vec::new()
         };
         delete_file_chunks(&conn, &result.rel)?;
+        let project_id = crate::workspace::resolve_project_id(
+            &discovered_projects,
+            project_root,
+            Path::new(&result.rel),
+        );
         for (raw, emb) in result.chunks.iter().zip(result.embeddings.iter()) {
             let chunk = CodeChunk {
                 id: None,
@@ -1506,6 +1535,7 @@ pub async fn build_index(
                 end_line: raw.end_line,
                 file_hash: result.hash.clone(),
                 source: "project".into(),
+                project_id: project_id.clone(),
             };
             insert_chunk(&conn, &chunk, emb)?;
         }
@@ -1736,6 +1766,7 @@ pub async fn build_library_index(
                 end_line: raw.end_line,
                 file_hash: result.hash.clone(),
                 source: source_owned.clone(),
+                project_id: "root".into(),
             };
             insert_chunk(&conn, &chunk, emb)?;
         }
@@ -2307,6 +2338,7 @@ mod tests {
             end_line: 3,
             file_hash: "testhash".to_string(),
             source: "project".into(),
+            project_id: "root".into(),
         }
     }
 
@@ -2320,6 +2352,7 @@ mod tests {
             end_line: 3,
             file_hash: "testhash".to_string(),
             source: source.to_string(),
+            project_id: "root".into(),
         }
     }
 
@@ -2602,6 +2635,23 @@ mod tests {
         let (_dir, conn) = open_test_db();
         let id = insert_chunk(&conn, &dummy_chunk("a.rs", "fn a() {}"), &[0.1, 0.2]).unwrap();
         assert!(id > 0);
+    }
+
+    #[test]
+    fn insert_chunk_stores_project_id() {
+        let (_dir, conn) = open_test_db();
+        let mut chunk = dummy_chunk("src/main.rs", "fn main() {}");
+        chunk.project_id = "my-service".to_string();
+        insert_chunk(&conn, &chunk, &[0.1]).unwrap();
+
+        let pid: String = conn
+            .query_row(
+                "SELECT project_id FROM chunks WHERE file_path = 'src/main.rs'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pid, "my-service");
     }
 
     #[test]
@@ -3887,7 +3937,7 @@ mod tests {
 
         // Search for a non-existent library — should return empty, not error
         let scope = crate::library::scope::Scope::Library("nonexistent".to_string());
-        let results = search_multi_db(root, &query_emb, 10, &scope, &registry).unwrap();
+        let results = search_multi_db(root, &query_emb, 10, &scope, &registry, None).unwrap();
         assert!(results.is_empty());
     }
 
@@ -3902,7 +3952,39 @@ mod tests {
 
         let scope = crate::library::scope::Scope::Project;
         // Should succeed (empty results, no embeddings in the test DB)
-        let results = search_multi_db(root, &query_emb, 10, &scope, &registry).unwrap();
+        let results = search_multi_db(root, &query_emb, 10, &scope, &registry, None).unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn open_db_adds_project_id_column() {
+        let dir = tempdir().unwrap();
+        let conn = open_db(dir.path()).unwrap();
+        let has_col: bool = conn
+            .prepare("SELECT project_id FROM chunks LIMIT 0")
+            .is_ok();
+        assert!(has_col, "chunks table should have project_id column");
+    }
+
+    #[test]
+    fn existing_chunks_get_default_root_project_id() {
+        let dir = tempdir().unwrap();
+        let conn = open_db(dir.path()).unwrap();
+
+        conn.execute(
+            "INSERT INTO chunks (file_path, start_line, end_line, content, language, file_hash, source)
+         VALUES ('src/main.rs', 1, 10, 'fn main() {}', 'rust', 'abc123', 'project')",
+            [],
+        )
+        .unwrap();
+
+        let pid: String = conn
+            .query_row(
+                "SELECT project_id FROM chunks WHERE file_path = 'src/main.rs'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pid, "root");
     }
 }

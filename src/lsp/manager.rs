@@ -2,8 +2,10 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::time::Instant;
 
 use anyhow::Result;
 use tokio::sync::Mutex;
@@ -11,26 +13,51 @@ use tokio::sync::Mutex;
 use super::client::{LspClient, LspServerConfig};
 use super::servers;
 
-/// Manages LSP client instances, one per language.
+/// Composite key for the LSP client pool: one client per (language, project_root).
+#[derive(Hash, Eq, PartialEq, Clone, Debug)]
+pub struct LspKey {
+    pub language: String,
+    pub project_root: PathBuf,
+}
+
+impl LspKey {
+    pub fn new(language: &str, project_root: &Path) -> Self {
+        Self {
+            language: language.to_string(),
+            project_root: project_root.to_path_buf(),
+        }
+    }
+}
+
+/// Manages LSP client instances, one per (language, project_root) pair.
 ///
-/// Clients are lazily started on first use and cached. If a client's
-/// workspace root changes (e.g. project switch), the old client is
-/// shut down and a new one started.
+/// Clients are lazily started on first use and cached. When the pool
+/// reaches `max_clients`, the least-recently-used client is evicted.
 pub struct LspManager {
-    clients: Mutex<HashMap<String, Arc<LspClient>>>,
-    /// Per-language startup barrier: concurrent callers for the same language
+    clients: Mutex<HashMap<LspKey, Arc<LspClient>>>,
+    /// Tracks last access time for LRU eviction.
+    last_used: Mutex<HashMap<LspKey, Instant>>,
+    /// Per-key startup barrier: concurrent callers for the same key
     /// wait on a `watch` channel. The first caller sends `true` on success or
     /// `false` on failure; late arrivals always see the final value.
     ///
     /// Uses `std::sync::Mutex` (not tokio) so it can be locked in `Drop`
     /// guards, which are synchronous. The lock is never held across `await`
     /// points — only for brief HashMap insert/remove operations.
-    starting: StdMutex<HashMap<String, tokio::sync::watch::Receiver<Option<bool>>>>,
+    starting: StdMutex<HashMap<LspKey, tokio::sync::watch::Receiver<Option<bool>>>>,
+    /// Maximum number of concurrent LSP clients before LRU eviction kicks in.
+    max_clients: usize,
 }
 
 impl Default for LspManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl std::fmt::Display for LspKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}@{}", self.language, self.project_root.display())
     }
 }
 
@@ -41,8 +68,8 @@ impl Default for LspManager {
 /// This prevents a stale closed-channel entry from accumulating in the map
 /// when `do_start` is cancelled mid-flight by a tool timeout.
 struct StartingCleanup<'a> {
-    starting: &'a StdMutex<HashMap<String, tokio::sync::watch::Receiver<Option<bool>>>>,
-    language: String,
+    starting: &'a StdMutex<HashMap<LspKey, tokio::sync::watch::Receiver<Option<bool>>>>,
+    key: LspKey,
 }
 
 impl Drop for StartingCleanup<'_> {
@@ -54,7 +81,7 @@ impl Drop for StartingCleanup<'_> {
         // between the timeout firing and this Drop executing, so in practice
         // this always removes the stale entry and never removes a live one.
         if let Ok(mut map) = self.starting.lock() {
-            map.remove(&self.language);
+            map.remove(&self.key);
         }
     }
 }
@@ -63,7 +90,9 @@ impl LspManager {
     pub fn new() -> Self {
         Self {
             clients: Mutex::new(HashMap::new()),
+            last_used: Mutex::new(HashMap::new()),
             starting: StdMutex::new(HashMap::new()),
+            max_clients: 5,
         }
     }
 
@@ -80,12 +109,26 @@ impl LspManager {
         language: &str,
         workspace_root: &Path,
     ) -> Result<Arc<LspClient>> {
+        let key = LspKey::new(language, workspace_root);
+
         // Fast path: cache hit.
         {
             let clients = self.clients.lock().await;
-            if let Some(client) = clients.get(language) {
-                if client.is_alive() && client.workspace_root == workspace_root {
-                    return Ok(client.clone());
+            if let Some(client) = clients.get(&key) {
+                if client.is_alive() {
+                    // Update last_used outside clients lock to avoid deadlock.
+                    drop(clients);
+                    self.last_used
+                        .lock()
+                        .await
+                        .insert(key.clone(), Instant::now());
+                    // Re-fetch since we dropped the lock (another task could have
+                    // evicted it, but that's extremely unlikely and we'd just
+                    // fall through to the slow path).
+                    let clients = self.clients.lock().await;
+                    if let Some(client) = clients.get(&key) {
+                        return Ok(client.clone());
+                    }
                 }
             }
         }
@@ -96,22 +139,49 @@ impl LspManager {
             anyhow::anyhow!("No LSP server configured for language: {}", language)
         })?;
 
+        // LRU eviction: if at capacity, shut down the least-recently-used client.
+        {
+            let clients = self.clients.lock().await;
+            if clients.len() >= self.max_clients {
+                let last_used = self.last_used.lock().await;
+                if let Some(oldest_key) = last_used
+                    .iter()
+                    .min_by_key(|(_, t)| *t)
+                    .map(|(k, _)| k.clone())
+                {
+                    drop(last_used);
+                    let evict_client = clients.get(&oldest_key).cloned();
+                    drop(clients);
+                    // Remove and shut down outside the lock.
+                    {
+                        let mut clients = self.clients.lock().await;
+                        clients.remove(&oldest_key);
+                    }
+                    self.last_used.lock().await.remove(&oldest_key);
+                    if let Some(old) = evict_client {
+                        tracing::info!("LRU evicting LSP client: {}", oldest_key);
+                        let _ = old.shutdown().await;
+                    }
+                }
+            }
+        }
+
         // Slow path: need to start (or wait for someone else starting).
-        // Use a per-language watch channel: the first caller creates a sender,
+        // Use a per-key watch channel: the first caller creates a sender,
         // concurrent callers clone the receiver and wait. Unlike Notify, watch
         // channels never lose signals — late subscribers always see the value.
         let mut rx_opt = None;
         let tx_opt;
         {
             let mut starting = self.starting.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(existing_rx) = starting.get(language) {
-                // Someone else is already starting this language — grab a receiver.
+            if let Some(existing_rx) = starting.get(&key) {
+                // Someone else is already starting this key — grab a receiver.
                 rx_opt = Some(existing_rx.clone());
                 tx_opt = None;
             } else {
                 // We're the first — create the channel and register.
                 let (tx, rx) = tokio::sync::watch::channel(None);
-                starting.insert(language.to_string(), rx);
+                starting.insert(key.clone(), rx);
                 tx_opt = Some(tx);
             }
         }
@@ -126,8 +196,8 @@ impl LspManager {
             // holding it while calling do_start would deadlock.
             {
                 let clients = self.clients.lock().await;
-                if let Some(client) = clients.get(language) {
-                    if client.is_alive() && client.workspace_root == workspace_root {
+                if let Some(client) = clients.get(&key) {
+                    if client.is_alive() {
                         return Ok(client.clone());
                     }
                 }
@@ -137,13 +207,13 @@ impl LspManager {
             let (tx, rx) = tokio::sync::watch::channel(None);
             {
                 let mut starting = self.starting.lock().unwrap_or_else(|e| e.into_inner());
-                starting.insert(language.to_string(), rx);
+                starting.insert(key.clone(), rx);
             }
-            return self.do_start(language, workspace_root, config, tx).await;
+            return self.do_start(&key, config, tx).await;
         }
 
         // We're the starter.
-        self.do_start(language, workspace_root, config, tx_opt.expect("tx_opt is always Some when rx_opt is None — set in the same exclusive branch above"))
+        self.do_start(&key, config, tx_opt.expect("tx_opt is always Some when rx_opt is None — set in the same exclusive branch above"))
             .await
     }
 
@@ -154,8 +224,7 @@ impl LspManager {
     /// cancellation** (tool timeout dropping the future mid-flight).
     async fn do_start(
         &self,
-        language: &str,
-        workspace_root: &Path,
+        key: &LspKey,
         config: LspServerConfig,
         tx: tokio::sync::watch::Sender<Option<bool>>,
     ) -> Result<Arc<LspClient>> {
@@ -163,18 +232,18 @@ impl LspManager {
         // when this function returns or is cancelled.
         let _cleanup = StartingCleanup {
             starting: &self.starting,
-            language: language.to_string(),
+            key: key.clone(),
         };
 
-        // Evict dead/stale client if present.
+        // Evict dead client if present.
         // Remove from map first and release the lock, THEN shut down.
         // Calling shutdown().await while holding the clients lock would block
-        // all other get_or_start callers (any language) for up to 35 seconds.
+        // all other get_or_start callers for up to 35 seconds.
         let stale_client = {
             let mut clients = self.clients.lock().await;
-            if let Some(client) = clients.get(language) {
-                if !client.is_alive() || client.workspace_root != workspace_root {
-                    clients.remove(language)
+            if let Some(client) = clients.get(key) {
+                if !client.is_alive() {
+                    clients.remove(key)
                 } else {
                     None
                 }
@@ -193,8 +262,13 @@ impl LspManager {
                 // Insert into cache BEFORE signalling waiters.
                 {
                     let mut clients = self.clients.lock().await;
-                    clients.insert(language.to_string(), new_client.clone());
+                    clients.insert(key.clone(), new_client.clone());
                 }
+                // Update last_used.
+                self.last_used
+                    .lock()
+                    .await
+                    .insert(key.clone(), Instant::now());
                 // Signal success. The `starting` entry is removed by _cleanup
                 // when this function returns.
                 let _ = tx.send(Some(true));
@@ -209,37 +283,49 @@ impl LspManager {
         }
     }
 
-    pub async fn get(&self, language: &str) -> Option<Arc<LspClient>> {
+    pub async fn get(&self, language: &str, project_root: &Path) -> Option<Arc<LspClient>> {
+        let key = LspKey::new(language, project_root);
         let clients = self.clients.lock().await;
-        clients.get(language).filter(|c| c.is_alive()).cloned()
+        clients.get(&key).filter(|c| c.is_alive()).cloned()
     }
 
     /// Shut down all active LSP servers.
     pub async fn shutdown_all(&self) {
         let mut clients = self.clients.lock().await;
-        for (lang, client) in clients.drain() {
-            tracing::info!("Shutting down LSP for: {}", lang);
+        for (key, client) in clients.drain() {
+            tracing::info!("Shutting down LSP for: {}", key);
             match client.shutdown().await {
-                Ok(()) => tracing::debug!("LSP server shut down cleanly: {}", lang),
-                Err(e) => tracing::warn!("Error shutting down LSP for {}: {}", lang, e),
+                Ok(()) => tracing::debug!("LSP server shut down cleanly: {}", key),
+                Err(e) => tracing::warn!("Error shutting down LSP for {}: {}", key, e),
             }
         }
+        self.last_used.lock().await.clear();
     }
 
-    /// List currently active languages.
+    /// List currently active languages (deduplicated).
     pub async fn active_languages(&self) -> Vec<String> {
         let clients = self.clients.lock().await;
-        clients
+        let mut langs: Vec<String> = clients
             .iter()
             .filter(|(_, c)| c.is_alive())
-            .map(|(lang, _)| lang.clone())
-            .collect()
+            .map(|(key, _)| key.language.clone())
+            .collect();
+        langs.sort();
+        langs.dedup();
+        langs
     }
 
-    /// Notify all active LSP clients that a file was modified on disk by a write tool.
+    /// Notify LSP clients whose project_root is an ancestor of the changed file.
     /// Each client silently skips the file if it doesn't have it open.
     pub async fn notify_file_changed(&self, path: &std::path::Path) {
-        let clients: Vec<_> = self.clients.lock().await.values().cloned().collect();
+        let clients: Vec<_> = self
+            .clients
+            .lock()
+            .await
+            .iter()
+            .filter(|(key, _)| path.starts_with(&key.project_root))
+            .map(|(_, client)| client.clone())
+            .collect();
         for client in clients {
             if client.is_alive() {
                 let _ = client.did_change(path).await;
@@ -264,12 +350,13 @@ impl LspManager {
         config: LspServerConfig,
     ) -> Result<Arc<LspClient>> {
         let workspace_root = config.workspace_root.clone();
+        let key = LspKey::new(language, &workspace_root);
 
         // Fast path
         {
             let clients = self.clients.lock().await;
-            if let Some(client) = clients.get(language) {
-                if client.is_alive() && client.workspace_root == workspace_root {
+            if let Some(client) = clients.get(&key) {
+                if client.is_alive() {
                     return Ok(client.clone());
                 }
             }
@@ -280,12 +367,12 @@ impl LspManager {
         let tx_opt;
         {
             let mut starting = self.starting.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(existing_rx) = starting.get(language) {
+            if let Some(existing_rx) = starting.get(&key) {
                 rx_opt = Some(existing_rx.clone());
                 tx_opt = None;
             } else {
                 let (tx, rx) = tokio::sync::watch::channel(None);
-                starting.insert(language.to_string(), rx);
+                starting.insert(key.clone(), rx);
                 tx_opt = Some(tx);
             }
         }
@@ -294,8 +381,8 @@ impl LspManager {
             let _ = rx.wait_for(|v| v.is_some()).await;
             {
                 let clients = self.clients.lock().await;
-                if let Some(client) = clients.get(language) {
-                    if client.is_alive() && client.workspace_root == workspace_root {
+                if let Some(client) = clients.get(&key) {
+                    if client.is_alive() {
                         return Ok(client.clone());
                     }
                 }
@@ -303,12 +390,12 @@ impl LspManager {
             let (tx, rx) = tokio::sync::watch::channel(None);
             {
                 let mut starting = self.starting.lock().unwrap_or_else(|e| e.into_inner());
-                starting.insert(language.to_string(), rx);
+                starting.insert(key.clone(), rx);
             }
-            return self.do_start(language, &workspace_root, config, tx).await;
+            return self.do_start(&key, config, tx).await;
         }
 
-        self.do_start(language, &workspace_root, config, tx_opt.expect("tx_opt is always Some when rx_opt is None — set in the same exclusive branch above"))
+        self.do_start(&key, config, tx_opt.expect("tx_opt is always Some when rx_opt is None — set in the same exclusive branch above"))
             .await
     }
 }
@@ -347,7 +434,7 @@ mod tests {
     async fn manager_starts_empty() {
         let mgr = LspManager::new();
         assert!(mgr.active_languages().await.is_empty());
-        assert!(mgr.get("rust").await.is_none());
+        assert!(mgr.get("rust", Path::new("/tmp")).await.is_none());
     }
 
     #[tokio::test]
@@ -461,5 +548,32 @@ mod tests {
         // After shutdown, the client should be dead
         assert!(!client.is_alive());
         assert!(mgr.active_languages().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn same_language_different_roots_get_separate_clients() {
+        let key1 = LspKey::new("rust", Path::new("/project-a"));
+        let key2 = LspKey::new("rust", Path::new("/project-b"));
+        assert_ne!(key1, key2);
+
+        // HashMap correctly distinguishes them
+        let mut map: HashMap<LspKey, &str> = HashMap::new();
+        map.insert(key1.clone(), "client-a");
+        map.insert(key2.clone(), "client-b");
+        assert_eq!(map.get(&key1), Some(&"client-a"));
+        assert_eq!(map.get(&key2), Some(&"client-b"));
+    }
+
+    #[test]
+    fn lsp_key_same_language_same_root_is_equal() {
+        let k1 = LspKey::new("typescript", Path::new("/workspace/mcp-server"));
+        let k2 = LspKey::new("typescript", Path::new("/workspace/mcp-server"));
+        assert_eq!(k1, k2);
+    }
+
+    #[test]
+    fn lsp_key_display() {
+        let key = LspKey::new("rust", Path::new("/my/project"));
+        assert_eq!(format!("{}", key), "rust@/my/project");
     }
 }

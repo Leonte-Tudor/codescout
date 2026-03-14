@@ -2820,7 +2820,7 @@ async fn tag_external_path(
     if let Some(discovered) = crate::library::discovery::discover_library_root(path) {
         let name = discovered.name.clone();
         let mut inner = agent.inner.write().await;
-        if let Some(project) = inner.active_project.as_mut() {
+        if let Some(project) = inner.active_project_mut() {
             project.library_registry.register(
                 discovered.name,
                 discovered.path,
@@ -6338,7 +6338,7 @@ fn main() {
         let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
         {
             let mut inner = agent.inner.write().await;
-            let project = inner.active_project.as_mut().unwrap();
+            let project = inner.active_project_mut().unwrap();
             project.library_registry.register(
                 "mylib".to_string(),
                 lib_dir.path().to_path_buf(),
@@ -6360,7 +6360,7 @@ fn main() {
         let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
         {
             let mut inner = agent.inner.write().await;
-            let project = inner.active_project.as_mut().unwrap();
+            let project = inner.active_project_mut().unwrap();
             project.library_registry.register(
                 "alpha".to_string(),
                 lib1.path().to_path_buf(),
@@ -6390,7 +6390,7 @@ fn main() {
         let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
         {
             let mut inner = agent.inner.write().await;
-            let project = inner.active_project.as_mut().unwrap();
+            let project = inner.active_project_mut().unwrap();
             project.library_registry.register(
                 "mylib".to_string(),
                 lib_dir.path().to_path_buf(),
@@ -6410,7 +6410,7 @@ fn main() {
         let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
         {
             let mut inner = agent.inner.write().await;
-            let project = inner.active_project.as_mut().unwrap();
+            let project = inner.active_project_mut().unwrap();
             project.library_registry.register(
                 "alpha".to_string(),
                 lib1.path().to_path_buf(),
@@ -6501,7 +6501,7 @@ fn main() {
             .unwrap();
         {
             let mut inner = agent.inner.write().await;
-            let project = inner.active_project.as_mut().unwrap();
+            let project = inner.active_project_mut().unwrap();
             project.library_registry.register(
                 "testlib".to_string(),
                 lib_dir.path().to_path_buf(),
@@ -6541,7 +6541,7 @@ fn main() {
             .unwrap();
         {
             let mut inner = agent.inner.write().await;
-            let project = inner.active_project.as_mut().unwrap();
+            let project = inner.active_project_mut().unwrap();
             project.library_registry.register(
                 "testlib".to_string(),
                 lib_dir.path().to_path_buf(),
@@ -6583,7 +6583,7 @@ fn main() {
             .unwrap();
         {
             let mut inner = agent.inner.write().await;
-            let project = inner.active_project.as_mut().unwrap();
+            let project = inner.active_project_mut().unwrap();
             project.library_registry.register(
                 "testlib".to_string(),
                 lib_dir.path().to_path_buf(),
@@ -6629,7 +6629,7 @@ fn main() {
             .unwrap();
         {
             let mut inner = agent.inner.write().await;
-            let project = inner.active_project.as_mut().unwrap();
+            let project = inner.active_project_mut().unwrap();
             project.library_registry.register(
                 "testlib".to_string(),
                 lib_dir.path().to_path_buf(),
@@ -6677,7 +6677,7 @@ fn main() {
             .unwrap();
         {
             let mut inner = agent.inner.write().await;
-            let project = inner.active_project.as_mut().unwrap();
+            let project = inner.active_project_mut().unwrap();
             project.library_registry.register(
                 "testlib".to_string(),
                 lib_dir.path().to_path_buf(),

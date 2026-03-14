@@ -25,7 +25,7 @@ impl Tool for ListLibraries {
 
     async fn call(&self, _input: Value, ctx: &ToolContext) -> Result<Value> {
         let inner = ctx.agent.inner.read().await;
-        let project = inner.active_project.as_ref().ok_or_else(|| {
+        let project = inner.active_project().ok_or_else(|| {
             super::RecoverableError::with_hint(
                 "No active project. Use activate_project first.",
                 "Call activate_project(\"/path/to/project\") to set the active project.",
@@ -141,7 +141,7 @@ impl Tool for RegisterLibrary {
         // Register and save
         {
             let mut inner = ctx.agent.inner.write().await;
-            let project = inner.active_project.as_mut().ok_or_else(|| {
+            let project = inner.active_project_mut().ok_or_else(|| {
                 super::RecoverableError::with_hint(
                     "No active project.",
                     "Call activate_project first.",
@@ -252,7 +252,7 @@ mod tests {
         let ctx = project_ctx().await;
         {
             let mut inner = ctx.agent.inner.write().await;
-            let project = inner.active_project.as_mut().unwrap();
+            let project = inner.active_project_mut().unwrap();
             project.library_registry.register(
                 "serde".into(),
                 PathBuf::from("/tmp/serde"),

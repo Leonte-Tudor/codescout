@@ -216,7 +216,7 @@ impl Tool for ReadFile {
         // Determine source tag
         let source_tag = {
             let inner = ctx.agent.inner.read().await;
-            if let Some(project) = &inner.active_project {
+            if let Some(project) = inner.active_project() {
                 if let Some(lib) = project.library_registry.is_library_path(&resolved) {
                     format!("lib:{}", lib.name)
                 } else {

@@ -43,6 +43,10 @@ impl Tool for SemanticSearch {
                     "type": "boolean",
                     "default": false,
                     "description": "If true, also search semantic memories and include them in results tagged with source='memory'."
+                },
+                "project": {
+                    "type": "string",
+                    "description": "Filter results to a specific project ID (e.g. 'mcp-server'). Default: all projects."
                 }
             }
         })
@@ -53,11 +57,15 @@ impl Tool for SemanticSearch {
         let query = super::require_str_param(&input, "query")?;
         let limit = input["limit"].as_u64().unwrap_or(10) as usize;
         let include_memories = parse_bool_param(&input["include_memories"]);
+        let project_filter = input
+            .get("project")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let guard = OutputGuard::from_input(&input);
 
         let (root, model, library_registry) = {
             let inner = ctx.agent.inner.read().await;
-            let p = inner.active_project.as_ref().ok_or_else(|| {
+            let p = inner.active_project().ok_or_else(|| {
                 super::RecoverableError::with_hint(
                     "No active project. Use activate_project first.",
                     "Call activate_project(\"/path/to/project\") to set the active project.",
@@ -101,6 +109,7 @@ impl Tool for SemanticSearch {
                 limit,
                 &scope2,
                 &library_registry2,
+                project_filter.as_deref(),
             )?;
             let memory_results = if include_memories {
                 let conn = crate::embed::index::open_db(&root2)?;
@@ -214,7 +223,7 @@ impl Tool for SemanticSearch {
         // Check for stale libraries
         let stale = {
             let inner = ctx.agent.inner.read().await;
-            if let Some(p) = &inner.active_project {
+            if let Some(p) = inner.active_project() {
                 p.library_registry
                     .stale_libraries()
                     .into_iter()
@@ -279,7 +288,7 @@ impl Tool for IndexProject {
 
             let (root, lib_path) = {
                 let inner = ctx.agent.inner.read().await;
-                let project = inner.active_project.as_ref().ok_or_else(|| {
+                let project = inner.active_project().ok_or_else(|| {
                     crate::tools::RecoverableError::with_hint(
                         "No active project. Use activate_project first.",
                         "Call activate_project(\"/path/to/project\") to set the active project.",
@@ -303,7 +312,7 @@ impl Tool for IndexProject {
 
             {
                 let mut inner = ctx.agent.inner.write().await;
-                let project = inner.active_project.as_mut().unwrap();
+                let project = inner.active_project_mut().unwrap();
                 if let Some(entry) = project.library_registry.lookup_mut(lib_name) {
                     entry.indexed = true;
                     if let Some(ver) = &current_version {
@@ -486,7 +495,7 @@ impl Tool for IndexStatus {
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
         let (root, model, drift_enabled) = {
             let inner = ctx.agent.inner.read().await;
-            let p = inner.active_project.as_ref().ok_or_else(|| {
+            let p = inner.active_project().ok_or_else(|| {
                 super::RecoverableError::with_hint(
                     "No active project. Use activate_project first.",
                     "Call activate_project(\"/path/to/project\") to set the active project.",
@@ -897,6 +906,7 @@ mod tests {
             end_line: 1,
             file_hash: "abc".to_string(),
             source: "project".to_string(),
+            project_id: "root".to_string(),
         };
         index::insert_chunk(&conn, &chunk, &[0.1, 0.2, 0.3]).unwrap();
         index::upsert_file_hash(&conn, "test.rs", "abc", None).unwrap();
@@ -1041,6 +1051,16 @@ mod tests {
         assert_eq!(schema["properties"]["include_memories"]["type"], "boolean");
     }
 
+    #[test]
+    fn semantic_search_schema_has_project() {
+        let schema = SemanticSearch.input_schema();
+        let props = schema["properties"].as_object().unwrap();
+        assert!(
+            props.contains_key("project"),
+            "schema should have project param"
+        );
+    }
+
     #[tokio::test]
     async fn index_status_includes_by_source() {
         let (dir, ctx) = project_ctx().await;
@@ -1055,6 +1075,7 @@ mod tests {
             end_line: 1,
             file_hash: "abc".to_string(),
             source: "project".to_string(),
+            project_id: "root".to_string(),
         };
         index::insert_chunk(&conn, &chunk, &[0.1, 0.2, 0.3]).unwrap();
         index::upsert_file_hash(&conn, "test.rs", "abc", None).unwrap();
@@ -1182,7 +1203,7 @@ mod tests {
         let (_dir, ctx) = drift_enabled_ctx().await;
         let root = {
             let inner = ctx.agent.inner.read().await;
-            inner.active_project.as_ref().unwrap().root.clone()
+            inner.active_project().unwrap().root.clone()
         };
         let conn = crate::embed::index::open_db(&root).unwrap();
         crate::embed::index::upsert_drift_report(&conn, "a.rs", 0.5, 0.8, Some("fn x()"), 1, 0)
@@ -1205,7 +1226,7 @@ mod tests {
         let (_dir, ctx) = drift_enabled_ctx().await;
         let root = {
             let inner = ctx.agent.inner.read().await;
-            inner.active_project.as_ref().unwrap().root.clone()
+            inner.active_project().unwrap().root.clone()
         };
         let conn = crate::embed::index::open_db(&root).unwrap();
         crate::embed::index::upsert_drift_report(&conn, "a.rs", 0.5, 0.8, None, 1, 0).unwrap();

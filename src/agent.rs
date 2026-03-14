@@ -9,6 +9,7 @@ use tokio::sync::RwLock;
 use crate::config::project::ProjectConfig;
 use crate::library::registry::LibraryRegistry;
 use crate::memory::MemoryStore;
+use crate::workspace::{discover_projects, DiscoveredProject, Project, ProjectState, Workspace};
 
 /// Shared agent state — cloned into each tool invocation.
 /// Cached embedder: `(model_name, embedder)` — invalidated on model change.
@@ -64,11 +65,27 @@ pub struct Agent {
 }
 
 pub struct AgentInner {
-    pub active_project: Option<ActiveProject>,
+    pub workspace: Option<Workspace>,
     pub project_explicitly_activated: bool,
     pub home_root: Option<PathBuf>,
 }
 
+impl AgentInner {
+    /// Convenience: get `&ActiveProject` from the focused workspace project.
+    pub fn active_project(&self) -> Option<&ActiveProject> {
+        self.workspace.as_ref()?.focused_active()?.as_active()
+    }
+
+    /// Convenience: get `&mut ActiveProject` from the focused workspace project.
+    pub fn active_project_mut(&mut self) -> Option<&mut ActiveProject> {
+        self.workspace
+            .as_mut()?
+            .focused_active_mut()?
+            .as_active_mut()
+    }
+}
+
+#[derive(Clone)]
 pub struct ActiveProject {
     pub root: PathBuf,
     pub config: ProjectConfig,
@@ -83,35 +100,71 @@ pub struct ActiveProject {
 
 impl Agent {
     pub async fn new(project: Option<PathBuf>) -> Result<Self> {
-        let (active_project, home_root) = if let Some(root) = project {
+        let (workspace, home_root) = if let Some(root) = project {
             let config = ProjectConfig::load_or_default(&root)?;
             let memory = MemoryStore::open(&root)?;
             let private_memory = MemoryStore::open_private(&root)?;
             let registry_path = root.join(".codescout").join("libraries.json");
             let library_registry = LibraryRegistry::load(&registry_path).unwrap_or_default();
             let home = root.clone();
-            (
-                Some(ActiveProject {
-                    root,
-                    config,
-                    memory,
-                    private_memory,
-                    library_registry,
-                    dirty_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
-                }),
-                Some(home),
-            )
+
+            let active = ActiveProject {
+                root: root.clone(),
+                config,
+                memory,
+                private_memory,
+                library_registry,
+                dirty_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            };
+
+            // Discover sub-projects; root project is always included
+            let discovered = discover_projects(&root, 3, &[]);
+            let mut projects: Vec<Project> = Vec::new();
+
+            // Find if the root project was discovered (relative_root == ".")
+            let mut root_found = false;
+            for dp in discovered {
+                if dp.relative_root == PathBuf::from(".") {
+                    root_found = true;
+                    projects.push(Project {
+                        discovered: dp,
+                        state: ProjectState::Activated(Box::new(active.clone())),
+                    });
+                } else {
+                    projects.push(Project::new_dormant(dp));
+                }
+            }
+
+            // If root was not discovered (e.g. no manifest), synthesize it
+            if !root_found {
+                let root_dp = DiscoveredProject {
+                    id: "root".to_string(),
+                    relative_root: PathBuf::from("."),
+                    languages: vec![],
+                    manifest: None,
+                };
+                projects.insert(
+                    0,
+                    Project {
+                        discovered: root_dp,
+                        state: ProjectState::Activated(Box::new(active)),
+                    },
+                );
+            }
+
+            let ws = Workspace::new(root, projects);
+            (Some(ws), Some(home))
         } else {
             (None, None)
         };
 
         // A project provided at startup (via --project or CWD) is treated as explicitly
         // activated — the server operator already chose the write target.
-        let project_explicitly_activated = active_project.is_some();
+        let project_explicitly_activated = workspace.is_some();
 
         Ok(Self {
             inner: Arc::new(RwLock::new(AgentInner {
-                active_project,
+                workspace,
                 project_explicitly_activated,
                 home_root,
             })),
@@ -123,25 +176,61 @@ impl Agent {
         })
     }
 
-    /// Activate a project by path, replacing the current active project.
+    /// Activate a project by path, replacing the current workspace.
     pub async fn activate(&self, root: PathBuf) -> Result<()> {
         let config = ProjectConfig::load_or_default(&root)?;
         let memory = MemoryStore::open(&root)?;
         let private_memory = MemoryStore::open_private(&root)?;
         let registry_path = root.join(".codescout").join("libraries.json");
         let library_registry = LibraryRegistry::load(&registry_path).unwrap_or_default();
-        let mut inner = self.inner.write().await;
-        if inner.home_root.is_none() {
-            inner.home_root = Some(root.clone());
-        }
-        inner.active_project = Some(ActiveProject {
-            root,
+
+        let active = ActiveProject {
+            root: root.clone(),
             config,
             memory,
             private_memory,
             library_registry,
             dirty_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
-        });
+        };
+
+        // Discover sub-projects
+        let discovered = discover_projects(&root, 3, &[]);
+        let mut projects: Vec<Project> = Vec::new();
+        let mut root_found = false;
+        for dp in discovered {
+            if dp.relative_root == PathBuf::from(".") {
+                root_found = true;
+                projects.push(Project {
+                    discovered: dp,
+                    state: ProjectState::Activated(Box::new(active.clone())),
+                });
+            } else {
+                projects.push(Project::new_dormant(dp));
+            }
+        }
+        if !root_found {
+            let root_dp = DiscoveredProject {
+                id: "root".to_string(),
+                relative_root: PathBuf::from("."),
+                languages: vec![],
+                manifest: None,
+            };
+            projects.insert(
+                0,
+                Project {
+                    discovered: root_dp,
+                    state: ProjectState::Activated(Box::new(active)),
+                },
+            );
+        }
+
+        let ws = Workspace::new(root.clone(), projects);
+
+        let mut inner = self.inner.write().await;
+        if inner.home_root.is_none() {
+            inner.home_root = Some(root);
+        }
+        inner.workspace = Some(ws);
         inner.project_explicitly_activated = true;
         // Clear cached embedder — new project may use a different model
         *self.cached_embedder.lock().await = None;
@@ -171,23 +260,54 @@ impl Agent {
     pub async fn require_project_root(&self) -> Result<PathBuf> {
         let inner = self.inner.read().await;
         inner
-            .active_project
+            .workspace
             .as_ref()
-            .map(|p| p.root.clone())
             .ok_or_else(|| {
                 crate::tools::RecoverableError::with_hint(
                     "No active project. Use activate_project first.",
                     "Call activate_project(\"/path/to/project\") to set the active project.",
                 )
-                .into()
             })
+            .and_then(|ws| {
+                ws.focused_project_root().map_err(|_| {
+                    crate::tools::RecoverableError::with_hint(
+                        "No active project. Use activate_project first.",
+                        "Call activate_project(\"/path/to/project\") to set the active project.",
+                    )
+                })
+            })
+            .map_err(Into::into)
+    }
+
+    /// Switch focus to a project by ID within the current workspace.
+    pub async fn switch_focus(&self, project_id: &str) -> Result<()> {
+        let mut inner = self.inner.write().await;
+        inner
+            .workspace
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("No active workspace"))?
+            .set_focused(project_id)
+    }
+
+    /// Resolve root: explicit project ID > file hint > focused project.
+    pub async fn resolve_root(
+        &self,
+        project: Option<&str>,
+        file_hint: Option<&std::path::Path>,
+    ) -> Result<PathBuf> {
+        let inner = self.inner.read().await;
+        inner
+            .workspace
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No active project"))?
+            .resolve_root(project, file_hint)
     }
 
     /// Mark a file as written-but-not-yet-indexed.
     /// Called by every write tool after modifying a source file.
     pub async fn mark_file_dirty(&self, path: PathBuf) {
         let inner = self.inner.read().await;
-        if let Some(p) = &inner.active_project {
+        if let Some(p) = inner.active_project() {
             p.dirty_files
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -199,8 +319,7 @@ impl Agent {
     pub async fn dirty_file_count(&self) -> usize {
         let inner = self.inner.read().await;
         inner
-            .active_project
-            .as_ref()
+            .active_project()
             .map(|p| {
                 p.dirty_files
                     .lock()
@@ -216,13 +335,13 @@ impl Agent {
         &self,
     ) -> Option<Arc<std::sync::Mutex<std::collections::HashSet<PathBuf>>>> {
         let inner = self.inner.read().await;
-        inner.active_project.as_ref().map(|p| p.dirty_files.clone())
+        inner.active_project().map(|p| p.dirty_files.clone())
     }
 
     /// Get the current project status for building server instructions.
     pub async fn project_status(&self) -> Option<crate::prompts::ProjectStatus> {
         let inner = self.inner.read().await;
-        let project = inner.active_project.as_ref()?;
+        let project = inner.active_project()?;
         let memories = project.memory.list().unwrap_or_default();
         let has_index = crate::embed::index::project_db_path(&project.root).exists();
         let github_enabled = project.config.security.github_enabled;
@@ -249,7 +368,7 @@ impl Agent {
     /// Get optional project root (None if no project active).
     pub async fn project_root(&self) -> Option<PathBuf> {
         let inner = self.inner.read().await;
-        inner.active_project.as_ref().map(|p| p.root.clone())
+        inner.active_project().map(|p| p.root.clone())
     }
 
     pub async fn is_project_explicitly_activated(&self) -> bool {
@@ -264,7 +383,7 @@ impl Agent {
     /// True when the active project is the home project (or both are None).
     pub async fn is_home(&self) -> bool {
         let inner = self.inner.read().await;
-        match (&inner.active_project, &inner.home_root) {
+        match (inner.active_project(), &inner.home_root) {
             (Some(project), Some(home)) => project.root == *home,
             (None, None) => true,
             _ => false,
@@ -275,7 +394,7 @@ impl Agent {
     /// Populates `library_paths` from the active project's library registry.
     pub async fn security_config(&self) -> crate::util::path_security::PathSecurityConfig {
         let inner = self.inner.read().await;
-        match &inner.active_project {
+        match inner.active_project() {
             Some(p) => {
                 let mut config = p.config.security.to_path_security_config();
                 config.library_paths = p
@@ -298,8 +417,7 @@ impl Agent {
     {
         let inner = self.inner.read().await;
         let project = inner
-            .active_project
-            .as_ref()
+            .active_project()
             .ok_or_else(|| anyhow::anyhow!("No active project. Use activate_project first."))?;
         f(project)
     }
@@ -309,8 +427,7 @@ impl Agent {
         self.inner
             .read()
             .await
-            .active_project
-            .as_ref()
+            .active_project()
             .map(|p| p.library_registry.clone())
     }
 
@@ -318,8 +435,7 @@ impl Agent {
     pub async fn save_library_registry(&self) -> Result<()> {
         let inner = self.inner.read().await;
         let project = inner
-            .active_project
-            .as_ref()
+            .active_project()
             .ok_or_else(|| anyhow::anyhow!("No active project"))?;
         let path = project.root.join(".codescout").join("libraries.json");
         project.library_registry.save(&path)
@@ -330,7 +446,7 @@ impl Agent {
     pub async fn should_nudge(&self, lib_name: &str) -> bool {
         // Check persistent dismissal and indexed status
         let inner = self.inner.read().await;
-        if let Some(p) = &inner.active_project {
+        if let Some(p) = inner.active_project() {
             if let Some(entry) = p.library_registry.lookup(lib_name) {
                 if entry.nudge_dismissed || entry.indexed {
                     return false;
@@ -353,7 +469,7 @@ impl Agent {
     /// without requiring a session restart.
     pub async fn reload_config_if_project_toml(&self, path: &std::path::Path) {
         let mut inner = self.inner.write().await;
-        if let Some(ref mut p) = inner.active_project {
+        if let Some(ref mut p) = inner.active_project_mut() {
             let toml_path = p.root.join(".codescout").join("project.toml");
             if path == toml_path {
                 if let Ok(fresh) = crate::config::project::ProjectConfig::load_or_default(&p.root) {
@@ -376,7 +492,7 @@ impl Agent {
     pub async fn maybe_auto_index_library(&self, lib_name: &str) {
         let (should_index, root, entry_path) = {
             let inner = self.inner.read().await;
-            let Some(p) = &inner.active_project else {
+            let Some(p) = inner.active_project() else {
                 return;
             };
             if !p.config.libraries.auto_index {
@@ -406,7 +522,7 @@ impl Agent {
             match result {
                 Ok(()) => {
                     let mut inner = self_clone.inner.write().await;
-                    if let Some(p) = inner.active_project.as_mut() {
+                    if let Some(p) = inner.active_project_mut() {
                         if let Some(entry) = p.library_registry.lookup_mut(&name) {
                             entry.indexed = true;
                         }
