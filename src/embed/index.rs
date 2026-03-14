@@ -48,13 +48,10 @@ pub fn lib_db_path(project_root: &Path, lib_name: &str) -> PathBuf {
 }
 
 /// Sanitize a library name for use as a filename.
-/// Replaces `/` and `\` with `--`, lowercases on case-insensitive OS.
+/// Replaces `/` and `\` with `--`, always lowercases for cross-platform consistency.
 fn sanitize_lib_name(name: &str) -> String {
-    let mut s = name.replace(['/', '\\'], "--");
-    if cfg!(any(target_os = "macos", target_os = "windows")) {
-        s = s.to_lowercase();
-    }
-    s
+    let s = name.replace(['/', '\\'], "--");
+    s.to_lowercase()
 }
 
 /// Migrate from old single-DB layout to new embeddings/ directory layout.
@@ -161,10 +158,14 @@ fn extract_library_chunks_from_project_db(project_root: &Path) -> Result<()> {
 fn copy_chunks_to_lib_db(src_conn: &Connection, lib_path: &Path, source: &str) -> Result<()> {
     use rusqlite::OptionalExtension;
     let lib_conn = Connection::open(lib_path)?;
+    lib_conn.busy_timeout(std::time::Duration::from_secs(5))?;
 
     // Create the same schema as project.db
     lib_conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS chunks (
+        "
+        PRAGMA journal_mode = WAL;
+
+        CREATE TABLE IF NOT EXISTS chunks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             file_path TEXT NOT NULL,
             language TEXT NOT NULL,
@@ -1097,15 +1098,12 @@ fn search_scoped_vec0(
     }
 }
 
-/// Search across project and/or library embedding databases.
-/// Opens relevant DBs per scope, runs cosine search on each, merges results by score.
-/// When `project_filter` is `Some(id)`, only chunks whose `project_id` matches are returned.
 pub fn search_multi_db(
     project_root: &Path,
     query_embedding: &[f32],
     limit: usize,
     scope: &crate::library::scope::Scope,
-    _library_registry: &crate::library::registry::LibraryRegistry,
+    library_registry: &crate::library::registry::LibraryRegistry,
     project_filter: Option<&str>,
 ) -> Result<Vec<SearchResult>> {
     let mut db_paths: Vec<PathBuf> = Vec::new();
@@ -1115,6 +1113,26 @@ pub fn search_multi_db(
             db_paths.push(project_db_path(project_root));
         }
         crate::library::scope::Scope::Library(name) => {
+            if library_registry.lookup(name).is_none() {
+                let available: Vec<&str> = library_registry
+                    .all()
+                    .iter()
+                    .map(|e| e.name.as_str())
+                    .collect();
+                let hint = if available.is_empty() {
+                    "No libraries are registered. Use register_library to add one.".to_string()
+                } else {
+                    format!(
+                        "Available libraries: {}. Use one of these as the scope.",
+                        available.join(", ")
+                    )
+                };
+                return Err(crate::tools::RecoverableError::with_hint(
+                    format!("library '{}' is not registered", name),
+                    hint,
+                )
+                .into());
+            }
             let p = lib_db_path(project_root, name);
             if p.exists() {
                 db_paths.push(p);
@@ -3935,10 +3953,14 @@ mod tests {
         let registry = crate::library::registry::LibraryRegistry::new();
         let query_emb = vec![0.0f32; 384]; // dummy embedding
 
-        // Search for a non-existent library — should return empty, not error
+        // Search for a non-existent library — should return a RecoverableError, not Ok
         let scope = crate::library::scope::Scope::Library("nonexistent".to_string());
-        let results = search_multi_db(root, &query_emb, 10, &scope, &registry, None).unwrap();
-        assert!(results.is_empty());
+        let err = search_multi_db(root, &query_emb, 10, &scope, &registry, None).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("nonexistent"),
+            "error should name the missing library, got: {msg}"
+        );
     }
 
     #[test]

@@ -55,6 +55,11 @@ fn default_idle_timeout() -> u64 {
     600
 }
 
+/// Return the canonical path to the workspace config file for a given project root.
+pub fn workspace_config_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join(".codescout").join("workspace.toml")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

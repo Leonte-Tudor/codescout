@@ -13,7 +13,9 @@ impl Tool for ListLibraries {
 
     fn description(&self) -> &str {
         "List registered libraries and their index status. \
-         Use scope='lib:<name>' in semantic_search, find_symbol, or index_project to target a library."
+         Use scope='lib:<name>' in semantic_search, find_symbol, or index_project to target a library. \
+         Version staleness detection currently supports Cargo.lock (Rust) and package-lock.json (npm/Node); \
+         Go, Python, and Yarn lockfiles are not yet tracked."
     }
 
     fn input_schema(&self) -> Value {

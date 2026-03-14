@@ -150,19 +150,22 @@ impl Tool for ReadFile {
                     .into());
                 }
                 let content = extract_lines(&text, s as usize, e as usize);
-                // Large extracted sections → @file_* (plain text) so the agent can
-                // grep/browse without a cascading @tool_* chain.
-                if crate::tools::exceeds_inline_limit(&content) {
-                    let file_id = ctx.output_buffer.store_file(path.to_string(), content);
-                    return Ok(json!({ "file_id": file_id, "total_lines": total_lines }));
-                }
+                // Buffer refs: always return inline. The slice is bounded by the
+                // requested range, and re-buffering a portion of a buffer under a new
+                // handle creates a cascading chain with no benefit.
                 return Ok(json!({ "content": content, "total_lines": total_lines }));
             }
-            // Full content — store as @file_* if large so the agent can navigate it
-            // as plain text rather than triggering another @tool_* re-buffering cycle.
+            // Full buffer content — never re-buffer (circular: same content, new ID,
+            // no benefit). If too large to return inline, tell the agent to paginate.
             if crate::tools::exceeds_inline_limit(&text) {
-                let file_id = ctx.output_buffer.store_file(path.to_string(), text);
-                return Ok(json!({ "file_id": file_id, "total_lines": total_lines }));
+                return Ok(json!({
+                    "total_lines": total_lines,
+                    "hint": format!(
+                        "Buffer has {total_lines} lines. \
+                         Use start_line and end_line to read specific sections \
+                         (e.g. start_line=1, end_line=100)."
+                    ),
+                }));
             }
             return Ok(json!({ "content": text, "total_lines": total_lines }));
         }
@@ -482,7 +485,16 @@ impl Tool for ListDir {
             "required": ["path"],
             "properties": {
                 "path": { "type": "string" },
-                "recursive": { "type": "boolean", "default": false },
+                "recursive": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Descend into subdirectories without depth limit. In exploring mode, auto-capped at depth 3 — use max_depth to override."
+                },
+                "max_depth": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Max directory depth to descend (1 = direct children only, the default). Overrides recursive."
+                },
                 "detail_level": { "type": "string", "description": "Output detail: omit for compact (default), 'full' for all entries" },
                 "offset": { "type": "integer", "description": "Skip this many entries (focused mode pagination)" },
                 "limit": { "type": "integer", "description": "Max entries per page (focused mode, default 50)" }
@@ -502,11 +514,28 @@ impl Tool for ListDir {
             &security,
         )?;
         let recursive = parse_bool_param(&input["recursive"]);
-        let max_depth = if recursive { None } else { Some(1) };
+        let explicit_max_depth = input["max_depth"].as_u64().map(|d| d as usize);
         let guard = OutputGuard::from_input(&input);
 
+        // Determine requested depth:
+        //   explicit max_depth > recursive=true (unlimited) > default (1 level)
+        let requested_depth: Option<usize> = match explicit_max_depth {
+            Some(d) => Some(d),
+            None if recursive => None, // unlimited
+            None => Some(1),
+        };
+
+        // In exploring mode, cap unlimited recursive walks at depth 3 to
+        // avoid returning hundreds of deeply-nested paths as an unstructured flat list.
+        let depth_auto_capped = guard.mode == OutputMode::Exploring && requested_depth.is_none();
+        let walker_depth: Option<usize> = if depth_auto_capped {
+            Some(3)
+        } else {
+            requested_depth
+        };
+
         let walker = ignore::WalkBuilder::new(&path)
-            .max_depth(max_depth)
+            .max_depth(walker_depth)
             .hidden(true)
             .git_ignore(true)
             .build()
@@ -538,25 +567,34 @@ impl Tool for ListDir {
 
         let hit_early_cap = cap.is_some() && entries.len() > guard.max_results;
 
+        let overflow_hint = if depth_auto_capped {
+            "Depth auto-capped at 3 in exploring mode. Use max_depth=N for a specific depth, or detail_level='full' for unlimited depth.".to_string()
+        } else {
+            "Use a more specific path or set recursive=false".to_string()
+        };
+
         let (entries, overflow) = if hit_early_cap {
             // We collected max_results+1, truncate and report overflow
             entries.truncate(guard.max_results);
             let overflow = OverflowInfo {
                 shown: guard.max_results,
                 total: guard.max_results + 1, // at least this many
-                hint: "Use a more specific path or set recursive=false".to_string(),
+                hint: overflow_hint,
                 next_offset: None,
                 by_file: None,
                 by_file_overflow: 0,
             };
             (entries, Some(overflow))
         } else {
-            guard.cap_items(entries, "Use a more specific path or set recursive=false")
+            guard.cap_items(entries, &overflow_hint)
         };
 
         let mut result = json!({ "entries": entries });
         if let Some(ov) = overflow {
             result["overflow"] = OutputGuard::overflow_json(&ov);
+        }
+        if depth_auto_capped {
+            result["depth_capped"] = json!(3);
         }
         Ok(result)
     }
@@ -1111,25 +1149,42 @@ fn format_list_dir(val: &Value) -> String {
     };
     let mut out = format!("{} — {} entries\n", dir_display, names.len());
 
-    let max_name_len = short_names.iter().map(|n| n.len()).max().unwrap_or(0);
-    let col_width = max_name_len + 2;
-    let num_cols = (78 / col_width).max(1);
+    // Tree mode: any entry spans multiple path levels after prefix stripping.
+    // Detected by a '/' in the stripped name (excluding a lone trailing slash on dirs).
+    let is_tree = short_names
+        .iter()
+        .any(|n| n.trim_end_matches('/').contains('/'));
 
     out.push('\n');
-    for (i, name) in short_names.iter().enumerate() {
-        if i % num_cols == 0 {
-            out.push_str("  ");
-        }
-        out.push_str(name);
-        if (i + 1) % num_cols != 0 && i + 1 < short_names.len() {
-            let padding = col_width - name.len();
-            for _ in 0..padding {
-                out.push(' ');
+    if is_tree {
+        format_list_dir_tree_body(&short_names, &mut out);
+    } else {
+        let max_name_len = short_names.iter().map(|n| n.len()).max().unwrap_or(0);
+        let col_width = max_name_len + 2;
+        let num_cols = (78 / col_width).max(1);
+
+        for (i, name) in short_names.iter().enumerate() {
+            if i % num_cols == 0 {
+                out.push_str("  ");
+            }
+            out.push_str(name);
+            if (i + 1) % num_cols != 0 && i + 1 < short_names.len() {
+                let padding = col_width - name.len();
+                for _ in 0..padding {
+                    out.push(' ');
+                }
+            }
+            if (i + 1) % num_cols == 0 && i + 1 < short_names.len() {
+                out.push('\n');
             }
         }
-        if (i + 1) % num_cols == 0 && i + 1 < short_names.len() {
-            out.push('\n');
-        }
+    }
+
+    if let Some(depth) = val.get("depth_capped").and_then(|v| v.as_u64()) {
+        out.push_str(&format!(
+            "\n[depth capped at {} — use max_depth=N or detail_level='full' for deeper]\n",
+            depth
+        ));
     }
 
     if let Some(overflow) = val.get("overflow") {
@@ -1140,6 +1195,22 @@ fn format_list_dir(val: &Value) -> String {
     }
 
     out
+}
+
+/// Renders entries with indentation based on path depth when the listing
+/// spans multiple directory levels. Each level adds two spaces of indent.
+fn format_list_dir_tree_body(short_names: &[&str], out: &mut String) {
+    for name in short_names {
+        let path_part = name.trim_end_matches('/');
+        let depth = path_part.matches('/').count();
+        let indent = "  ".repeat(depth + 1);
+        let base = path_part.rsplit('/').next().unwrap_or(path_part);
+        if name.ends_with('/') {
+            out.push_str(&format!("{}{}/\n", indent, base));
+        } else {
+            out.push_str(&format!("{}{}\n", indent, base));
+        }
+    }
 }
 
 fn common_path_prefix(paths: &[&str]) -> String {
@@ -1915,6 +1986,99 @@ mod tests {
         let entries = result["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 5);
         assert!(result.get("overflow").is_none());
+    }
+
+    #[tokio::test]
+    async fn list_dir_max_depth_limits_descent() {
+        let ctx = test_ctx().await;
+        let dir = tempdir().unwrap();
+        // depth1/depth2/depth3/deep.rs — should not appear with max_depth=2
+        let deep = dir.path().join("depth1").join("depth2").join("depth3");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("deep.rs"), "").unwrap();
+        std::fs::write(dir.path().join("depth1").join("shallow.rs"), "").unwrap();
+
+        let result = ListDir
+            .call(
+                json!({ "path": dir.path().to_str().unwrap(), "max_depth": 2 }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let entries: Vec<&str> = result["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(entries.iter().any(|e| e.ends_with("shallow.rs")));
+        assert!(!entries.iter().any(|e| e.ends_with("deep.rs")));
+        // max_depth is explicit — no auto-cap note
+        assert!(result.get("depth_capped").is_none());
+    }
+
+    #[tokio::test]
+    async fn list_dir_recursive_exploring_caps_at_depth_3() {
+        let ctx = test_ctx().await;
+        let dir = tempdir().unwrap();
+        // Build a 4-level deep tree
+        let deep = dir.path().join("a").join("b").join("c").join("d");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("leaf.rs"), "").unwrap();
+        std::fs::write(dir.path().join("a").join("b").join("mid.rs"), "").unwrap();
+
+        let result = ListDir
+            .call(
+                json!({ "path": dir.path().to_str().unwrap(), "recursive": true }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let entries: Vec<&str> = result["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        // depth-3 file should appear (a/b/mid.rs is at depth 3 from root)
+        assert!(entries.iter().any(|e| e.ends_with("mid.rs")));
+        // depth-4 file should be cut off (a/b/c/d/leaf.rs)
+        assert!(!entries.iter().any(|e| e.ends_with("leaf.rs")));
+        // depth_capped marker should be set
+        assert_eq!(result["depth_capped"], json!(3));
+    }
+
+    #[tokio::test]
+    async fn list_dir_recursive_focused_no_depth_cap() {
+        let ctx = test_ctx().await;
+        let dir = tempdir().unwrap();
+        let deep = dir.path().join("a").join("b").join("c").join("d");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("leaf.rs"), "").unwrap();
+
+        let result = ListDir
+            .call(
+                json!({
+                    "path": dir.path().to_str().unwrap(),
+                    "recursive": true,
+                    "detail_level": "full"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let entries: Vec<&str> = result["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        // In focused mode no depth cap — leaf at depth 4 should appear
+        assert!(entries.iter().any(|e| e.ends_with("leaf.rs")));
+        assert!(result.get("depth_capped").is_none());
     }
 
     // ── SearchPattern ─────────────────────────────────────────────────────────
@@ -4022,6 +4186,51 @@ mod tests {
     fn list_dir_missing_entries() {
         let val = serde_json::json!({});
         assert_eq!(format_list_dir(&val), "");
+    }
+
+    #[test]
+    fn list_dir_tree_mode_renders_indented() {
+        let val = serde_json::json!({
+            "entries": [
+                "src/lsp/",
+                "src/lsp/client.rs",
+                "src/lsp/ops.rs",
+                "src/tools/",
+                "src/tools/file.rs",
+                "src/main.rs"
+            ]
+        });
+        let result = format_list_dir(&val);
+        assert!(result.starts_with("src — 6 entries"));
+        // Tree mode: entries on individual lines with indentation
+        assert!(result.contains("  lsp/\n"));
+        assert!(result.contains("    client.rs\n"));
+        assert!(result.contains("    ops.rs\n"));
+        assert!(result.contains("  tools/\n"));
+        assert!(result.contains("    file.rs\n"));
+        assert!(result.contains("  main.rs\n"));
+        // No full paths
+        assert!(!result.contains("src/lsp/client.rs"));
+    }
+
+    #[test]
+    fn list_dir_depth_capped_note() {
+        let val = serde_json::json!({
+            "entries": ["src/a.rs"],
+            "depth_capped": 3
+        });
+        let result = format_list_dir(&val);
+        assert!(result.contains("depth capped at 3"));
+        assert!(result.contains("max_depth"));
+    }
+
+    #[test]
+    fn list_dir_no_depth_capped_note_when_absent() {
+        let val = serde_json::json!({
+            "entries": ["src/a.rs", "src/b.rs"]
+        });
+        let result = format_list_dir(&val);
+        assert!(!result.contains("depth capped"));
     }
 
     // --- common_path_prefix tests ---

@@ -98,6 +98,18 @@ pub struct ActiveProject {
     pub dirty_files: Arc<std::sync::Mutex<std::collections::HashSet<PathBuf>>>,
 }
 
+/// Read `workspace.toml` (if present) and return the discovery depth and exclude list.
+/// Falls back to defaults (depth=3, no excludes) when the file is missing or unparseable.
+fn load_discover_settings(root: &std::path::Path) -> (usize, Vec<String>) {
+    let ws_path = crate::config::workspace::workspace_config_path(root);
+    if let Ok(content) = std::fs::read_to_string(&ws_path) {
+        if let Ok(ws) = toml::from_str::<crate::config::workspace::WorkspaceConfig>(&content) {
+            return (ws.workspace.discovery_max_depth, ws.exclude_projects);
+        }
+    }
+    (3, vec![])
+}
+
 impl Agent {
     pub async fn new(project: Option<PathBuf>) -> Result<Self> {
         let (workspace, home_root) = if let Some(root) = project {
@@ -117,8 +129,10 @@ impl Agent {
                 dirty_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             };
 
-            // Discover sub-projects; root project is always included
-            let discovered = discover_projects(&root, 3, &[]);
+            // Discover sub-projects; root project is always included.
+            // Respect depth and exclude settings from workspace.toml if it exists.
+            let (discover_depth, discover_exclude) = load_discover_settings(&root);
+            let discovered = discover_projects(&root, discover_depth, &discover_exclude);
             let mut projects: Vec<Project> = Vec::new();
 
             // Find if the root project was discovered (relative_root == ".")
@@ -138,7 +152,7 @@ impl Agent {
             // If root was not discovered (e.g. no manifest), synthesize it
             if !root_found {
                 let root_dp = DiscoveredProject {
-                    id: "root".to_string(),
+                    id: crate::workspace::ROOT_PROJECT_ID.to_string(),
                     relative_root: PathBuf::from("."),
                     languages: vec![],
                     manifest: None,
@@ -193,8 +207,10 @@ impl Agent {
             dirty_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         };
 
-        // Discover sub-projects
-        let discovered = discover_projects(&root, 3, &[]);
+        // Discover sub-projects.
+        // Respect depth and exclude settings from workspace.toml if it exists.
+        let (discover_depth, discover_exclude) = load_discover_settings(&root);
+        let discovered = discover_projects(&root, discover_depth, &discover_exclude);
         let mut projects: Vec<Project> = Vec::new();
         let mut root_found = false;
         for dp in discovered {
@@ -210,7 +226,7 @@ impl Agent {
         }
         if !root_found {
             let root_dp = DiscoveredProject {
-                id: "root".to_string(),
+                id: crate::workspace::ROOT_PROJECT_ID.to_string(),
                 relative_root: PathBuf::from("."),
                 languages: vec![],
                 manifest: None,
@@ -365,10 +381,15 @@ impl Agent {
         })
     }
 
-    /// Get optional project root (None if no project active).
+    /// Get optional project root (None if no workspace is active).
+    ///
+    /// Uses the same `focused_project_root()` path as `require_project_root()` so
+    /// that read tools and write tools always agree on the project root — even when
+    /// the focused project is still `Dormant` (i.e. after `switch_focus` to a
+    /// sub-project that hasn't been fully loaded yet).
     pub async fn project_root(&self) -> Option<PathBuf> {
         let inner = self.inner.read().await;
-        inner.active_project().map(|p| p.root.clone())
+        inner.workspace.as_ref()?.focused_project_root().ok()
     }
 
     pub async fn is_project_explicitly_activated(&self) -> bool {
@@ -429,6 +450,17 @@ impl Agent {
             .await
             .active_project()
             .map(|p| p.library_registry.clone())
+    }
+
+    /// Return the list of discovered projects from the active workspace.
+    /// Returns an empty vec if no workspace is active.
+    pub async fn discovered_projects(&self) -> Vec<crate::workspace::DiscoveredProject> {
+        let inner = self.inner.read().await;
+        inner
+            .workspace
+            .as_ref()
+            .map(|ws| ws.projects.iter().map(|p| p.discovered.clone()).collect())
+            .unwrap_or_default()
     }
 
     /// Persist the library registry to disk.
@@ -864,5 +896,64 @@ mod tests {
             })
             .await
             .unwrap();
+    }
+
+    /// Regression test: after switch_focus to a sub-project, project_root() must
+    /// return the sub-project root (same as require_project_root), not None.
+    ///
+    /// Uses the three-query sandwich:
+    ///   1. Baseline: both methods agree on root
+    ///   2. switch_focus to Dormant sub-project
+    ///   3. Assert project_root() == sub-project root (not None — the bug)
+    #[tokio::test]
+    async fn project_root_matches_require_project_root_after_switch_focus() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+
+        // Create a sub-project with a package.json so discover_projects picks it up
+        let sub = root.join("packages").join("api");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(
+            sub.join("package.json"),
+            r#"{"name":"api","scripts":{"build":"tsc"}}"#,
+        )
+        .unwrap();
+
+        let agent = Agent::new(Some(root.clone())).await.unwrap();
+
+        // Step 1: baseline — both methods agree on root
+        let pr = agent.project_root().await;
+        let rpr = agent.require_project_root().await.unwrap();
+        assert!(
+            pr.is_some(),
+            "project_root() must be Some before switch_focus"
+        );
+        assert_eq!(
+            pr.unwrap(),
+            rpr,
+            "project_root() and require_project_root() must agree before switch_focus"
+        );
+
+        // Step 2: switch focus to the Dormant sub-project
+        agent.switch_focus("api").await.unwrap();
+
+        // Step 3: both methods must still agree — and return the sub-project root.
+        // Before the fix, project_root() returned None here (Dormant bug).
+        let pr_after = agent.project_root().await;
+        let rpr_after = agent.require_project_root().await.unwrap();
+        assert!(
+            pr_after.is_some(),
+            "project_root() must not be None after switch_focus (Dormant-project bug)"
+        );
+        assert_eq!(
+            pr_after.unwrap(),
+            rpr_after,
+            "project_root() and require_project_root() must agree after switch_focus"
+        );
+        assert!(
+            rpr_after.ends_with("packages/api"),
+            "focused root must be the sub-project: {:?}",
+            rpr_after
+        );
     }
 }

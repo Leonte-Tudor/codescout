@@ -309,10 +309,21 @@ impl Tool for IndexProject {
             // Read current version from lockfile and write back
             let versions = crate::library::versions::resolve_dependency_versions(&root);
             let current_version = crate::library::versions::find_version(&versions, lib_name);
+            if current_version.is_none() {
+                tracing::debug!(
+                    "version tracking not available for library '{}' — unsupported lockfile ecosystem",
+                    lib_name
+                );
+            }
 
             {
                 let mut inner = ctx.agent.inner.write().await;
-                let project = inner.active_project_mut().unwrap();
+                let project = inner.active_project_mut().ok_or_else(|| {
+                    crate::tools::RecoverableError::with_hint(
+                        "No active project. Use activate_project first.",
+                        "Call activate_project(\"/path/to/project\") to set the active project.",
+                    )
+                })?;
                 if let Some(entry) = project.library_registry.lookup_mut(lib_name) {
                     entry.indexed = true;
                     if let Some(ver) = &current_version {
@@ -1500,36 +1511,34 @@ mod tests {
 
     #[tokio::test]
     async fn semantic_search_uses_scope_for_library_search() {
-        // Scope "lib:nonexistent" should succeed gracefully (empty results, no error).
-        // This tests that SemanticSearch wires scope through to search_multi_db rather
-        // than using the old source_filter path.
+        // Scope "lib:nonexistent" should return a RecoverableError (not a panic or fatal error).
+        // Since issue #5, search_multi_db validates the scope against the registry, so an
+        // unregistered library name returns a RecoverableError before any embedder call.
         let (_dir, ctx) = project_ctx().await;
         let tool = SemanticSearch;
-        // No embedder is configured, so embed_one will fail before we reach the DB.
-        // We only need to verify the scope parsing / wiring doesn't panic or error
-        // in an unexpected way — RecoverableError for missing embedder is acceptable.
-        // To avoid the embedder call entirely, we set up a dummy project DB.
         let result = tool
             .call(
                 json!({"query": "runtime", "scope": "lib:nonexistent"}),
                 &ctx,
             )
             .await;
-        // Either Ok (empty results from nonexistent lib) or a RecoverableError about
-        // the missing embedder — both are acceptable. A plain anyhow error from
-        // source_filter/search_scoped code paths would be a regression.
+        // Acceptable outcomes:
+        // 1. RecoverableError about unregistered library name
+        // 2. RecoverableError about missing embedder / model config
+        // A plain anyhow error from source_filter/search_scoped code paths would be a regression.
         match &result {
             Ok(val) => {
-                // If we somehow get results (e.g. future test embedder), total >= 0
                 assert!(val["total"].as_u64().unwrap_or(0) == 0);
             }
             Err(e) => {
-                // Only acceptable error is about embedder / model config — not about
-                // a missing source_filter or broken DB path.
                 let msg = e.to_string();
                 assert!(
-                    msg.contains("model") || msg.contains("embed") || msg.contains("project"),
-                    "unexpected error (not embedder-related): {msg}"
+                    msg.contains("model")
+                        || msg.contains("embed")
+                        || msg.contains("project")
+                        || msg.contains("not registered")
+                        || msg.contains("registered"),
+                    "unexpected error (not embedder or registry-related): {msg}"
                 );
             }
         }

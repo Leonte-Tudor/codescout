@@ -1,5 +1,9 @@
 use std::path::{Path, PathBuf};
 
+/// Sentinel project ID used when no specific sub-project claims a file or
+/// when the root of the workspace has no build manifest.
+pub const ROOT_PROJECT_ID: &str = "root";
+
 /// A project discovered by manifest walk during onboarding.
 #[derive(Debug, Clone)]
 pub struct DiscoveredProject {
@@ -221,7 +225,7 @@ pub fn resolve_project_for_path<'a>(
 }
 
 /// Given a file path and a list of discovered projects, return the project ID.
-/// Falls back to "root" if no project claims the file.
+/// Falls back to `ROOT_PROJECT_ID` if no project claims the file.
 pub fn resolve_project_id(
     projects: &[DiscoveredProject],
     workspace_root: &Path,
@@ -229,7 +233,7 @@ pub fn resolve_project_id(
 ) -> String {
     resolve_project_for_path(projects, workspace_root, file_path)
         .map(|p| p.id.clone())
-        .unwrap_or_else(|| "root".to_string())
+        .unwrap_or_else(|| ROOT_PROJECT_ID.to_string())
 }
 
 /// State of a project within the workspace.
@@ -331,7 +335,9 @@ impl Workspace {
     }
 
     pub fn focused_active_mut(&mut self) -> Option<&mut Project> {
-        let id = self.focused.as_deref()?.to_string();
+        // borrow-checker: clone here to release the immutable borrow on self.focused
+        // before mutably iterating self.projects.
+        let id = self.focused.clone()?;
         self.projects.iter_mut().find(|p| p.discovered.id == id)
     }
 
@@ -524,7 +530,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let projects = vec![
             DiscoveredProject {
-                id: "root".into(),
+                id: ROOT_PROJECT_ID.into(),
                 relative_root: ".".into(),
                 languages: vec!["kotlin".into()],
                 manifest: Some("build.gradle.kts".into()),
@@ -551,7 +557,7 @@ mod tests {
             dir.path(),
             &dir.path().join("src/main/kotlin/App.kt"),
         );
-        assert_eq!(result.unwrap().id, "root");
+        assert_eq!(result.unwrap().id, ROOT_PROJECT_ID);
     }
 
     #[test]

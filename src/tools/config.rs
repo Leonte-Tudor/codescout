@@ -234,7 +234,7 @@ impl Tool for ProjectStatus {
         }
 
         // --- Workspace section ---
-        let workspace_toml_path = root.join(".codescout").join("workspace.toml");
+        let workspace_toml_path = crate::config::workspace::workspace_config_path(&root);
         let workspace_info = if workspace_toml_path.exists() {
             std::fs::read_to_string(&workspace_toml_path)
                 .ok()

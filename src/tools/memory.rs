@@ -352,7 +352,7 @@ async fn resolve_memory_dir(
         let project_id = project_param
             .map(|s| s.to_string())
             .or_else(|| ws.focused.clone())
-            .unwrap_or_else(|| "root".to_string());
+            .unwrap_or_else(|| crate::workspace::ROOT_PROJECT_ID.to_string());
         Ok(ws.memory_dir_for_project(&project_id))
     } else {
         // No workspace — fall back to the active project's memory dir.

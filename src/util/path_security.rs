@@ -220,19 +220,6 @@ pub fn validate_read_path(
         bail!("access denied: '{}' is in a protected location", raw);
     }
 
-    // Check if path is inside a registered library (read-only access).
-    // Note: validate_read_path has no project-root enforcement (unlike validate_write_path),
-    // so this check is currently a no-op for reads. It is included for documentation
-    // clarity and future-proofing if root enforcement is ever added to reads.
-    if !config.library_paths.is_empty()
-        && config
-            .library_paths
-            .iter()
-            .any(|lib| resolved.starts_with(lib))
-    {
-        return Ok(resolved);
-    }
-
     Ok(resolved)
 }
 
@@ -340,7 +327,7 @@ pub fn check_tool_access(tool_name: &str, config: &PathSecurityConfig) -> Result
             }
         }
         "create_file" | "edit_file" | "replace_symbol" | "insert_code" | "rename_symbol"
-        | "remove_symbol" => {
+        | "remove_symbol" | "register_library" => {
             if !config.file_write_enabled {
                 bail!(
                     "File write tools are disabled. Set security.file_write_enabled = true in .codescout/project.toml to enable."
@@ -953,6 +940,7 @@ mod tests {
             "replace_symbol",
             "insert_code",
             "rename_symbol",
+            "register_library",
         ] {
             assert!(
                 check_tool_access(tool, &config).is_err(),
@@ -960,6 +948,21 @@ mod tests {
                 tool
             );
         }
+    }
+
+    #[test]
+    fn register_library_disabled_when_file_write_false() {
+        let mut config = PathSecurityConfig::default();
+        config.file_write_enabled = false;
+        assert!(
+            check_tool_access("register_library", &config).is_err(),
+            "register_library should be blocked when file_write_enabled = false"
+        );
+        config.file_write_enabled = true;
+        assert!(
+            check_tool_access("register_library", &config).is_ok(),
+            "register_library should be allowed when file_write_enabled = true"
+        );
     }
 
     #[test]

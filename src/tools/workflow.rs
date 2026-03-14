@@ -277,7 +277,13 @@ struct GatheredContext {
 /// into the onboarding response causes "⚠ Large MCP response" warnings and
 /// duplicates CLAUDE.md that may already be in the agent's context. The agent
 /// reads these files via `read_file` during Phase 1 exploration.
-fn gather_project_context(root: &std::path::Path) -> GatheredContext {
+///
+/// `projects` is the already-discovered project list from the workspace, passed in
+/// to avoid a redundant `discover_projects` walk (the agent runs it at activation).
+fn gather_project_context(
+    root: &std::path::Path,
+    projects: Vec<crate::workspace::DiscoveredProject>,
+) -> GatheredContext {
     let mut ctx = GatheredContext::default();
 
     // README (try common names — record path but don't read content)
@@ -374,8 +380,9 @@ fn gather_project_context(root: &std::path::Path) -> GatheredContext {
         }
     }
 
-    // Discover sub-projects (depth 3, no exclusions)
-    ctx.projects = crate::workspace::discover_projects(root, 3, &Vec::new());
+    // Use the already-discovered project list passed by the caller to avoid
+    // a redundant filesystem walk (discover_projects is run at activation time).
+    ctx.projects = projects;
 
     ctx
 }
@@ -676,7 +683,7 @@ fn build_system_prompt_draft(
 
         // Load depends_on from workspace.toml if available
         if let Some(root) = project_root {
-            let ws_path = root.join(".codescout").join("workspace.toml");
+            let ws_path = crate::config::workspace::workspace_config_path(root);
             if let Ok(content) = std::fs::read_to_string(&ws_path) {
                 if let Ok(ws) =
                     toml::from_str::<crate::config::workspace::WorkspaceConfig>(&content)
@@ -988,11 +995,14 @@ impl Tool for Onboarding {
             false
         };
 
-        // Gather rich context from well-known project files
-        let gathered = gather_project_context(&root);
+        // Gather rich context from well-known project files.
+        // Pass the already-discovered project list from the workspace to avoid a
+        // redundant discover_projects walk (the agent runs it at activation time).
+        let discovered = ctx.agent.discovered_projects().await;
+        let gathered = gather_project_context(&root, discovered);
 
         // Create workspace.toml for multi-project repos
-        let workspace_config_path = config_dir.join("workspace.toml");
+        let workspace_config_path = crate::config::workspace::workspace_config_path(&root);
         if gathered.projects.len() > 1 && !workspace_config_path.exists() {
             let ws_config = crate::config::workspace::WorkspaceConfig {
                 workspace: crate::config::workspace::WorkspaceSection {
@@ -1022,7 +1032,7 @@ impl Tool for Onboarding {
 
         // Probe embedding index status (only opens existing DB, no network)
         let index_status = {
-            let db_path = root.join(".codescout").join("embeddings.db");
+            let db_path = crate::embed::index::project_db_path(&root);
             if db_path.exists() {
                 match crate::embed::index::open_db(&root)
                     .and_then(|conn| crate::embed::index::index_stats(&conn))
@@ -2429,7 +2439,7 @@ mod tests {
             "[package]\nname = \"test\"\nversion = \"0.1.0\"",
         )
         .unwrap();
-        let ctx = gather_project_context(dir.path());
+        let ctx = gather_project_context(dir.path(), vec![]);
         assert_eq!(ctx.readme_path.as_deref(), Some("README.md"));
         assert_eq!(ctx.build_file_name.as_deref(), Some("Cargo.toml"));
         assert!(!ctx.claude_md_exists);
@@ -2440,7 +2450,7 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".github/workflows")).unwrap();
         std::fs::write(dir.path().join(".github/workflows/ci.yml"), "name: CI").unwrap();
-        let ctx = gather_project_context(dir.path());
+        let ctx = gather_project_context(dir.path(), vec![]);
         assert_eq!(ctx.ci_files, vec![".github/workflows/ci.yml"]);
     }
 
@@ -2450,7 +2460,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src/main.rs"), "fn main() {}").unwrap();
         std::fs::create_dir_all(dir.path().join("tests")).unwrap();
-        let ctx = gather_project_context(dir.path());
+        let ctx = gather_project_context(dir.path(), vec![]);
         assert!(ctx.entry_points.contains(&"src/main.rs".to_string()));
         assert!(ctx.test_dirs.contains(&"tests".to_string()));
     }
@@ -2458,7 +2468,7 @@ mod tests {
     #[test]
     fn gather_context_handles_empty_project() {
         let dir = tempdir().unwrap();
-        let ctx = gather_project_context(dir.path());
+        let ctx = gather_project_context(dir.path(), vec![]);
         assert!(ctx.readme_path.is_none());
         assert!(ctx.build_file_name.is_none());
         assert!(!ctx.claude_md_exists);
@@ -4310,7 +4320,7 @@ mod tests {
             .await
             .unwrap();
 
-        let ws_path = root.join(".codescout").join("workspace.toml");
+        let ws_path = crate::config::workspace::workspace_config_path(&root);
         assert!(
             ws_path.exists(),
             "workspace.toml should be created for multi-project repos"
@@ -4348,7 +4358,7 @@ mod tests {
             .await
             .unwrap();
 
-        let ws_path = root.join(".codescout").join("workspace.toml");
+        let ws_path = crate::config::workspace::workspace_config_path(&root);
         assert!(
             !ws_path.exists(),
             "workspace.toml should NOT be created for single-project repos"
@@ -4467,7 +4477,7 @@ mod tests {
             .exists());
 
         // workspace.toml created
-        assert!(root.join(".codescout/workspace.toml").exists());
+        assert!(crate::config::workspace::workspace_config_path(&root).exists());
 
         // Instructions contain workspace sections
         let instructions = result["instructions"].as_str().unwrap();
