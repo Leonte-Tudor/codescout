@@ -594,6 +594,8 @@ fn build_system_prompt_draft(
     let mut draft = String::new();
     draft.push_str("# Project — Code Explorer Guidance\n\n");
 
+    let projects_slice = projects.unwrap_or(&[]);
+
     // Entry points section
     draft.push_str("## Entry Points\n");
     if entry_points.is_empty() {
@@ -644,33 +646,65 @@ fn build_system_prompt_draft(
         ));
     }
 
-    // Navigation strategy
-    draft.push_str("## Navigation Strategy\n");
-    draft.push_str("1. `memory(action=\"read\", topic=\"architecture\")` — orient yourself\n");
-    if !entry_points.is_empty() {
-        draft.push_str(&format!(
-            "2. `list_symbols(\"{}\")` — see main structure\n",
-            entry_points[0]
-        ));
+    // Navigation strategy — per-project subsections for multi-project workspaces
+    if projects_slice.len() > 1 {
+        draft.push_str("## Navigation Strategy\n\n");
+        draft.push_str("1. `memory(action=\"read\", topic=\"architecture\")` — orient yourself to the workspace\n");
+        draft.push_str(
+            "2. `semantic_search(\"your concept\")` — find relevant code across projects\n",
+        );
+        draft.push_str(
+            "3. `memory(action=\"recall\", query=\"...\")` — search memories by meaning\n\n",
+        );
+        draft.push_str("**Per-project navigation:**\n\n");
+        for p in projects_slice {
+            let langs = if p.languages.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", p.languages.join(", "))
+            };
+            draft.push_str(&format!("### {}{}\n", p.id, langs));
+            draft.push_str(&format!(
+                "1. `list_symbols(\"{}\")` — [fill in entry point during onboarding]\n",
+                p.relative_root.display()
+            ));
+            draft.push_str(&format!(
+                "2. `semantic_search(\"your concept\", scope=\"project:{}\")` — search within this project\n",
+                p.id
+            ));
+            draft.push_str(&format!(
+                "3. `memory(project: \"{}\", action=\"read\", topic=\"architecture\")` — project-specific knowledge\n\n",
+                p.id
+            ));
+        }
     } else {
-        draft.push_str("2. `list_symbols(\"src/\")` — see main structure\n");
+        draft.push_str("## Navigation Strategy\n");
+        draft.push_str("1. `memory(action=\"read\", topic=\"architecture\")` — orient yourself\n");
+        if !entry_points.is_empty() {
+            draft.push_str(&format!(
+                "2. `list_symbols(\"{}\")` — see main structure\n",
+                entry_points[0]
+            ));
+        } else {
+            draft.push_str("2. `list_symbols(\"src/\")` — see main structure\n");
+        }
+        draft.push_str("3. `semantic_search(\"your concept\")` — find relevant code\n");
+        draft.push_str("4. `find_symbol(\"Name\", include_body=true)` — read implementation\n");
+        draft.push_str(
+            "5. `memory(action=\"recall\", query=\"...\")` — search memories by meaning\n\n",
+        );
     }
-    draft.push_str("3. `semantic_search(\"your concept\")` — find relevant code\n");
-    draft.push_str("4. `find_symbol(\"Name\", include_body=true)` — read implementation\n");
-    draft
-        .push_str("5. `memory(action=\"recall\", query=\"...\")` — search memories by meaning\n\n");
 
     // Project rules — empty section for the LLM to fill from exploration
     draft.push_str("## Project Rules\n");
     draft.push_str("- [Fill from Phase 1 exploration: linting, formatting, commit conventions]\n");
 
     // Workspace projects table — only for multi-project repos
-    let projects = projects.unwrap_or(&[]);
-    if projects.len() > 1 {
+    if projects_slice.len() > 1 {
         draft.push_str("\n## Workspace Projects\n\n");
         draft.push_str("| Project | Root | Languages | Build |\n");
         draft.push_str("|---------|------|-----------|-------|\n");
-        for p in projects {
+        for p in projects_slice {
             draft.push_str(&format!(
                 "| {} | {} | {} | {} |\n",
                 p.id,
@@ -891,6 +925,8 @@ impl Tool for Onboarding {
                 .await?;
             let (has_config, has_onboarding_memory, memories, private_memories) = status;
             if has_config && has_onboarding_memory {
+                let per_project_memories = ctx.agent.workspace_project_memories().await;
+
                 let mut message = format!(
                     "Onboarding already performed. Available shared memories: {}. \
                      Use `memory(action=\"read\", topic=...)` to read relevant ones as needed for your current task. \
@@ -904,6 +940,12 @@ impl Tool for Onboarding {
                         private_memories.join(", ")
                     ));
                 }
+                if !per_project_memories.is_empty() {
+                    message.push_str(" Per-project memories (use `project: \"<id>\"` parameter):");
+                    for (id, topics) in &per_project_memories {
+                        message.push_str(&format!(" {}: {};", id, topics.join(", ")));
+                    }
+                }
                 let mut response = json!({
                     "onboarded": true,
                     "has_config": true,
@@ -913,6 +955,13 @@ impl Tool for Onboarding {
                 });
                 if !private_memories.is_empty() {
                     response["private_memories"] = json!(private_memories);
+                }
+                if !per_project_memories.is_empty() {
+                    let map: serde_json::Map<String, serde_json::Value> = per_project_memories
+                        .into_iter()
+                        .map(|(id, topics)| (id, json!(topics)))
+                        .collect();
+                    response["project_memories"] = serde_json::Value::Object(map);
                 }
                 return Ok(response);
             }
@@ -1018,11 +1067,19 @@ impl Tool for Onboarding {
                 projects: gathered
                     .projects
                     .iter()
-                    .map(|p| crate::config::workspace::ProjectEntry {
-                        id: p.id.clone(),
-                        root: p.relative_root.to_string_lossy().to_string(),
-                        languages: p.languages.clone(),
-                        depends_on: vec![],
+                    .map(|p| {
+                        let project_abs = root.join(&p.relative_root);
+                        let depends_on = crate::workspace::infer_depends_on(
+                            &project_abs,
+                            &root,
+                            &gathered.projects,
+                        );
+                        crate::config::workspace::ProjectEntry {
+                            id: p.id.clone(),
+                            root: p.relative_root.to_string_lossy().to_string(),
+                            languages: p.languages.clone(),
+                            depends_on,
+                        }
                     })
                     .collect(),
             };
@@ -2279,6 +2336,7 @@ mod tests {
     #[tokio::test]
     async fn onboarding_call_content_delivers_message_when_already_done() {
         let (_dir, ctx) = project_ctx().await;
+
         // First call does full onboarding (creates config + writes memory)
         Onboarding.call(json!({}), &ctx).await.unwrap();
 
@@ -2297,6 +2355,44 @@ mod tests {
         assert!(
             !text.contains("[?]"),
             "call_content must not emit [?] placeholder, got: {text:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn onboarding_status_includes_per_project_memories_for_workspace() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        setup_workspace_dirs(root);
+        let ctx = project_ctx_at(root).await;
+
+        // Full workspace onboarding — writes per-project onboarding memories
+        Onboarding.call(json!({}), &ctx).await.unwrap();
+
+        // Second call hits the already-onboarded fast path
+        let result = Onboarding.call(json!({}), &ctx).await.unwrap();
+
+        assert!(result["onboarded"].as_bool().unwrap_or(false));
+
+        // project_memories field is present and non-empty
+        let pm = &result["project_memories"];
+        assert!(
+            pm.is_object(),
+            "expected project_memories object, got: {pm}"
+        );
+        assert!(
+            !pm.as_object().unwrap().is_empty(),
+            "project_memories should be non-empty after workspace onboarding"
+        );
+
+        // Message mentions per-project memories and the project: param hint
+        let msg = result["message"].as_str().unwrap();
+        assert!(
+            msg.contains("Per-project memories"),
+            "message should mention per-project memories"
+        );
+        assert!(
+            msg.contains("project:"),
+            "message should include project scoping hint"
         );
     }
 
@@ -3484,6 +3580,91 @@ mod tests {
         assert!(draft.contains("## Key Abstractions"));
         assert!(draft.contains("## Navigation Strategy"));
         assert!(draft.contains("## Project Rules"));
+    }
+
+    #[test]
+    fn system_prompt_draft_single_project_nav_strategy_unchanged() {
+        // Single project: classic numbered list under ## Navigation Strategy
+        let langs = vec!["rust".to_string()];
+        let entries = vec!["src/main.rs".to_string()];
+        let draft = build_system_prompt_draft(&langs, &entries, None, None, &[]);
+        assert!(draft.contains("## Navigation Strategy\n"));
+        assert!(
+            draft.contains("list_symbols(\"src/main.rs\")"),
+            "single-project nav should use first entry point"
+        );
+        assert!(
+            !draft.contains("### "),
+            "single-project draft should not have per-project subsections"
+        );
+    }
+
+    #[test]
+    fn system_prompt_draft_multi_project_nav_strategy_has_subsections() {
+        use crate::workspace::DiscoveredProject;
+        let projects = vec![
+            DiscoveredProject {
+                id: "backend".to_string(),
+                relative_root: std::path::PathBuf::from("backend"),
+                languages: vec!["rust".to_string()],
+                manifest: Some("Cargo.toml".to_string()),
+            },
+            DiscoveredProject {
+                id: "frontend".to_string(),
+                relative_root: std::path::PathBuf::from("frontend"),
+                languages: vec!["typescript".to_string()],
+                manifest: Some("package.json".to_string()),
+            },
+        ];
+        let draft = build_system_prompt_draft(&[], &[], None, Some(&projects), &[]);
+        assert!(
+            draft.contains("### backend (rust)"),
+            "should have backend subsection"
+        );
+        assert!(
+            draft.contains("### frontend (typescript)"),
+            "should have frontend subsection"
+        );
+        assert!(
+            draft.contains("scope=\"project:backend\""),
+            "should have scoped semantic_search for backend"
+        );
+        assert!(
+            draft.contains("scope=\"project:frontend\""),
+            "should have scoped semantic_search for frontend"
+        );
+        assert!(
+            draft.contains("memory(project: \"backend\""),
+            "should have per-project memory hint for backend"
+        );
+        assert!(
+            draft.contains("list_symbols(\"backend\")"),
+            "should use project root as placeholder entry point"
+        );
+    }
+
+    #[test]
+    fn system_prompt_draft_multi_project_workspace_level_orient_step() {
+        use crate::workspace::DiscoveredProject;
+        let projects = vec![
+            DiscoveredProject {
+                id: "a".to_string(),
+                relative_root: std::path::PathBuf::from("a"),
+                languages: vec![],
+                manifest: None,
+            },
+            DiscoveredProject {
+                id: "b".to_string(),
+                relative_root: std::path::PathBuf::from("b"),
+                languages: vec![],
+                manifest: None,
+            },
+        ];
+        let draft = build_system_prompt_draft(&[], &[], None, Some(&projects), &[]);
+        assert!(
+            draft.contains("orient yourself to the workspace"),
+            "workspace-level orient step should be present"
+        );
     }
 
     #[tokio::test]
