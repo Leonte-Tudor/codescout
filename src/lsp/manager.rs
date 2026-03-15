@@ -12,6 +12,18 @@ use std::time::Instant;
 use anyhow::Result;
 use tokio::sync::Mutex;
 
+/// Return the idle TTL for a given language.
+///
+/// Kotlin's LSP takes 8–10 s to restart, so it gets a much longer idle window
+/// to avoid paying that cost after brief gaps in tool use. All other languages
+/// fall back to the caller-supplied global default.
+fn ttl_for_language(language: &str, global: Duration) -> Duration {
+    match language {
+        "kotlin" => Duration::from_secs(2 * 3600),
+        _ => global,
+    }
+}
+
 use super::client::{LspClient, LspServerConfig};
 use super::servers;
 
@@ -431,7 +443,7 @@ impl LspManager {
     /// Create a new `Arc<LspManager>` using the default idle TTL (20 minutes)
     /// and spawn a background eviction task.
     pub fn new_arc() -> Arc<Self> {
-        Self::new_arc_with_ttl(Duration::from_secs(20 * 60))
+        Self::new_arc_with_ttl(Duration::from_secs(30 * 60))
     }
 
     /// Create a new `Arc<LspManager>` with a custom idle TTL and spawn the
@@ -457,7 +469,7 @@ impl LspManager {
             let last_used = self.last_used.lock().await;
             last_used
                 .iter()
-                .filter(|(_, t)| now.duration_since(**t) > ttl)
+                .filter(|(k, t)| now.duration_since(**t) > ttl_for_language(&k.language, ttl))
                 .map(|(k, _)| k.clone())
                 .collect()
         };
@@ -637,6 +649,29 @@ mod tests {
     fn lsp_key_display() {
         let key = LspKey::new("rust", Path::new("/my/project"));
         assert_eq!(format!("{}", key), "rust@/my/project");
+    }
+
+    // --- Per-language TTL tests ---
+
+    #[test]
+    fn kotlin_gets_2h_ttl_regardless_of_global() {
+        let global = Duration::from_secs(30 * 60);
+        assert_eq!(
+            ttl_for_language("kotlin", global),
+            Duration::from_secs(2 * 3600)
+        );
+    }
+
+    #[test]
+    fn non_kotlin_languages_use_global_ttl() {
+        let global = Duration::from_secs(30 * 60);
+        for lang in &["rust", "typescript", "java", "python", "go"] {
+            assert_eq!(
+                ttl_for_language(lang, global),
+                global,
+                "expected global TTL for language: {lang}"
+            );
+        }
     }
 
     // --- Idle TTL eviction tests ---
