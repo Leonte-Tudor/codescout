@@ -56,6 +56,11 @@ When adding a feature commit to `experiments`, you MUST include documentation in
 **If a feature is removed from `experiments`** (reverted or abandoned), delete its page and
 remove its entry from `index.md` in the same commit.
 
+**The experimental docs stay on `experiments` only.** `master`'s `experimental/index.md`
+just points to the `experiments` branch on GitHub — it does not list features directly.
+This means no cherry-picking of docs to master; the full pages are visible to anyone
+browsing the experiments branch.
+
 ### Graduating a Feature (`experiments` → `master`)
 
 When cherry-picking a feature to `master`, use `--no-commit` to bundle the doc graduation
@@ -70,6 +75,9 @@ git cherry-pick --no-commit <sha>
 # 4. Remove the feature's entry from docs/manual/src/experimental/index.md
 git commit -m "feat(...): <description>"
 ```
+
+The experimental doc page already exists on `experiments` — step 1 is a `git mv`, not a
+rewrite. The ⚠ callout and the `experimental/index.md` entry are the only things to remove.
 
 **Rebase note:** Because the graduation commit on `master` includes additional doc changes,
 its patch differs from the original `experiments` commit. Git will **not** auto-skip it
