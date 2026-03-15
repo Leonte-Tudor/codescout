@@ -9,3 +9,4 @@ When a feature graduates to stable, its page moves into the main manual here.
 
 - [Hard gate for structural edits in `edit_file`](./edit-file-structural-gate.md) — `edit_file` now refuses multi-line edits containing definition keywords on LSP-supported languages; the bypass has been removed.
 - [Compact tool schemas & `activate_project` safety](./compact-schemas-and-activate-project-safety.md) — ~24% schema token reduction and a new Iron Law for safe cross-project navigation.
+- [Read-only default for `activate_project`](./activate-project-read-only.md) — non-home projects activate in read-only mode by default; pass `read_only: false` to enable writes.
