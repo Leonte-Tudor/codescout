@@ -20,3 +20,5 @@ Then register the locally built binary in your MCP config instead of the install
   reclaim memory, with per-language configurable timeouts
 - [Multi-Project Workspace Support](multi-project-workspace.md) — register and navigate
   multiple related projects from a single codescout instance
+- [Library Navigation Enhancements](library-navigation.md) — per-library embedding DBs,
+  version tracking, and `scope=` filtering across symbol and semantic tools
