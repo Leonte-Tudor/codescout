@@ -292,7 +292,7 @@ pub(crate) fn init_sqlite_vec() {
                 *const (),
                 unsafe extern "C" fn(
                     *mut rusqlite::ffi::sqlite3,
-                    *mut *const i8,
+                    *mut *mut i8,
                     *const rusqlite::ffi::sqlite3_api_routines,
                 ) -> i32,
             >(
@@ -784,8 +784,8 @@ pub fn insert_chunk(conn: &Connection, chunk: &CodeChunk, embedding: &[f32]) -> 
             chunk.file_path,
             chunk.language,
             chunk.content,
-            chunk.start_line,
-            chunk.end_line,
+            chunk.start_line as i64,
+            chunk.end_line as i64,
             chunk.file_hash,
             chunk.source,
             chunk.project_id,
@@ -967,8 +967,8 @@ pub fn search_scoped(
             file_path: row.get(0)?,
             language: row.get(1)?,
             content: row.get(2)?,
-            start_line: row.get(3)?,
-            end_line: row.get(4)?,
+            start_line: row.get::<_, i64>(3)? as usize,
+            end_line: row.get::<_, i64>(4)? as usize,
             source: row.get(5)?,
             score,
             project_id: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
@@ -1029,8 +1029,8 @@ fn search_scoped_vec0(
             file_path: row.get(0)?,
             language: row.get(1)?,
             content: row.get(2)?,
-            start_line: row.get(3)?,
-            end_line: row.get(4)?,
+            start_line: row.get::<_, i64>(3)? as usize,
+            end_line: row.get::<_, i64>(4)? as usize,
             source: row.get(5)?,
             score,
             project_id: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
@@ -1826,10 +1826,16 @@ pub struct IndexStats {
 
 /// Query index statistics from the database.
 pub fn index_stats(conn: &Connection) -> Result<IndexStats> {
-    let file_count: usize = conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?;
-    let chunk_count: usize = conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
+    let file_count: usize = conn.query_row("SELECT COUNT(*) FROM files", [], |r| {
+        r.get::<_, i64>(0).map(|v| v as usize)
+    })?;
+    let chunk_count: usize = conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| {
+        r.get::<_, i64>(0).map(|v| v as usize)
+    })?;
     let embedding_count: usize =
-        conn.query_row("SELECT COUNT(*) FROM chunk_embeddings", [], |r| r.get(0))?;
+        conn.query_row("SELECT COUNT(*) FROM chunk_embeddings", [], |r| {
+            r.get::<_, i64>(0).map(|v| v as usize)
+        })?;
     let model = get_meta(conn, "embed_model")?;
     let indexed_at = get_meta(conn, "last_indexed_at")?;
     Ok(IndexStats {
@@ -1858,8 +1864,8 @@ pub fn index_stats_by_source(
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
-            row.get::<_, usize>(1)?,
-            row.get::<_, usize>(2)?,
+            row.get::<_, i64>(1)? as usize,
+            row.get::<_, i64>(2)? as usize,
         ))
     })?;
     let mut map = std::collections::HashMap::new();

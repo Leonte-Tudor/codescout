@@ -47,7 +47,7 @@ git2 = "0.20"
 
 # Database — SQLite with bundled libsqlite3
 # sqlite-vec provides vec_distance_cosine for in-SQL similarity computation
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
 sqlite-vec = "0.1"
 
 # File system traversal (respects .gitignore)
