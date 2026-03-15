@@ -43,6 +43,45 @@ This applies to ALL unexpected tool behavior: `edit_file`, `rename_symbol`, `rep
 - **Cherry-pick to `master`** only after: all tests pass, clippy clean, manually verified via MCP (`cargo build --release` + `/mcp` restart).
 - Never commit directly to `master` for in-progress or exploratory work.
 
+### Documenting Features on `experiments`
+
+When adding a feature commit to `experiments`, you MUST include documentation in the same commit:
+
+1. Create `docs/manual/src/experimental/<feature-name>.md` — written as final user-facing
+   docs with a single `> ⚠ Experimental — may change without notice.` callout at the top.
+2. Add a line to `docs/manual/src/experimental/index.md` linking to the new page.
+
+**Only features, not bug fixes.** Bug fixes need no experimental doc.
+
+**If a feature is removed from `experiments`** (reverted or abandoned), delete its page and
+remove its entry from `index.md` in the same commit.
+
+### Graduating a Feature (`experiments` → `master`)
+
+When cherry-picking a feature to `master`, use `--no-commit` to bundle the doc graduation
+into the same commit:
+
+```bash
+git cherry-pick --no-commit <sha>
+# then make the four graduation changes:
+# 1. Move docs/manual/src/experimental/<feature-name>.md to its target chapter
+# 2. Remove the `> ⚠ Experimental` callout from the top of the page
+# 3. Add the page to docs/manual/src/SUMMARY.md in the right place
+# 4. Remove the feature's entry from docs/manual/src/experimental/index.md
+git commit -m "feat(...): <description>"
+```
+
+**Rebase note:** Because the graduation commit on `master` includes additional doc changes,
+its patch differs from the original `experiments` commit. Git will **not** auto-skip it
+during the subsequent `git rebase master` on `experiments`. After rebasing, drop the
+now-superseded original commit manually:
+
+```bash
+git checkout experiments
+git rebase master          # the original feature commit will NOT be auto-dropped
+git rebase -i master       # drop the original feature commit from the list
+```
+
 ### Publishing to crates.io
 
 - **Always publish from `master`**, never from `experiments` or feature branches.
