@@ -5,19 +5,19 @@
 //! Models are downloaded on first use to `~/.cache/huggingface/hub/`.
 
 use anyhow::Result;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::embed::Embedding;
 
 pub struct LocalEmbedder {
-    model: Arc<fastembed::TextEmbedding>,
+    model: Arc<Mutex<fastembed::TextEmbedding>>,
     dims: usize,
 }
 
 impl LocalEmbedder {
     pub fn new(model_name: &str) -> Result<Self> {
         let embedding_model = parse_model(model_name)?;
-        let model =
+        let mut model =
             fastembed::TextEmbedding::try_new(fastembed::InitOptions::new(embedding_model))?;
         // Derive actual dims by embedding a probe string.
         let probe = model.embed(vec!["probe".to_string()], None)?;
@@ -29,7 +29,7 @@ impl LocalEmbedder {
                 anyhow::anyhow!("fastembed probe returned empty embedding — model may be corrupt")
             })?;
         Ok(Self {
-            model: Arc::new(model),
+            model: Arc::new(Mutex::new(model)),
             dims,
         })
     }
@@ -64,7 +64,11 @@ impl crate::embed::Embedder for LocalEmbedder {
         let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
         let model = Arc::clone(&self.model);
         tokio::task::spawn_blocking(move || {
-            model.embed(owned, None).map_err(|e| anyhow::anyhow!("{e}"))
+            model
+                .lock()
+                .map_err(|e| anyhow::anyhow!("fastembed model lock poisoned: {e}"))?
+                .embed(owned, None)
+                .map_err(|e| anyhow::anyhow!("{e}"))
         })
         .await?
     }
