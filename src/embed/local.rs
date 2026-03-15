@@ -64,11 +64,12 @@ impl crate::embed::Embedder for LocalEmbedder {
         let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
         let model = Arc::clone(&self.model);
         tokio::task::spawn_blocking(move || {
+            // fastembed 5 changed embed() to &mut self — Mutex serializes access across spawn_blocking tasks
             model
                 .lock()
                 .map_err(|e| anyhow::anyhow!("fastembed model lock poisoned: {e}"))?
                 .embed(owned, None)
-                .map_err(|e| anyhow::anyhow!("{e}"))
+                .map_err(anyhow::Error::from)
         })
         .await?
     }
