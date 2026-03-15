@@ -69,7 +69,7 @@ lsp-types = "0.97"
 url = "2"
 
 # AST parsing (tree-sitter)
-tree-sitter = "0.25"
+tree-sitter = "0.26"
 
 # HTTP client (remote embeddings — OpenAI-compatible APIs, Ollama, etc.)
 reqwest = { version = "0.13", features = ["json"], optional = true }
