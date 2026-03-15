@@ -141,7 +141,7 @@ impl Agent {
             // Find if the root project was discovered (relative_root == ".")
             let mut root_found = false;
             for dp in discovered {
-                if dp.relative_root == PathBuf::from(".") {
+                if dp.relative_root == std::path::Path::new(".") {
                     root_found = true;
                     projects.push(Project {
                         discovered: dp,
@@ -229,7 +229,7 @@ impl Agent {
         let mut projects: Vec<Project> = Vec::new();
         let mut root_found = false;
         for dp in discovered {
-            if dp.relative_root == PathBuf::from(".") {
+            if dp.relative_root == std::path::Path::new(".") {
                 root_found = true;
                 projects.push(Project {
                     discovered: dp,

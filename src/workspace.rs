@@ -146,7 +146,7 @@ pub fn discover_projects(
 
         // Skip if dominated by a shallower project with matching language
         let dominated = found_roots.iter().any(|existing| {
-            if rel_path == PathBuf::from(".") || existing == &PathBuf::from(".") {
+            if rel_path == std::path::Path::new(".") || existing == std::path::Path::new(".") {
                 return false;
             }
             rel_path.starts_with(existing)
@@ -159,7 +159,7 @@ pub fn discover_projects(
             continue;
         }
 
-        let id = if rel_path == PathBuf::from(".") {
+        let id = if rel_path == std::path::Path::new(".") {
             workspace_name.clone()
         } else {
             rel_path
@@ -188,7 +188,7 @@ pub fn discover_projects(
     // Ensure root project is first
     if let Some(root_idx) = found
         .iter()
-        .position(|p| p.relative_root == PathBuf::from("."))
+        .position(|p| p.relative_root == std::path::Path::new("."))
     {
         if root_idx != 0 {
             let root = found.remove(root_idx);
@@ -214,7 +214,7 @@ pub fn resolve_project_for_path<'a>(
     projects
         .iter()
         .filter(|p| {
-            let project_abs = if p.relative_root == PathBuf::from(".") {
+            let project_abs = if p.relative_root == std::path::Path::new(".") {
                 workspace_root.to_path_buf()
             } else {
                 workspace_root.join(&p.relative_root)
@@ -272,7 +272,7 @@ impl Workspace {
         // Focus defaults to the root project if present, else first project
         let focused = projects
             .iter()
-            .find(|p| p.discovered.relative_root == PathBuf::from("."))
+            .find(|p| p.discovered.relative_root == std::path::Path::new("."))
             .or_else(|| projects.first())
             .map(|p| p.discovered.id.clone());
         Self {
@@ -298,7 +298,7 @@ impl Workspace {
             .iter()
             .find(|p| p.discovered.id == id)
             .ok_or_else(|| anyhow::anyhow!("Project '{}' not found in workspace", id))?;
-        let abs = if project.discovered.relative_root == PathBuf::from(".") {
+        let abs = if project.discovered.relative_root == std::path::Path::new(".") {
             self.root.clone()
         } else {
             self.root.join(&project.discovered.relative_root)
@@ -368,7 +368,7 @@ impl Workspace {
             .projects
             .iter()
             .find(|p| p.discovered.id == project_id)
-            .map(|p| p.discovered.relative_root == PathBuf::from("."))
+            .map(|p| p.discovered.relative_root == std::path::Path::new("."))
             .unwrap_or(true);
         if is_root {
             self.root.join(".codescout").join("memories")

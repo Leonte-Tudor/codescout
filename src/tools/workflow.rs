@@ -1169,7 +1169,7 @@ impl Tool for Onboarding {
         // Write programmatic memories for each sub-project in workspace mode.
         if gathered.projects.len() > 1 {
             for project in &gathered.projects {
-                let mem_dir = if project.relative_root == std::path::PathBuf::from(".") {
+                let mem_dir = if project.relative_root == std::path::Path::new(".") {
                     root.join(".codescout").join("memories")
                 } else {
                     root.join(".codescout")
@@ -1278,7 +1278,7 @@ impl Tool for Onboarding {
                 .unwrap_or_default();
             let mut map = serde_json::Map::new();
             for project in &gathered.projects {
-                let mem_dir = if project.relative_root == std::path::PathBuf::from(".") {
+                let mem_dir = if project.relative_root == std::path::Path::new(".") {
                     root.join(".codescout").join("memories")
                 } else {
                     root.join(".codescout")
