@@ -8,11 +8,11 @@ use crate::lsp::{LspManager, LspProvider};
 use anyhow::Result;
 use rmcp::{
     model::{
-        CallToolRequestParam, CallToolResult, Content, ListToolsResult, PaginatedRequestParam,
+        CallToolRequestParams, CallToolResult, Content, ListToolsResult, PaginatedRequestParams,
         RawContent, ServerCapabilities, ServerInfo, Tool as McpTool,
     },
     service::RequestContext,
-    Error as McpError, RoleServer, ServerHandler, ServiceExt,
+    ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
 };
 use serde_json::Value;
 
@@ -121,7 +121,7 @@ impl CodeScoutServer {
     #[tracing::instrument(skip_all, fields(tool = %req.name))]
     async fn call_tool_inner(
         &self,
-        req: CallToolRequestParam,
+        req: CallToolRequestParams,
         progress: Option<Arc<progress::ProgressReporter>>,
     ) -> std::result::Result<CallToolResult, McpError> {
         tracing::debug!(args = ?req.arguments, "tool call");
@@ -222,16 +222,13 @@ fn tool_skips_server_timeout(name: &str) -> bool {
 
 impl ServerHandler for CodeScoutServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            instructions: Some(self.instructions.clone()),
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            ..Default::default()
-        }
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_instructions(self.instructions.clone())
     }
 
     async fn list_tools(
         &self,
-        _req: PaginatedRequestParam,
+        _req: Option<PaginatedRequestParams>,
         _ctx: RequestContext<RoleServer>,
     ) -> std::result::Result<ListToolsResult, McpError> {
         let tools = self
@@ -240,23 +237,16 @@ impl ServerHandler for CodeScoutServer {
             .map(|t| {
                 let schema = t.input_schema();
                 let schema_obj = schema.as_object().cloned().unwrap_or_default();
-                McpTool {
-                    name: t.name().to_owned().into(),
-                    description: t.description().to_owned().into(),
-                    input_schema: Arc::new(schema_obj),
-                }
+                McpTool::new(t.name().to_owned(), t.description().to_owned(), schema_obj)
             })
             .collect();
 
-        Ok(ListToolsResult {
-            tools,
-            next_cursor: None,
-        })
+        Ok(ListToolsResult::with_all_items(tools))
     }
 
     async fn call_tool(
         &self,
-        req: CallToolRequestParam,
+        req: CallToolRequestParams,
         req_ctx: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResult, McpError> {
         let progress = Some(progress::ProgressReporter::new(
@@ -404,78 +394,18 @@ pub async fn run(
             Ok(())
         }
         "http" => {
-            // --- Auth token setup ---
-            let token = auth_token.unwrap_or_else(|| {
-                let t = generate_auth_token();
-                eprintln!("No --auth-token provided; generated one automatically.");
-                t
-            });
-            eprintln!("HTTP transport auth token: {}", token);
-            eprintln!("Clients must send header:  Authorization: Bearer {}", token);
-
-            // --- Bind address safety warnings ---
-            if host == "0.0.0.0" || host == "::" {
-                eprintln!(
-                    "WARNING: Server is bound to all interfaces ({}).\n\
-                     This exposes the MCP server to the entire network.\n\
-                     Use --host 127.0.0.1 for local-only access.",
-                    host
-                );
-            }
-
-            let addr: std::net::SocketAddr = format!("{}:{}", host, port).parse()?;
-            tracing::info!("codescout MCP server ready (HTTP/SSE at {})", addr);
-            tracing::info!("  SSE endpoint: http://{}/sse", addr);
-            tracing::info!("  Message endpoint: http://{}/message", addr);
-
-            // NOTE: rmcp's SseServer does not expose middleware hooks for
-            // per-request header validation.  The token is printed at startup
-            // so the operator can configure their MCP client with the correct
-            // Authorization header.  Proper per-connection token enforcement
-            // will be added once rmcp supports custom middleware or an auth
-            // callback on SseServer.
-            // TODO: validate Authorization header per-connection when rmcp supports middleware
-            let _token = token; // retained for future middleware use
-
-            let mut sse_server = rmcp::transport::sse_server::SseServer::serve(addr)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to start SSE server: {}", e))?;
-
-            // Accept connections until shutdown signal
-            loop {
-                tokio::select! {
-                    transport = sse_server.next_transport() => {
-                        match transport {
-                            Some(transport) => {
-                                let agent = agent.clone();
-                                let lsp = lsp.clone();
-                                tokio::spawn(async move {
-                                    let handler = CodeScoutServer::from_parts(agent, lsp).await;
-                                    match handler.serve(transport).await {
-                                        Ok(service) => {
-                                            if let Err(e) = service.waiting().await {
-                                                tracing::debug!("SSE session ended: {}", e);
-                                            }
-                                        }
-                                        Err(e) => tracing::warn!("SSE session failed to start: {}", e),
-                                    }
-                                });
-                            }
-                            None => break,
-                        }
-                    }
-                    _ = shutdown_signal() => {
-                        tracing::info!("Received shutdown signal");
-                        break;
-                    }
-                }
-            }
-
-            // Gracefully shut down all LSP servers
-            tracing::info!("Shutting down LSP servers...");
-            lsp.shutdown_all().await;
-            tracing::info!("All LSP servers shut down");
-            Ok(())
+            // SSE/HTTP transport was removed in rmcp 1.x (transport-sse-server feature).
+            // rmcp 1.x offers transport-streamable-http-server as a replacement, but it
+            // requires additional dependencies (tower, axum integration) and a different
+            // session model. For now, return a clear error. The stdio transport covers
+            // all current use cases (Claude Code, CLI).
+            let _ = (host, port, auth_token);
+            anyhow::bail!(
+                "HTTP transport is not available in this build. \
+                 The SSE transport (rmcp 0.x) was replaced by Streamable HTTP in rmcp 1.x. \
+                 Use 'stdio' transport instead, or build with the 'transport-streamable-http-server' \
+                 feature once migrated."
+            );
         }
         other => anyhow::bail!("Unknown transport '{}'. Use 'stdio' or 'http'.", other),
     }
@@ -850,10 +780,8 @@ mod tests {
         let (dir, server) = make_server().await;
         let root = dir.path().to_string_lossy().to_string();
 
-        let req = CallToolRequestParam {
-            name: "list_dir".into(),
-            arguments: Some(serde_json::from_value(serde_json::json!({"path": "."})).unwrap()),
-        };
+        let req = CallToolRequestParams::new("list_dir")
+            .with_arguments(serde_json::from_value(serde_json::json!({"path": "."})).unwrap());
         let result = server.call_tool_inner(req, None).await.unwrap();
 
         let text = result

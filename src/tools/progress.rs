@@ -5,6 +5,7 @@ use std::sync::Arc;
 use rmcp::{
     model::{
         LoggingLevel, LoggingMessageNotificationParam, NumberOrString, ProgressNotificationParam,
+        ProgressToken,
     },
     service::Peer,
     RoleServer,
@@ -15,19 +16,11 @@ use rmcp::{
 /// Constructed in `server.rs::call_tool` from the request context. Tools
 /// call `ctx.progress.as_ref()` — it is a no-op when `None`.
 ///
-/// # rmcp-0.1.5 limitation
-/// `CallToolRequestParam` does not expose `_meta.progressToken`. We use
-/// `_ctx.id` (the request ID) as a stand-in progress token. This works if
-/// the client correlates progress tokens with request IDs (common in practice).
-/// Sends MCP `notifications/progress` to the client while a tool is running.
-///
-/// Constructed in `server.rs::call_tool` from the request context. Tools
-/// call `ctx.progress.as_ref()` — it is a no-op when `None`.
-///
-/// # rmcp-0.1.5 limitation
-/// `CallToolRequestParam` does not expose `_meta.progressToken`. We use
-/// `_ctx.id` (the request ID) as a stand-in progress token. This works if
-/// the client correlates progress tokens with request IDs (common in practice).
+/// # Progress token
+/// `CallToolRequestParams._meta.progressToken` is the canonical source, but
+/// not all clients send it. We fall back to `_ctx.id` (the request ID) as a
+/// stand-in progress token. This works if the client correlates progress
+/// tokens with request IDs (common in practice).
 pub struct ProgressReporter {
     peer: Peer<RoleServer>,
     token: NumberOrString,
@@ -41,14 +34,12 @@ impl ProgressReporter {
     /// Send a progress notification. Errors are silently swallowed — progress
     /// is best-effort and must never fail the tool call.
     pub async fn report(&self, step: u32, total: Option<u32>) {
-        let _ = self
-            .peer
-            .notify_progress(ProgressNotificationParam {
-                progress_token: self.token.clone(),
-                progress: step,
-                total,
-            })
-            .await;
+        let mut params =
+            ProgressNotificationParam::new(ProgressToken(self.token.clone()), step as f64);
+        if let Some(t) = total {
+            params = params.with_total(t as f64);
+        }
+        let _ = self.peer.notify_progress(params).await;
     }
 
     /// Send a free-form text message via `notifications/message` (MCP logging
