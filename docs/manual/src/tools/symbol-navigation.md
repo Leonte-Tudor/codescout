@@ -13,6 +13,19 @@ tree-sitter for basic results.
 
 **Scope parameter:** `find_symbol`, `list_symbols`, and `find_references` accept an optional `scope` string to search library code as well as project code. See [Library Navigation](library-navigation.md) for the full scope reference.
 
+### Workspace project scoping
+
+In a [multi-project workspace](../concepts/multi-project-workspace.md), pass
+`project` to scope operations to a specific project:
+
+```json
+{ "tool": "find_symbol", "arguments": { "pattern": "UserService", "project": "backend" } }
+```
+
+`scope` and `project` are independent axes: `scope` selects project vs library
+code, `project` selects which project in the workspace. Omitting `project`
+uses the workspace-level context.
+
 > **See also:** [Tool Selection](../concepts/tool-selection.md) — when to reach
 > for symbol tools vs semantic search vs text search. [Progressive Disclosure](../concepts/progressive-disclosure.md) — how `detail_level` controls output volume for these tools.
 

@@ -115,6 +115,15 @@ The `content` field contains the full source text of each chunk. Combine with
 - For finding a symbol by name, `find_symbol` is faster and more precise.
   Semantic search is for concepts, not identifiers.
 
+### Workspace project scoping
+
+```json
+{ "tool": "semantic_search", "arguments": { "query": "auth flow", "project": "frontend" } }
+```
+
+Omit `project` to search across the workspace-level context. See
+[Multi-Project Workspaces](../concepts/multi-project-workspace.md) for setup.
+
 ---
 
 ## `index_project`

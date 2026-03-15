@@ -61,6 +61,16 @@ guides the LLM through confirming or changing the embedding model before indexin
 
 **Tips:** Call `onboarding` once per project, the first time you work on it. It writes a memory entry under the topic `"onboarding"` with a summary of what it found. On subsequent sessions, call `onboarding` with `force: false` (the default) — it detects previous onboarding and returns existing memories without re-running discovery.
 
+### Workspace-aware onboarding
+
+For [multi-project workspaces](../concepts/multi-project-workspace.md),
+onboarding automatically detects all projects registered in `workspace.toml`
+and generates per-project Navigation Strategy sections in the system prompt.
+It also writes per-project memories and cross-project semantic search guidance.
+
+Each project gets its own onboarding pass with language detection, entry point
+discovery, and memory writing scoped to that project.
+
 ---
 
 ## `run_command`

@@ -60,6 +60,9 @@ Central orchestrator holding active project state behind `RwLock`. Manages:
 - `symbols.rs` — Language-agnostic `SymbolInfo`/`SymbolKind` types with `From<lsp_types::SymbolKind>`
 - `servers/mod.rs` — Default LSP server configs for 9 languages (rust-analyzer, pyright, typescript-language-server, gopls, jdtls, kotlin-language-server, clangd, omnisharp, solargraph)
 - `client.rs` — `LspClient` with JSON-RPC transport, lifecycle management, and full LSP request support. Stores `child_pid` for kill-on-drop safety net (SIGTERM via `libc::kill` in `Drop` impl).
+- Idle TTL eviction (`src/lsp/manager.rs`) — per-language configurable timeouts
+  (Kotlin: 2h, all others: 30min). Idle servers are shut down and transparently
+  restarted on next query.
 
 ### AST Engine (`src/ast/`)
 
@@ -90,6 +93,19 @@ Third-party library source code navigation (read-only).
 - `registry.rs` — `LibraryRegistry` persists known library paths in `.codescout/libraries.json`. CRUD + serialization.
 - `discovery.rs` — `discover_library_from_path()`: walks parent dirs to find package manifests (Cargo.toml, package.json, pyproject.toml, go.mod). Auto-triggered when LSP goto_definition returns a path outside the project root.
 - `scope.rs` — `Scope` enum: `Project`, `Library(name)`, `Libraries`, `All`. Parsed from the `scope` string parameter on symbol/semantic tools.
+- `src/library/versions.rs` — reads lockfiles (`Cargo.lock`, `package-lock.json`,
+  etc.) to record indexed vs current versions; `semantic_search` includes
+  `stale_libraries` hints when versions diverge
+- Per-library embedding databases in `.codescout/embeddings/lib/<name>.db`
+
+### Workspace Registry
+
+- `src/workspace.rs` — discovers `.codescout/workspace.toml`, builds project
+  topology, resolves `depends_on` relationships between projects
+- `src/config/workspace.rs` — parses `workspace.toml` into `WorkspaceConfig`
+  with `[[project]]` table entries
+- Each project gets independent `ActiveProject` state in the `Agent`, with its
+  own LSP servers, memory store, and semantic index
 
 ### Memory (`src/memory/`)
 

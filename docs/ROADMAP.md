@@ -40,11 +40,16 @@ See [`FEATURES.md`](FEATURES.md) for the full feature reference. Summary:
 - **Git blame** via git2; persistent memory store (markdown topics + semantic memories)
 - **MCP over stdio and HTTP/SSE** (rmcp); 1142 tests passing
 - **Debug logging** — `--debug` flag enables structured file logging with rotation (`tracing-appender`)
+- **Multi-project workspaces** — `workspace.toml` registration, per-project memory/LSP/indexing, cross-project search guidance, workspace-aware onboarding
+- **Library version tracking** — per-library embedding DBs (`.codescout/embeddings/lib/`), lockfile version comparison, staleness hints in `semantic_search`
+- **LSP idle TTL eviction** — per-language configurable timeouts (Kotlin 2h, others 30min), transparent shutdown and restart
 
 ## What's Next
 
 - Additional tree-sitter grammars (currently: Rust, Python, TypeScript, Go, Java, Kotlin)
 - Additional LSP server configurations
+- Configurable LSP idle TTL via `project.toml`
+- GitHub tools: `github_issue`, `github_pr` method parity with `github_repo`
 
 ## Future Improvements
 

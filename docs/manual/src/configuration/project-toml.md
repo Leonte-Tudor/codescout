@@ -261,3 +261,34 @@ The effective configuration is always visible via the `project_status` tool:
 
 Changes to `project.toml` take effect the next time the project is activated — either by
 restarting the MCP server or by calling `activate_project` again with the same path.
+
+---
+
+## Workspace Configuration
+
+For multi-project repos, create `.codescout/workspace.toml` alongside
+`project.toml`:
+
+```toml
+[[project]]
+id = "backend"
+root = "services/backend"
+
+[[project]]
+id = "frontend"
+root = "apps/frontend"
+depends_on = ["backend"]
+```
+
+### Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Unique project identifier, used in `project` parameter across tools |
+| `root` | Yes | Path relative to workspace root |
+| `languages` | No | Restrict LSP servers to listed languages |
+| `depends_on` | No | Project IDs whose symbols are visible during cross-project navigation |
+
+Each project gets its own LSP servers, memory store, and semantic index.
+See [Multi-Project Workspaces](../concepts/multi-project-workspace.md) for
+usage details.

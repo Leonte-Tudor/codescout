@@ -121,6 +121,19 @@ Remove a memory entry that is no longer accurate or needed.
 
 ---
 
+### Per-project memory
+
+In [workspaces](../concepts/multi-project-workspace.md), scope memory to a
+specific project:
+
+```json
+{ "tool": "memory", "arguments": { "action": "read", "project": "backend", "topic": "architecture" } }
+```
+
+Omitting `project` reads/writes workspace-level memory.
+
+---
+
 ## Private Store
 
 Pass `private: true` to any action to target the gitignored private store at `.codescout/private-memories/`. Private memories are never surfaced in system instructions and are not shared with teammates:
