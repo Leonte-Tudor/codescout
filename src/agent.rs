@@ -96,6 +96,8 @@ pub struct ActiveProject {
     /// Wrapped in an Arc so index_project can capture it across a tokio::spawn
     /// boundary and clear it on successful completion.
     pub dirty_files: Arc<std::sync::Mutex<std::collections::HashSet<PathBuf>>>,
+    /// When true, file writes are disabled regardless of security config.
+    pub read_only: bool,
 }
 
 /// Read `workspace.toml` (if present) and return the discovery depth and exclude list.
@@ -127,6 +129,7 @@ impl Agent {
                 private_memory,
                 library_registry,
                 dirty_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+                read_only: false,
             };
 
             // Discover sub-projects; root project is always included.
@@ -191,7 +194,18 @@ impl Agent {
     }
 
     /// Activate a project by path, replacing the current workspace.
-    pub async fn activate(&self, root: PathBuf) -> Result<()> {
+    pub async fn activate(&self, root: PathBuf, read_only: Option<bool>) -> Result<()> {
+        let is_home = {
+            let inner = self.inner.read().await;
+            inner.home_root.as_ref().map(|h| *h == root).unwrap_or(true)
+        };
+
+        let effective_read_only = match read_only {
+            Some(false) => false,
+            _ if is_home => false,
+            _ => true,
+        };
+
         let config = ProjectConfig::load_or_default(&root)?;
         let memory = MemoryStore::open(&root)?;
         let private_memory = MemoryStore::open_private(&root)?;
@@ -205,6 +219,7 @@ impl Agent {
             private_memory,
             library_registry,
             dirty_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            read_only: effective_read_only,
         };
 
         // Discover sub-projects.
@@ -457,6 +472,9 @@ impl Agent {
                     .iter()
                     .map(|e| e.path.clone())
                     .collect();
+                if p.read_only {
+                    config.file_write_enabled = false;
+                }
                 config
             }
             None => crate::util::path_security::PathSecurityConfig::default(),
@@ -691,7 +709,10 @@ mod tests {
 
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
-        agent.activate(dir.path().to_path_buf()).await.unwrap();
+        agent
+            .activate(dir.path().to_path_buf(), None)
+            .await
+            .unwrap();
 
         let root = agent.require_project_root().await.unwrap();
         assert_eq!(root, dir.path());
@@ -707,7 +728,10 @@ mod tests {
         let agent = Agent::new(Some(dir1.path().to_path_buf())).await.unwrap();
         assert_eq!(agent.require_project_root().await.unwrap(), dir1.path());
 
-        agent.activate(dir2.path().to_path_buf()).await.unwrap();
+        agent
+            .activate(dir2.path().to_path_buf(), None)
+            .await
+            .unwrap();
         assert_eq!(agent.require_project_root().await.unwrap(), dir2.path());
     }
 
@@ -770,7 +794,10 @@ mod tests {
         let agent = Agent::new(None).await.unwrap();
         let agent2 = agent.clone();
 
-        agent.activate(dir.path().to_path_buf()).await.unwrap();
+        agent
+            .activate(dir.path().to_path_buf(), None)
+            .await
+            .unwrap();
         // Clone should see the activation
         let root = agent2.require_project_root().await.unwrap();
         assert_eq!(root, dir.path());
@@ -808,7 +835,10 @@ mod tests {
         std::fs::write(config_dir.join("system-prompt.md"), "Always use pytest.\n").unwrap();
 
         let agent = Agent::new(None).await.unwrap();
-        agent.activate(dir.path().to_path_buf()).await.unwrap();
+        agent
+            .activate(dir.path().to_path_buf(), None)
+            .await
+            .unwrap();
         let status = agent.project_status().await.unwrap();
         assert_eq!(
             status.system_prompt.as_deref(),
@@ -828,7 +858,10 @@ mod tests {
         .unwrap();
 
         let agent = Agent::new(None).await.unwrap();
-        agent.activate(dir.path().to_path_buf()).await.unwrap();
+        agent
+            .activate(dir.path().to_path_buf(), None)
+            .await
+            .unwrap();
         let status = agent.project_status().await.unwrap();
         assert_eq!(status.system_prompt.as_deref(), Some("From TOML"));
     }
@@ -846,7 +879,10 @@ mod tests {
         std::fs::write(config_dir.join("system-prompt.md"), "From file\n").unwrap();
 
         let agent = Agent::new(None).await.unwrap();
-        agent.activate(dir.path().to_path_buf()).await.unwrap();
+        agent
+            .activate(dir.path().to_path_buf(), None)
+            .await
+            .unwrap();
         let status = agent.project_status().await.unwrap();
         assert_eq!(status.system_prompt.as_deref(), Some("From file\n"));
     }
@@ -862,7 +898,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
         let agent = Agent::new(None).await.unwrap();
-        agent.activate(dir.path().to_path_buf()).await.unwrap();
+        agent
+            .activate(dir.path().to_path_buf(), None)
+            .await
+            .unwrap();
         assert!(agent.is_project_explicitly_activated().await);
     }
 
@@ -893,7 +932,10 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
         let agent = Agent::new(None).await.unwrap();
-        agent.activate(dir.path().to_path_buf()).await.unwrap();
+        agent
+            .activate(dir.path().to_path_buf(), None)
+            .await
+            .unwrap();
         assert_eq!(agent.home_root().await, Some(dir.path().to_path_buf()));
     }
 
@@ -904,7 +946,10 @@ mod tests {
         std::fs::create_dir_all(dir1.path().join(".codescout")).unwrap();
         std::fs::create_dir_all(dir2.path().join(".codescout")).unwrap();
         let agent = Agent::new(Some(dir1.path().to_path_buf())).await.unwrap();
-        agent.activate(dir2.path().to_path_buf()).await.unwrap();
+        agent
+            .activate(dir2.path().to_path_buf(), None)
+            .await
+            .unwrap();
         assert_eq!(agent.home_root().await, Some(dir1.path().to_path_buf()));
     }
 
@@ -923,7 +968,10 @@ mod tests {
         std::fs::create_dir_all(dir1.path().join(".codescout")).unwrap();
         std::fs::create_dir_all(dir2.path().join(".codescout")).unwrap();
         let agent = Agent::new(Some(dir1.path().to_path_buf())).await.unwrap();
-        agent.activate(dir2.path().to_path_buf()).await.unwrap();
+        agent
+            .activate(dir2.path().to_path_buf(), None)
+            .await
+            .unwrap();
         assert!(!agent.is_home().await);
     }
 
@@ -934,9 +982,15 @@ mod tests {
         std::fs::create_dir_all(dir1.path().join(".codescout")).unwrap();
         std::fs::create_dir_all(dir2.path().join(".codescout")).unwrap();
         let agent = Agent::new(Some(dir1.path().to_path_buf())).await.unwrap();
-        agent.activate(dir2.path().to_path_buf()).await.unwrap();
+        agent
+            .activate(dir2.path().to_path_buf(), None)
+            .await
+            .unwrap();
         assert!(!agent.is_home().await);
-        agent.activate(dir1.path().to_path_buf()).await.unwrap();
+        agent
+            .activate(dir1.path().to_path_buf(), None)
+            .await
+            .unwrap();
         assert!(agent.is_home().await);
     }
 
@@ -1012,6 +1066,91 @@ mod tests {
             rpr_after.ends_with("packages/api"),
             "focused root must be the sub-project: {:?}",
             rpr_after
+        );
+    }
+
+    #[tokio::test]
+    async fn activate_non_home_defaults_to_read_only() {
+        let dir1 = tempdir().unwrap();
+        let dir2 = tempdir().unwrap();
+        std::fs::create_dir_all(dir1.path().join(".codescout")).unwrap();
+        std::fs::create_dir_all(dir2.path().join(".codescout")).unwrap();
+
+        let agent = Agent::new(Some(dir1.path().to_path_buf())).await.unwrap();
+        agent
+            .activate(dir2.path().to_path_buf(), None)
+            .await
+            .unwrap();
+
+        let config = agent.security_config().await;
+        assert!(
+            !config.file_write_enabled,
+            "non-home project should be read-only by default"
+        );
+    }
+
+    #[tokio::test]
+    async fn activate_non_home_with_read_only_false_is_writable() {
+        let dir1 = tempdir().unwrap();
+        let dir2 = tempdir().unwrap();
+        std::fs::create_dir_all(dir1.path().join(".codescout")).unwrap();
+        std::fs::create_dir_all(dir2.path().join(".codescout")).unwrap();
+
+        let agent = Agent::new(Some(dir1.path().to_path_buf())).await.unwrap();
+        agent
+            .activate(dir2.path().to_path_buf(), Some(false))
+            .await
+            .unwrap();
+
+        let config = agent.security_config().await;
+        assert!(
+            config.file_write_enabled,
+            "explicit read_only=false should enable writes"
+        );
+    }
+
+    #[tokio::test]
+    async fn activate_home_always_writable() {
+        let dir1 = tempdir().unwrap();
+        let dir2 = tempdir().unwrap();
+        std::fs::create_dir_all(dir1.path().join(".codescout")).unwrap();
+        std::fs::create_dir_all(dir2.path().join(".codescout")).unwrap();
+
+        let agent = Agent::new(Some(dir1.path().to_path_buf())).await.unwrap();
+
+        // Switch away (read-only)
+        agent
+            .activate(dir2.path().to_path_buf(), None)
+            .await
+            .unwrap();
+        assert!(!agent.security_config().await.file_write_enabled);
+
+        // Return home
+        agent
+            .activate(dir1.path().to_path_buf(), None)
+            .await
+            .unwrap();
+        assert!(
+            agent.security_config().await.file_write_enabled,
+            "home project should always be writable"
+        );
+    }
+
+    #[tokio::test]
+    async fn first_activate_is_writable() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+
+        let agent = Agent::new(None).await.unwrap();
+        agent
+            .activate(dir.path().to_path_buf(), None)
+            .await
+            .unwrap();
+
+        let config = agent.security_config().await;
+        assert!(
+            config.file_write_enabled,
+            "first activated project should be writable (becomes home)"
         );
     }
 }

@@ -21,7 +21,8 @@ impl Tool for ActivateProject {
             "type": "object",
             "required": ["path"],
             "properties": {
-                "path": { "type": "string", "description": "Absolute path to the project root" }
+                "path": { "type": "string", "description": "Absolute path to the project root" },
+                "read_only": { "type": "boolean", "description": "Activate in read-only mode (default: true for non-home projects, false for home)" }
             }
         })
     }
@@ -93,7 +94,8 @@ impl Tool for ActivateProject {
         // Capture before activate() — activate sets home_root on first call
         let had_home = ctx.agent.home_root().await.is_some();
 
-        ctx.agent.activate(root).await?;
+        let read_only = input.get("read_only").and_then(|v| v.as_bool());
+        ctx.agent.activate(root, read_only).await?;
 
         let config = ctx
             .agent
@@ -109,6 +111,11 @@ impl Tool for ActivateProject {
         let project_root_str = config["project_root"].as_str().unwrap_or("?");
         let is_home = ctx.agent.is_home().await;
         let home = ctx.agent.home_root().await;
+        let is_read_only = ctx
+            .agent
+            .with_project(|p| Ok(p.read_only))
+            .await
+            .unwrap_or(false);
 
         let hint = if !had_home {
             format!("CWD: {}", project_root_str)
@@ -119,14 +126,20 @@ impl Tool for ActivateProject {
                 .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
+            let ro_notice = if is_read_only {
+                " This project is activated in read-only mode. To enable writes, \
+                 call activate_project with read_only: false."
+            } else {
+                ""
+            };
             format!(
                 "Switched project. CWD: {} — ⚠ remember to activate_project(\"{}\") \
-                 when done (server state is shared with parent conversation)",
-                project_root_str, home_str,
+                 when done (server state is shared with parent conversation).{}",
+                project_root_str, home_str, ro_notice,
             )
         };
 
-        Ok(json!({ "status": "ok", "activated": config, "hint": hint }))
+        Ok(json!({ "status": "ok", "activated": config, "read_only": is_read_only, "hint": hint }))
     }
 
     fn format_compact(&self, result: &Value) -> Option<String> {

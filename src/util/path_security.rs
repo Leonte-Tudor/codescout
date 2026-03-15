@@ -330,7 +330,7 @@ pub fn check_tool_access(tool_name: &str, config: &PathSecurityConfig) -> Result
         | "remove_symbol" | "register_library" => {
             if !config.file_write_enabled {
                 bail!(
-                    "File write tools are disabled. Set security.file_write_enabled = true in .codescout/project.toml to enable."
+                    "File writes are disabled for this project. If this project was activated in read-only mode, call activate_project with read_only: false to enable writes."
                 );
             }
         }
