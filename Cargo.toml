@@ -43,7 +43,7 @@ tracing-appender = "0.2"
 clap = { version = "4", features = ["derive"] }
 
 # Git integration
-git2 = "0.19"
+git2 = "0.20"
 
 # Database — SQLite with bundled libsqlite3
 # sqlite-vec provides vec_distance_cosine for in-SQL similarity computation
