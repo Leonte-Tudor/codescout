@@ -409,19 +409,33 @@ impl Tool for ReadFile {
             // Same class as BUG-025 (which fixed the no-range path); this covers the
             // explicit-range path.
             if crate::tools::exceeds_inline_limit(&content) {
-                let total_lines = content.lines().count();
-                let est_tokens = content.len() / 4;
+                let content_total = content.lines().count();
                 let file_id = ctx
                     .output_buffer
-                    .store_file(resolved.to_string_lossy().to_string(), content);
+                    .store_file(resolved.to_string_lossy().to_string(), content.clone());
+
+                let (chunk, lines_shown, complete) = crate::util::text::extract_lines_to_budget(
+                    &content,
+                    1,
+                    usize::MAX,
+                    crate::tools::INLINE_BYTE_BUDGET,
+                );
+                let orig_start = start as usize;
+                let orig_end = orig_start + lines_shown.saturating_sub(1);
                 let mut result = json!({
+                    "content": chunk,
                     "file_id": file_id,
-                    "total_lines": total_lines,
-                    "hint": format!(
-                        "Range too large for inline (~{est_tokens} tokens). \
-                         Use read_file(\"{file_id}\", start_line=1, end_line=100) to read in chunks."
-                    ),
+                    "total_lines": content_total,
+                    "shown_lines": [orig_start, orig_end],
+                    "complete": complete,
                 });
+                if !complete {
+                    let buf_next_start = lines_shown + 1;
+                    let buf_next_end = (buf_next_start + lines_shown - 1).min(content_total);
+                    result["next"] = json!(format!(
+                        "read_file(\"{file_id}\", start_line={buf_next_start}, end_line={buf_next_end})"
+                    ));
+                }
                 if source_tag != "project" {
                     result["source"] = json!(source_tag);
                 }
@@ -2035,12 +2049,79 @@ mod tests {
             next.contains(file_id),
             "next should reference file_id; got: {next}"
         );
-        // shown_lines should report original file line numbers
+    }
+
+    #[tokio::test]
+    async fn read_file_real_file_range_auto_chunks() {
+        let (dir, ctx) = project_ctx().await;
+
+        // Create a file > 10KB (300 × 41 bytes = ~12 KB)
+        let content: String = (1..=300)
+            .map(|i| format!("line {:04} padding_padding_padding_padd\n", i))
+            .collect();
+        assert!(
+            content.len() > crate::tools::TOOL_OUTPUT_BUFFER_THRESHOLD,
+            "test data must exceed threshold"
+        );
+        std::fs::write(dir.path().join("big.txt"), &content).unwrap();
+
+        let result = ReadFile
+            .call(
+                serde_json::json!({ "path": "big.txt", "start_line": 1, "end_line": 300 }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            result.get("content").is_some(),
+            "should auto-chunk; got: {result}"
+        );
+        assert_eq!(result["complete"], false);
+        let next = result["next"].as_str().expect("should have next");
+        assert!(result["file_id"].as_str().is_some());
+        // next uses sub-buffer line numbers
+        assert!(
+            next.contains("start_line="),
+            "next should include continuation; got: {next}"
+        );
+        // shown_lines reports original file line numbers
+        let shown = result["shown_lines"].as_array().unwrap();
+        assert_eq!(shown[0], 1);
+    }
+
+    #[tokio::test]
+    async fn read_file_real_file_range_shown_lines_mid_file() {
+        // Verify that shown_lines[0] equals the requested start_line, not always 1.
+        // This proves the coordinate mapping is correct.
+        let (dir, ctx) = project_ctx().await;
+
+        // 400 lines × 41 bytes = ~16 KB; range 50..=400 = 351 lines × 41 ≈ 14 KB > threshold
+        let content: String = (1..=400)
+            .map(|i| format!("line {:04} padding_padding_padding_padd\n", i))
+            .collect();
+        std::fs::write(dir.path().join("big.txt"), &content).unwrap();
+
+        let result = ReadFile
+            .call(
+                serde_json::json!({ "path": "big.txt", "start_line": 50, "end_line": 400 }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            result.get("content").is_some(),
+            "should auto-chunk; got: {result}"
+        );
         let shown = result["shown_lines"].as_array().unwrap();
         assert_eq!(
-            shown[0], 1,
-            "shown_lines should start at original start_line"
+            shown[0], 50,
+            "shown_lines[0] should equal the requested start_line (50), got: {}",
+            shown[0]
         );
+        let end_val = shown[1].as_u64().unwrap();
+        assert!(end_val > 50 && end_val < 300, "shown_lines[1] should be within the file range; got {end_val}");
     }
 
     // ── ListDir ───────────────────────────────────────────────────────────────
@@ -3063,20 +3144,26 @@ mod tests {
             .await
             .unwrap();
 
-        // Large range: must buffer as @file_* so sub-range navigation works
+        // Large range: must auto-chunk — return first chunk inline plus navigation metadata
+        assert!(
+            result.get("content").is_some(),
+            "large explicit range should auto-chunk content inline; got: {}",
+            result
+        );
         assert!(
             result.get("file_id").is_some(),
-            "large explicit range should buffer as @file_*; got: {}",
+            "large explicit range should buffer as @file_* for navigation; got: {}",
             result
         );
         assert_eq!(
-            result["total_lines"].as_u64().unwrap(),
-            300,
-            "total_lines should reflect the extracted range"
+            result["complete"].as_bool().unwrap_or(true),
+            false,
+            "large explicit range should be incomplete (more chunks follow); got: {}",
+            result
         );
         assert!(
-            result["hint"].as_str().unwrap_or("").contains("read_file"),
-            "buffered range must include a hint guiding sub-range reads; got: {}",
+            result["next"].as_str().unwrap_or("").contains("start_line="),
+            "auto-chunked range must include a next continuation command; got: {}",
             result
         );
 
