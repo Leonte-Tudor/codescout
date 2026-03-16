@@ -50,7 +50,11 @@ pub struct CodeScoutServer {
 
 impl CodeScoutServer {
     pub async fn new(agent: Agent) -> Self {
-        Self::from_parts(agent, LspManager::new_arc()).await
+        let lsp = match agent.project_root().await {
+            Some(root) => LspManager::new_arc_with_root(root),
+            None => LspManager::new_arc(),
+        };
+        Self::from_parts(agent, lsp).await
     }
 
     /// Create a server with an existing LspManager (used for HTTP multi-session).
@@ -340,8 +344,11 @@ pub async fn run(
 ) -> Result<()> {
     // If no --project given, auto-detect from CWD (Claude Code launches servers from the project dir)
     let project = project.or_else(|| std::env::current_dir().ok());
+    let lsp = match project.clone() {
+        Some(root) => LspManager::new_arc_with_root(root),
+        None => LspManager::new_arc(),
+    };
     let agent = Agent::new(project).await?;
-    let lsp = LspManager::new_arc();
 
     // Heartbeat: only in debug mode — distinguishes idle from hung.
     if debug {

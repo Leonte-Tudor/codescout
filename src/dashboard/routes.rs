@@ -30,6 +30,7 @@ pub fn build_router(project_root: &Path) -> Result<Router> {
         .route("/api/index", get(api::index::get_index))
         .route("/api/drift", get(api::index::get_drift))
         .route("/api/usage", get(api::usage::get_usage))
+        .route("/api/lsp", get(api::lsp::get_lsp))
         .route("/api/errors", get(api::errors::get_errors))
         .route("/api/memories", get(api::memories::list_memories))
         .route("/api/memories/{topic}", get(api::memories::get_memory))
@@ -188,6 +189,23 @@ mod tests {
         let app = test_router(dir.path());
         let req = Request::builder()
             .uri("/api/errors")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["available"], false);
+    }
+
+    #[tokio::test]
+    async fn lsp_returns_not_available_without_db() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let app = test_router(dir.path());
+        let req = Request::builder()
+            .uri("/api/lsp")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();

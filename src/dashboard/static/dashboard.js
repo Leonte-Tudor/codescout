@@ -174,9 +174,10 @@
     // --- Tool Stats page ---
     async function refreshStats() {
         const win = document.getElementById('stats-window').value;
-        const [usage, errors] = await Promise.all([
+        const [usage, errors, lsp] = await Promise.all([
             fetchJson('/api/usage?window=' + win),
             fetchJson('/api/errors?limit=20'),
+            fetchJson('/api/lsp?window=' + win),
         ]);
 
         if (usage && usage.available) {
@@ -243,6 +244,61 @@
 
         lastErrors = (errors && errors.available) ? (errors.errors || []) : [];
         renderErrors();
+
+        // LSP startup section
+        const fmtMs = ms => ms == null ? '—' :
+            ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : ms + 'ms';
+
+        if (lsp && lsp.available) {
+            const langs = lsp.by_language || [];
+            if (langs.length > 0) {
+                const thead = '<thead><tr><th>Language</th><th class="num">Starts</th><th>Reasons</th>' +
+                    '<th class="num">Avg handshake</th><th class="num">p95 handshake</th>' +
+                    '<th class="num">Avg first resp</th><th class="num">p95 first resp</th></tr></thead>';
+                const rows = langs.map(l => {
+                    const r = l.reasons || {};
+                    const badges = [
+                        r.new_session    ? r.new_session    + ' new'     : '',
+                        r.idle_evicted   ? r.idle_evicted   + ' evicted' : '',
+                        r.lru_evicted    ? r.lru_evicted    + ' lru'     : '',
+                        r.crashed        ? r.crashed        + ' crash'   : '',
+                    ].filter(Boolean).join(' · ');
+                    return '<tr><td>' + esc(l.language) + '</td>' +
+                        '<td class="num">' + esc(String(l.starts)) + '</td>' +
+                        '<td>' + esc(badges) + '</td>' +
+                        '<td class="num">' + fmtMs(l.avg_handshake_ms) + '</td>' +
+                        '<td class="num">' + fmtMs(l.p95_handshake_ms) + '</td>' +
+                        '<td class="num">' + fmtMs(l.avg_first_response_ms) + '</td>' +
+                        '<td class="num">' + fmtMs(l.p95_first_response_ms) + '</td></tr>';
+                }).join('');
+                document.getElementById('lsp-table').innerHTML =
+                    '<table>' + thead + '<tbody>' + rows + '</tbody></table>';
+            } else {
+                document.getElementById('lsp-table').innerHTML =
+                    '<p class="muted">No LSP startup events in this window.</p>';
+            }
+
+            // Recent events (not window-filtered — always shows the most recent cold starts)
+            const recent = lsp.recent || [];
+            if (recent.length > 0) {
+                const items = recent.map(e => {
+                    const firstResp = e.first_response_ms != null
+                        ? ' · first resp ' + fmtMs(e.first_response_ms) : '';
+                    return '<li>[' + esc(e.language) + '] ' + esc(e.reason) +
+                        ' · handshake ' + esc(String(e.handshake_ms)) + 'ms' +
+                        firstResp +
+                        ' · <span class="muted">' + esc(e.started_at) + '</span></li>';
+                }).join('');
+                document.getElementById('lsp-recent').innerHTML = '<ul>' + items + '</ul>';
+            } else {
+                document.getElementById('lsp-recent').innerHTML =
+                    '<p class="muted">No recent LSP events.</p>';
+            }
+        } else {
+            document.getElementById('lsp-table').innerHTML =
+                '<p class="muted">' + esc((lsp && lsp.reason) || 'No LSP data available.') + '</p>';
+            document.getElementById('lsp-recent').innerHTML = '';
+        }
     }
 
     document.getElementById('stats-window').addEventListener('change', refreshStats);

@@ -20,6 +20,15 @@ pub fn open_db(project_root: &Path) -> Result<Connection> {
             outcome    TEXT NOT NULL,
             overflowed INTEGER NOT NULL DEFAULT 0,
             error_msg  TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS lsp_events (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            language          TEXT NOT NULL,
+            started_at        TEXT NOT NULL DEFAULT (datetime('now')),
+            reason            TEXT NOT NULL,
+            handshake_ms      INTEGER NOT NULL,
+            first_response_ms INTEGER
         );",
     )?;
     Ok(conn)
@@ -45,6 +54,35 @@ pub fn write_record(
     Ok(())
 }
 
+/// Record an LSP cold-start event. Returns the inserted row id for the
+/// two-phase write (first_response_ms is filled in later by `update_lsp_first_response`).
+pub fn write_lsp_event(
+    conn: &Connection,
+    language: &str,
+    reason: &str,
+    handshake_ms: i64,
+) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO lsp_events (language, reason, handshake_ms) VALUES (?1, ?2, ?3)",
+        params![language, reason, handshake_ms],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Fill in the first_response_ms for a previously inserted lsp_events row.
+/// Best-effort — if the row was already updated or is missing, this is a no-op.
+pub fn update_lsp_first_response(
+    conn: &Connection,
+    rowid: i64,
+    first_response_ms: i64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE lsp_events SET first_response_ms = ?1 WHERE id = ?2 AND first_response_ms IS NULL",
+        params![first_response_ms, rowid],
+    )?;
+    Ok(())
+}
+
 #[derive(Debug, serde::Serialize)]
 pub struct ToolStats {
     pub tool: String,
@@ -64,6 +102,173 @@ pub struct UsageStats {
     pub by_tool: Vec<ToolStats>,
 }
 
+#[derive(Debug, Default, serde::Serialize)]
+pub struct LspReasonCounts {
+    pub new_session: i64,
+    pub idle_evicted: i64,
+    pub lru_evicted: i64,
+    pub crashed: i64,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct LspLanguageStats {
+    pub language: String,
+    pub starts: i64,
+    pub reasons: LspReasonCounts,
+    pub avg_handshake_ms: i64,
+    pub p95_handshake_ms: i64,
+    pub avg_first_response_ms: Option<i64>,
+    pub p95_first_response_ms: Option<i64>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct LspEvent {
+    pub language: String,
+    pub started_at: String,
+    pub reason: String,
+    pub handshake_ms: i64,
+    pub first_response_ms: Option<i64>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct LspStats {
+    pub window: String,
+    pub by_language: Vec<LspLanguageStats>,
+    pub recent: Vec<LspEvent>,
+}
+
+pub fn query_lsp_stats(conn: &Connection, window: &str) -> Result<LspStats> {
+    let modifier = window_to_modifier(window);
+
+    // Aggregate per language
+    let mut agg_stmt = conn.prepare(
+        "SELECT language,
+                COUNT(*) as starts,
+                SUM(CASE WHEN reason = 'new_session'  THEN 1 ELSE 0 END),
+                SUM(CASE WHEN reason = 'idle_evicted' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN reason = 'lru_evicted'  THEN 1 ELSE 0 END),
+                SUM(CASE WHEN reason = 'crashed'      THEN 1 ELSE 0 END),
+                AVG(handshake_ms),
+                AVG(first_response_ms)
+         FROM lsp_events
+         WHERE started_at >= datetime('now', ?)
+         GROUP BY language
+         ORDER BY starts DESC",
+    )?;
+
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(String, i64, i64, i64, i64, i64, f64, Option<f64>)> = agg_stmt
+        .query_map([modifier], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+
+    let mut by_language = Vec::new();
+    for (
+        language,
+        starts,
+        new_session,
+        idle_evicted,
+        lru_evicted,
+        crashed,
+        avg_handshake,
+        avg_first,
+    ) in rows
+    {
+        let p95_handshake = lsp_percentile(conn, &language, modifier, 95, "handshake_ms")?;
+        // `.ok()` is intentional: `p95_first_response_ms` is an Optional field in the response.
+        // `lsp_percentile` returns `Ok(0)` when count=0 (all NULL values), so the only case
+        // `.ok()` silently discards is a genuine DB error — acceptable for a best-effort
+        // observability field.
+        let p95_first = lsp_percentile(conn, &language, modifier, 95, "first_response_ms").ok();
+
+        by_language.push(LspLanguageStats {
+            language,
+            starts,
+            reasons: LspReasonCounts {
+                new_session,
+                idle_evicted,
+                lru_evicted,
+                crashed,
+            },
+            avg_handshake_ms: avg_handshake.round() as i64,
+            p95_handshake_ms: p95_handshake,
+            avg_first_response_ms: avg_first.map(|v| v.round() as i64),
+            p95_first_response_ms: p95_first,
+        });
+    }
+
+    // Recent events (last 20, not window-filtered — always shows the most recent cold starts
+    // regardless of the selected window, so the list is never empty while data exists)
+    let mut recent_stmt = conn.prepare(
+        "SELECT language, started_at, reason, handshake_ms, first_response_ms
+         FROM lsp_events
+         ORDER BY started_at DESC
+         LIMIT 20",
+    )?;
+    let recent: Vec<LspEvent> = recent_stmt
+        .query_map([], |r| {
+            Ok(LspEvent {
+                language: r.get(0)?,
+                started_at: r.get(1)?,
+                reason: r.get(2)?,
+                handshake_ms: r.get(3)?,
+                first_response_ms: r.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+
+    Ok(LspStats {
+        window: window.to_string(),
+        by_language,
+        recent,
+    })
+}
+
+fn lsp_percentile(
+    conn: &Connection,
+    language: &str,
+    modifier: &str,
+    pct: i64,
+    column: &str,
+) -> Result<i64> {
+    let column = match column {
+        "handshake_ms" => "handshake_ms",
+        "first_response_ms" => "first_response_ms",
+        _ => anyhow::bail!("lsp_percentile: unexpected column '{column}' — only hardcoded column literals are safe"),
+    };
+    // Only count non-NULL values for the given column
+    let count: i64 = conn.query_row(
+        &format!(
+            "SELECT COUNT({}) FROM lsp_events\n             WHERE language = ? AND started_at >= datetime('now', ?) AND {} IS NOT NULL",
+            column, column
+        ),
+        params![language, modifier],
+        |r| r.get(0),
+    )?;
+    if count == 0 {
+        return Ok(0);
+    }
+    let offset = ((count * pct + 99) / 100 - 1).max(0);
+    let val: i64 = conn.query_row(
+        &format!(
+            "SELECT {} FROM lsp_events\n             WHERE language = ? AND started_at >= datetime('now', ?) AND {} IS NOT NULL\n             ORDER BY {} LIMIT 1 OFFSET ?",
+            column, column, column
+        ),
+        params![language, modifier, offset],
+        |r| r.get(0),
+    )?;
+    Ok(val)
+}
 pub fn query_stats(conn: &Connection, window: &str) -> Result<UsageStats> {
     let modifier = window_to_modifier(window);
     let mut stmt = conn.prepare(
@@ -388,5 +593,101 @@ mod tests {
         }
         let errors = recent_errors(&conn, 3).unwrap();
         assert_eq!(errors.len(), 3);
+    }
+
+    #[test]
+    fn write_lsp_event_returns_rowid() {
+        let (_dir, conn) = tmp();
+        let rowid = write_lsp_event(&conn, "rust", "new_session", 820).unwrap();
+        assert!(rowid > 0);
+    }
+
+    #[test]
+    fn update_lsp_first_response_fills_null() {
+        let (_dir, conn) = tmp();
+        let rowid = write_lsp_event(&conn, "rust", "new_session", 820).unwrap();
+        // Before update: first_response_ms should be NULL
+        let val: Option<i64> = conn
+            .query_row(
+                "SELECT first_response_ms FROM lsp_events WHERE id = ?",
+                [rowid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(val.is_none());
+        // After update: should be set
+        update_lsp_first_response(&conn, rowid, 9100).unwrap();
+        let val: Option<i64> = conn
+            .query_row(
+                "SELECT first_response_ms FROM lsp_events WHERE id = ?",
+                [rowid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(val, Some(9100));
+    }
+
+    #[test]
+    fn query_lsp_stats_aggregates_correctly() {
+        let (_dir, conn) = tmp();
+        write_lsp_event(&conn, "rust", "new_session", 800).unwrap();
+        write_lsp_event(&conn, "rust", "idle_evicted", 1200).unwrap();
+        write_lsp_event(&conn, "kotlin", "new_session", 5000).unwrap();
+
+        let stats = query_lsp_stats(&conn, "30d").unwrap();
+        assert_eq!(stats.by_language.len(), 2);
+
+        let rust = stats
+            .by_language
+            .iter()
+            .find(|l| l.language == "rust")
+            .unwrap();
+        assert_eq!(rust.starts, 2);
+        assert_eq!(rust.reasons.new_session, 1);
+        assert_eq!(rust.reasons.idle_evicted, 1);
+        assert_eq!(rust.avg_handshake_ms, 1000); // (800 + 1200) / 2
+        assert!(rust.p95_handshake_ms >= 800);
+
+        let kotlin = stats
+            .by_language
+            .iter()
+            .find(|l| l.language == "kotlin")
+            .unwrap();
+        assert_eq!(kotlin.starts, 1);
+        assert_eq!(kotlin.avg_handshake_ms, 5000);
+    }
+
+    #[test]
+    fn query_lsp_stats_window_excludes_old_rows() {
+        let (_dir, conn) = tmp();
+        // Insert an old row manually with an ancient timestamp
+        conn.execute(
+            "INSERT INTO lsp_events (language, started_at, reason, handshake_ms)
+             VALUES ('rust', datetime('now', '-60 days'), 'new_session', 999)",
+            [],
+        )
+        .unwrap();
+        // Insert a recent row
+        write_lsp_event(&conn, "rust", "new_session", 800).unwrap();
+
+        let stats = query_lsp_stats(&conn, "30d").unwrap();
+        let rust = stats
+            .by_language
+            .iter()
+            .find(|l| l.language == "rust")
+            .unwrap();
+        // Only the recent row should be counted
+        assert_eq!(rust.starts, 1);
+        assert_eq!(rust.avg_handshake_ms, 800);
+    }
+
+    #[test]
+    fn query_lsp_stats_recent_returns_last_20() {
+        let (_dir, conn) = tmp();
+        for i in 0..25i64 {
+            write_lsp_event(&conn, "rust", "new_session", i * 10).unwrap();
+        }
+        let stats = query_lsp_stats(&conn, "30d").unwrap();
+        assert_eq!(stats.recent.len(), 20);
     }
 }

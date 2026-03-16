@@ -64,4 +64,15 @@ pub trait LspProvider: Send + Sync {
     async fn notify_file_changed(&self, path: &Path);
 
     async fn shutdown_all(&self);
+
+    /// Record the first real LSP response time for a cold-started client.
+    /// Default implementation is a no-op — only `LspManager` does real work.
+    /// Best-effort: implementations must never propagate errors.
+    async fn record_first_response(
+        &self,
+        _language: &str,
+        _workspace_root: &std::path::Path,
+        _elapsed_ms: i64,
+    ) {
+    }
 }

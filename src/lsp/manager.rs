@@ -65,6 +65,17 @@ pub struct LspManager {
     max_clients: usize,
     /// How long a client may sit idle before the background task evicts it.
     idle_ttl: Duration,
+    /// Maps LspKey → db rowid for the two-phase write.
+    /// Populated by do_start; consumed (first-caller-wins) by record_first_response.
+    pending_first_response: StdMutex<HashMap<LspKey, i64>>,
+    /// Reason for the next cold start of a given key, set by eviction paths before
+    /// removing the client. Consumed by do_start (defaults to "new_session" if absent).
+    pub(crate) pending_reason: StdMutex<HashMap<LspKey, String>>,
+    /// Project root for production usage.db writes. Set at construction time via new_arc_with_root.
+    project_root: Option<std::path::PathBuf>,
+    /// Project root for test-only DB writes. Set by new_for_test_with_root.
+    #[cfg(test)]
+    project_root_for_test: Option<std::path::PathBuf>,
 }
 
 impl Default for LspManager {
@@ -112,6 +123,11 @@ impl LspManager {
             starting: StdMutex::new(HashMap::new()),
             max_clients: 5,
             idle_ttl: Duration::from_secs(20 * 60),
+            pending_first_response: StdMutex::new(HashMap::new()),
+            pending_reason: StdMutex::new(HashMap::new()),
+            project_root: None,
+            #[cfg(test)]
+            project_root_for_test: None,
         }
     }
 
@@ -174,6 +190,15 @@ impl LspManager {
                     // Remove and shut down outside the lock.
                     {
                         let mut clients = self.clients.lock().await;
+                        self.pending_reason
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(oldest_key.clone(), "lru_evicted".to_string());
+                        // Discard any pending first-response entry — this key's window is over.
+                        self.pending_first_response
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&oldest_key);
                         clients.remove(&oldest_key);
                     }
                     self.last_used.lock().await.remove(&oldest_key);
@@ -274,6 +299,7 @@ impl LspManager {
             let _ = old.shutdown().await;
         }
 
+        let start_time = std::time::Instant::now();
         let result = LspClient::start(config).await.map(Arc::new);
 
         match result {
@@ -288,6 +314,40 @@ impl LspManager {
                     .lock()
                     .await
                     .insert(key.clone(), Instant::now());
+
+                // Record LSP startup event — best-effort, never fail the startup.
+                let reason = self
+                    .pending_reason
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(key)
+                    .unwrap_or_else(|| "new_session".to_string());
+                let handshake_ms = start_time.elapsed().as_millis() as i64;
+                tracing::info!(
+                    "LSP initialized in {}ms (language: {}, reason: {})",
+                    handshake_ms,
+                    key.language,
+                    reason
+                );
+                let project_root_opt = self.project_root.clone();
+                #[cfg(test)]
+                let project_root_opt = self.project_root_for_test.clone().or(project_root_opt);
+                if let Some(root) = project_root_opt {
+                    let lang = key.language.clone();
+                    let reason_clone = reason.clone();
+                    let rowid_result = tokio::task::spawn_blocking(move || {
+                        let conn = crate::usage::db::open_db(&root)?;
+                        crate::usage::db::write_lsp_event(&conn, &lang, &reason_clone, handshake_ms)
+                    })
+                    .await;
+                    if let Ok(Ok(rowid)) = rowid_result {
+                        self.pending_first_response
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(key.clone(), rowid);
+                    }
+                }
+
                 // Signal success. The `starting` entry is removed by _cleanup
                 // when this function returns.
                 let _ = tx.send(Some(true));
@@ -350,6 +410,45 @@ impl LspManager {
                 let _ = client.did_change(path).await;
             }
         }
+    }
+
+    /// Inner implementation of first-response recording. Called by the LspProvider
+    /// trait impl. Named `_inner` to avoid the infinite-recursion trap where
+    /// `self.record_first_response(...)` inside a trait impl resolves back to the
+    /// trait method rather than this inherent method.
+    pub async fn record_first_response_inner(
+        &self,
+        language: &str,
+        workspace_root: &std::path::Path,
+        elapsed_ms: i64,
+    ) {
+        let key = LspKey::new(language, workspace_root);
+        let pending = self
+            .pending_first_response
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&key);
+
+        let Some(rowid) = pending else { return };
+
+        tracing::debug!(
+            "LSP first response in {}ms (language: {})",
+            elapsed_ms,
+            language
+        );
+
+        let project_root_opt = self.project_root.clone();
+        #[cfg(test)]
+        let project_root_opt = self.project_root_for_test.clone().or(project_root_opt);
+
+        let Some(root) = project_root_opt else { return };
+
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Ok(conn) = crate::usage::db::open_db(&root) {
+                let _ = crate::usage::db::update_lsp_first_response(&conn, rowid, elapsed_ms);
+            }
+        })
+        .await;
     }
 
     /// Return the number of in-progress language starts. Should be 0 after any
@@ -417,6 +516,13 @@ impl LspManager {
         self.do_start(&key, config, tx_opt.expect("tx_opt is always Some when rx_opt is None — set in the same exclusive branch above"))
             .await
     }
+
+    #[cfg(test)]
+    pub async fn new_for_test_with_root(project_root: &std::path::Path) -> Arc<Self> {
+        let mut mgr = Self::new();
+        mgr.project_root_for_test = Some(project_root.to_path_buf());
+        Arc::new(mgr)
+    }
 }
 
 #[async_trait::async_trait]
@@ -437,27 +543,50 @@ impl crate::lsp::ops::LspProvider for LspManager {
     async fn shutdown_all(&self) {
         LspManager::shutdown_all(self).await
     }
+
+    async fn record_first_response(
+        &self,
+        language: &str,
+        workspace_root: &std::path::Path,
+        elapsed_ms: i64,
+    ) {
+        // Call the inherent method by name to avoid infinite recursion
+        // (self.record_first_response(...) would resolve back to this trait method)
+        LspManager::record_first_response_inner(self, language, workspace_root, elapsed_ms).await;
+    }
 }
 
 impl LspManager {
-    /// Create a new `Arc<LspManager>` using the default idle TTL (20 minutes)
-    /// and spawn a background eviction task.
-    pub fn new_arc() -> Arc<Self> {
-        Self::new_arc_with_ttl(Duration::from_secs(30 * 60))
-    }
-
-    /// Create a new `Arc<LspManager>` with a custom idle TTL and spawn the
-    /// background eviction task.  The task holds a `Weak` reference so it
-    /// exits automatically when the last `Arc` is dropped.
-    pub fn new_arc_with_ttl(ttl: Duration) -> Arc<Self> {
+    /// Shared construction: builds Arc<LspManager> with the given TTL and optional project root,
+    /// spawning the idle eviction loop.
+    fn new_arc_inner(ttl: Duration, project_root: Option<std::path::PathBuf>) -> Arc<Self> {
         let mut mgr = Self::new();
         mgr.idle_ttl = ttl;
+        mgr.project_root = project_root;
         let arc = Arc::new(mgr);
         let weak = Arc::downgrade(&arc);
         tokio::spawn(async move {
             Self::idle_eviction_loop(weak, ttl).await;
         });
         arc
+    }
+
+    /// Create an `Arc<LspManager>` with the default 30-minute idle TTL
+    /// and spawn a background eviction task.
+    pub fn new_arc() -> Arc<Self> {
+        Self::new_arc_inner(Duration::from_secs(30 * 60), None)
+    }
+
+    /// Create an `Arc<LspManager>` with a custom idle TTL and spawn a
+    /// background eviction task.  The task holds a `Weak` reference so it
+    /// exits automatically when the last `Arc` is dropped.
+    pub fn new_arc_with_ttl(ttl: Duration) -> Arc<Self> {
+        Self::new_arc_inner(ttl, None)
+    }
+
+    /// Production constructor: writes LSP startup timing to usage.db under `project_root`.
+    pub fn new_arc_with_root(project_root: std::path::PathBuf) -> Arc<Self> {
+        Self::new_arc_inner(Duration::from_secs(30 * 60), Some(project_root))
     }
 
     /// Evict all clients that have not been accessed for longer than `ttl`.
@@ -476,6 +605,15 @@ impl LspManager {
         for key in idle_keys {
             let client = {
                 let mut clients = self.clients.lock().await;
+                self.pending_reason
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(key.clone(), "idle_evicted".to_string());
+                // Discard any pending first-response entry — this key's window is over.
+                self.pending_first_response
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&key);
                 clients.remove(&key)
             };
             self.last_used.lock().await.remove(&key);
@@ -503,6 +641,33 @@ impl LspManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a minimal Cargo project under `dir` and return an
+    /// `LspServerConfig` for rust-analyzer, or `None` if rust-analyzer is not
+    /// installed. Tests that call this must skip when `None` is returned.
+    fn ra_config_or_skip(dir: &std::path::Path) -> Option<LspServerConfig> {
+        use std::process::Command as StdCommand;
+        if StdCommand::new("rust-analyzer")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return None;
+        }
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "pub fn f() {}").unwrap();
+        Some(LspServerConfig {
+            command: "rust-analyzer".into(),
+            args: vec![],
+            workspace_root: dir.to_path_buf(),
+            init_timeout: Some(std::time::Duration::from_secs(30)),
+        })
+    }
 
     #[tokio::test]
     async fn manager_starts_empty() {
@@ -764,5 +929,131 @@ mod tests {
             mgr.active_languages().await.is_empty(),
             "idle client should have been evicted after TTL"
         );
+    }
+
+    #[tokio::test]
+    async fn do_start_records_lsp_event_to_db() {
+        // Use a real temp dir so open_db works
+        let dir = tempfile::TempDir::new().unwrap();
+        let Some(config) = ra_config_or_skip(dir.path()) else {
+            eprintln!("Skipping: rust-analyzer not installed");
+            return;
+        };
+        let mgr = LspManager::new_for_test_with_root(dir.path()).await;
+
+        mgr.get_or_start_for_test("rust", config).await.unwrap();
+
+        // Verify an lsp_events row was written
+        let conn = crate::usage::db::open_db(dir.path()).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM lsp_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let (lang, reason): (String, String) = conn
+            .query_row("SELECT language, reason FROM lsp_events LIMIT 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(lang, "rust");
+        assert_eq!(reason, "new_session");
+    }
+
+    #[tokio::test]
+    async fn do_start_reason_evicted_consumes_pending_reason() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let Some(config) = ra_config_or_skip(dir.path()) else {
+            eprintln!("Skipping: rust-analyzer not installed");
+            return;
+        };
+        let mgr = LspManager::new_for_test_with_root(dir.path()).await;
+        let key = LspKey::new("rust", dir.path());
+
+        // Pre-populate pending_reason as if eviction happened
+        mgr.pending_reason
+            .lock()
+            .unwrap()
+            .insert(key, "idle_evicted".to_string());
+
+        mgr.get_or_start_for_test("rust", config).await.unwrap();
+
+        // pending_reason should be consumed
+        assert!(mgr.pending_reason.lock().unwrap().is_empty());
+
+        // DB row should have reason = idle_evicted
+        let conn = crate::usage::db::open_db(dir.path()).unwrap();
+        let reason: String = conn
+            .query_row("SELECT reason FROM lsp_events LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(reason, "idle_evicted");
+    }
+
+    #[tokio::test]
+    async fn record_first_response_consumes_pending_and_updates_db() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let Some(config) = ra_config_or_skip(dir.path()) else {
+            eprintln!("Skipping: rust-analyzer not installed");
+            return;
+        };
+        let mgr = LspManager::new_for_test_with_root(dir.path()).await;
+
+        // Start the LSP to create the pending entry
+        mgr.get_or_start_for_test("rust", config).await.unwrap();
+
+        // First call should consume the pending entry and write to DB
+        mgr.record_first_response_inner("rust", dir.path(), 9100)
+            .await;
+
+        // pending_first_response should now be empty
+        assert!(mgr.pending_first_response.lock().unwrap().is_empty());
+
+        // DB row should be updated
+        let conn = crate::usage::db::open_db(dir.path()).unwrap();
+        let val: Option<i64> = conn
+            .query_row(
+                "SELECT first_response_ms FROM lsp_events LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(val, Some(9100));
+    }
+
+    #[tokio::test]
+    async fn record_first_response_noop_when_no_pending() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mgr = LspManager::new_for_test_with_root(dir.path()).await;
+        // No prior get_or_start — calling record_first_response_inner should not panic or error
+        mgr.record_first_response_inner("rust", dir.path(), 5000)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn record_first_response_second_call_is_noop() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let Some(config) = ra_config_or_skip(dir.path()) else {
+            eprintln!("Skipping: rust-analyzer not installed");
+            return;
+        };
+        let mgr = LspManager::new_for_test_with_root(dir.path()).await;
+
+        mgr.get_or_start_for_test("rust", config).await.unwrap();
+
+        mgr.record_first_response_inner("rust", dir.path(), 9100)
+            .await;
+        // Second call — pending is already consumed, should be a silent no-op
+        mgr.record_first_response_inner("rust", dir.path(), 1234)
+            .await;
+
+        let conn = crate::usage::db::open_db(dir.path()).unwrap();
+        let val: Option<i64> = conn
+            .query_row(
+                "SELECT first_response_ms FROM lsp_events LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // Should still be 9100 — second call didn't overwrite
+        assert_eq!(val, Some(9100));
     }
 }

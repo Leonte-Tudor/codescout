@@ -12,6 +12,28 @@ use super::{parse_bool_param, Tool, ToolContext};
 use crate::ast;
 use crate::lsp::SymbolInfo;
 
+/// Lightweight timer for recording LSP first-response latency.
+/// Start before the LSP call, then call `.record()` on success.
+/// If the LSP call fails and the function returns early, the timer
+/// is simply dropped — no timing is recorded.
+struct LspTimer {
+    start: std::time::Instant,
+}
+
+impl LspTimer {
+    fn start() -> Self {
+        Self {
+            start: std::time::Instant::now(),
+        }
+    }
+
+    async fn record(self, ctx: &ToolContext, lang: &str, root: &Path) {
+        ctx.lsp
+            .record_first_response(lang, root, self.start.elapsed().as_millis() as i64)
+            .await;
+    }
+}
+
 /// Returns true if the path string contains glob metacharacters.
 fn is_glob(path: &str) -> bool {
     path.contains('*') || path.contains('?') || path.contains('[')
@@ -456,7 +478,9 @@ impl Tool for ListSymbols {
                 };
                 let language_id = crate::lsp::servers::lsp_language_id(lang);
                 if let Ok(client) = ctx.lsp.get_or_start(lang, &root).await {
+                    let timer = LspTimer::start();
                     if let Ok(symbols) = client.document_symbols(file_path, language_id).await {
+                        timer.record(ctx, lang, &root).await;
                         let rel = file_path.strip_prefix(&root).unwrap_or(file_path);
                         let source = if include_body {
                             std::fs::read_to_string(file_path).ok()
@@ -490,8 +514,13 @@ impl Tool for ListSymbols {
         let full_path = resolve_read_path(ctx, rel_path).await?;
 
         if full_path.is_file() {
+            let raw_lang = ast::detect_language(&full_path)
+                .ok_or_else(|| anyhow::anyhow!("unsupported language"))?;
+            let root = ctx.agent.require_project_root().await?;
             let (client, lang) = get_lsp_client(ctx, &full_path).await?;
+            let timer = LspTimer::start();
             let symbols = client.document_symbols(&full_path, &lang).await?;
+            timer.record(ctx, raw_lang, &root).await;
             let include_body = guard.should_include_body();
             let source = if include_body {
                 std::fs::read_to_string(&full_path).ok()
@@ -636,10 +665,15 @@ impl Tool for ListSymbols {
 
                 // Try LSP first, fall back to tree-sitter if unavailable
                 let mut symbols = if let Ok(client) = ctx.lsp.get_or_start(lang, &root).await {
-                    client
+                    let timer = LspTimer::start();
+                    let syms = client
                         .document_symbols(abs_path, language_id)
                         .await
-                        .unwrap_or_default()
+                        .unwrap_or_default();
+                    if !syms.is_empty() {
+                        timer.record(ctx, lang, &root).await;
+                    }
+                    syms
                 } else {
                     vec![]
                 };
@@ -845,9 +879,11 @@ impl Tool for FindSymbol {
                 let Ok(client) = ctx.lsp.get_or_start(lang, &root).await else {
                     continue;
                 };
+                let timer = LspTimer::start();
                 let Ok(symbols) = client.document_symbols(file_path, language_id).await else {
                     continue;
                 };
+                timer.record(ctx, lang, &root).await;
                 let source = if include_body {
                     std::fs::read_to_string(file_path).ok()
                 } else {
@@ -1141,18 +1177,21 @@ impl Tool for FindReferences {
         let scope = crate::library::scope::Scope::parse(input["scope"].as_str());
 
         let full_path = resolve_read_path(ctx, rel_path).await?;
+        let raw_lang = ast::detect_language(&full_path)
+            .ok_or_else(|| anyhow::anyhow!("unsupported language"))?;
+        let root = ctx.agent.require_project_root().await?;
         let (client, lang) = get_lsp_client(ctx, &full_path).await?;
 
         // Find the symbol's position by walking document symbols
+        let timer = LspTimer::start();
         let symbols = client.document_symbols(&full_path, &lang).await?;
+        timer.record(ctx, raw_lang, &root).await;
         let sym = find_unique_symbol_by_name_path(&symbols, name_path)?;
 
         // Get references at the symbol's position
         let refs = client
             .references(&full_path, sym.start_line, sym.start_col, &lang)
             .await?;
-
-        let root = ctx.agent.require_project_root().await?;
 
         // Resolve all library roots for classification (Scope::All to get every lib).
         let lib_roots = resolve_library_roots(&crate::library::scope::Scope::All, &ctx.agent).await;
@@ -1274,6 +1313,9 @@ impl Tool for GotoDefinition {
         let identifier = input["identifier"].as_str();
 
         let full_path = resolve_read_path(ctx, rel_path).await?;
+        let raw_lang = ast::detect_language(&full_path)
+            .ok_or_else(|| anyhow::anyhow!("unsupported language"))?;
+        let root = ctx.agent.require_project_root().await?;
         let (client, lang) = get_lsp_client(ctx, &full_path).await?;
 
         // Determine column: find identifier on the line, or use first non-whitespace
@@ -1303,9 +1345,11 @@ impl Tool for GotoDefinition {
                 .count() as u32
         };
 
+        let timer = LspTimer::start();
         let definitions = client
             .goto_definition(&full_path, line_0, col, &lang)
             .await?;
+        timer.record(ctx, raw_lang, &root).await;
 
         if definitions.is_empty() {
             return Err(RecoverableError::with_hint(
@@ -1316,7 +1360,6 @@ impl Tool for GotoDefinition {
             .into());
         }
 
-        let root = ctx.agent.require_project_root().await?;
         let mut results = Vec::new();
         for loc in &definitions {
             let def_path = uri_to_path(loc.uri.as_str());
@@ -1445,6 +1488,8 @@ impl Tool for Hover {
         let identifier = input["identifier"].as_str();
 
         let full_path = resolve_read_path(ctx, rel_path).await?;
+        let raw_lang = ast::detect_language(&full_path)
+            .ok_or_else(|| anyhow::anyhow!("unsupported language"))?;
         let (client, lang) = get_lsp_client(ctx, &full_path).await?;
 
         // Determine column: find identifier on the line, or skip modifiers to find first symbol
@@ -1471,11 +1516,13 @@ impl Tool for Hover {
             find_first_symbol_col(source_line)
         };
 
+        let timer = LspTimer::start();
         let hover_text = client.hover(&full_path, line_0, col, &lang).await?;
+        let root = ctx.agent.require_project_root().await?;
+        timer.record(ctx, raw_lang, &root).await;
 
         match hover_text {
             Some(text) => {
-                let root = ctx.agent.require_project_root().await?;
                 let source_tag = tag_external_path(&full_path, &root, &ctx.agent).await;
                 let mut result = json!({
                     "content": text,
