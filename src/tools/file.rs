@@ -981,9 +981,38 @@ fn format_read_file(val: &Value) -> String {
         return format_read_file_summary(val, file_type);
     }
 
-    // Buffered range: file_id present but no content — the range was too large for
-    // inline and was stored as a @file_* ref.  Show total_lines + hint so the agent
-    // knows it needs to sub-range read the ref.
+    // Auto-chunked response: shown_lines present means partial read with content
+    if let Some(shown) = val.get("shown_lines").and_then(|v| v.as_array()) {
+        let start = shown.first().and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+        let end = shown.last().and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let total = val["total_lines"].as_u64().unwrap_or(0);
+        let complete = val["complete"].as_bool().unwrap_or(true);
+
+        let content = val["content"].as_str().unwrap_or("");
+        let lines: Vec<&str> = content.lines().collect();
+        let lines_shown = lines.len();
+        let lineno_width = end.to_string().len();
+
+        let mut out = format!("{total} lines\n");
+        for (i, line) in lines.iter().enumerate() {
+            let lineno = start + i;
+            out.push('\n');
+            out.push_str(&format!("{:>width$}| {line}", lineno, width = lineno_width));
+        }
+
+        if let Some(file_id) = val["file_id"].as_str() {
+            out.push_str(&format!("\n\n  Buffer: {file_id}"));
+        }
+        if !complete {
+            out.push_str(&format!("\n  [{lines_shown} of {total} lines shown]"));
+            if let Some(next) = val["next"].as_str() {
+                out.push_str(&format!("\n  Next: {next}"));
+            }
+        }
+        return out;
+    }
+
+    // Old no-content buffered mode (kept for backward compat)
     if val.get("content").is_none() {
         if let Some(file_id) = val["file_id"].as_str() {
             let total = val["total_lines"].as_u64().unwrap_or(0);
@@ -4693,10 +4722,7 @@ mod tests {
 
     #[test]
     fn read_file_buffered_range_shows_hint() {
-        // Auto-chunked response: has content + shown_lines + complete + next.
-        // Note: format_read_file will be updated in Task 5 to render shown_lines
-        // and next properly. For now we only assert on what the current formatter
-        // already produces: content lines and total_lines.
+        // Auto-chunked response: has content + shown_lines + complete + next
         let val = serde_json::json!({
             "content": "line 0001 padding text\nline 0002 padding text\nline 0003 padding text",
             "file_id": "@file_abc123",
@@ -4711,8 +4737,82 @@ mod tests {
             "should show content; got: {result}"
         );
         assert!(
-            result.contains("311"),
-            "should show total_lines; got: {result}"
+            result.contains("3 of 311"),
+            "should show progress; got: {result}"
+        );
+        assert!(
+            result.contains("start_line=4"),
+            "should show next command; got: {result}"
+        );
+    }
+
+    #[test]
+    fn format_read_file_auto_chunked() {
+        let val = serde_json::json!({
+            "content": "line 0001 text\nline 0002 text\nline 0003 text",
+            "total_lines": 300,
+            "shown_lines": [1, 3],
+            "complete": false,
+            "file_id": "@file_abc123",
+            "next": "read_file(\"@file_abc123\", start_line=4, end_line=6)"
+        });
+        let result = format_read_file(&val);
+        assert!(
+            result.contains("line 0001"),
+            "should show content; got: {result}"
+        );
+        assert!(
+            result.contains("1|"),
+            "should have line numbers; got: {result}"
+        );
+        assert!(
+            result.contains("3 of 300"),
+            "should show progress; got: {result}"
+        );
+        assert!(
+            result.contains("start_line=4"),
+            "should show next; got: {result}"
+        );
+        assert!(
+            result.contains("@file_abc123"),
+            "should show buffer ref; got: {result}"
+        );
+    }
+
+    #[test]
+    fn format_read_file_auto_chunked_mid_file() {
+        // Chunk from the middle of a file — line numbers should start at 50
+        let val = serde_json::json!({
+            "content": "middle content\nmore content",
+            "total_lines": 300,
+            "shown_lines": [50, 51],
+            "complete": false,
+            "next": "read_file(\"@file_abc\", start_line=52, end_line=53)"
+        });
+        let result = format_read_file(&val);
+        assert!(
+            result.contains("50|"),
+            "line numbers should start at 50; got: {result}"
+        );
+        assert!(result.contains("51|"), "should have line 51; got: {result}");
+    }
+
+    #[test]
+    fn format_read_file_auto_chunked_complete() {
+        let val = serde_json::json!({
+            "content": "line 1\nline 2",
+            "total_lines": 2,
+            "shown_lines": [1, 2],
+            "complete": true,
+        });
+        let result = format_read_file(&val);
+        assert!(
+            result.contains("line 1"),
+            "should show content; got: {result}"
+        );
+        assert!(
+            !result.contains("Next:"),
+            "should not show next for complete reads; got: {result}"
         );
     }
 
