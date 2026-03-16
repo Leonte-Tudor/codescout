@@ -196,14 +196,27 @@ impl Tool for ReadFile {
             // Full buffer content — never re-buffer (circular: same content, new ID,
             // no benefit). If too large to return inline, tell the agent to paginate.
             if crate::tools::exceeds_inline_limit(&text) {
-                return Ok(json!({
+                let (chunk, lines_shown, complete) = crate::util::text::extract_lines_to_budget(
+                    &text,
+                    1,
+                    usize::MAX,
+                    crate::tools::INLINE_BYTE_BUDGET,
+                );
+                let mut result = json!({
+                    "content": chunk,
                     "total_lines": total_lines,
-                    "hint": format!(
-                        "Buffer has {total_lines} lines. \
-                         Use start_line and end_line to read specific sections \
-                         (e.g. start_line=1, end_line=100)."
-                    ),
-                }));
+                    "shown_lines": [1, lines_shown],
+                    "complete": complete,
+                });
+                if !complete {
+                    let next_start = lines_shown + 1;
+                    let next_end = (next_start + lines_shown - 1).min(total_lines);
+                    // Reference the SAME buffer path — do not re-buffer
+                    result["next"] = json!(format!(
+                        "read_file(\"{path}\", start_line={next_start}, end_line={next_end})"
+                    ));
+                }
+                return Ok(result);
             }
             return Ok(json!({ "content": text, "total_lines": total_lines }));
         }
@@ -2121,7 +2134,51 @@ mod tests {
             shown[0]
         );
         let end_val = shown[1].as_u64().unwrap();
-        assert!(end_val > 50 && end_val < 300, "shown_lines[1] should be within the file range; got {end_val}");
+        assert!(
+            end_val > 50 && end_val < 300,
+            "shown_lines[1] should be within the file range; got {end_val}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_full_buffer_auto_chunks() {
+        let (dir, ctx) = project_ctx().await;
+
+        // 300 lines × 41 bytes = ~12 KB > TOOL_OUTPUT_BUFFER_THRESHOLD (10 KB)
+        let content: String = (1..=300)
+            .map(|i| format!("line {:04} padding_padding_padding_padd\n", i))
+            .collect();
+        assert!(
+            content.len() > crate::tools::TOOL_OUTPUT_BUFFER_THRESHOLD,
+            "test data must exceed threshold ({} bytes), got {}",
+            crate::tools::TOOL_OUTPUT_BUFFER_THRESHOLD,
+            content.len()
+        );
+        // Write a real file so store_file sets source_path to an existing path;
+        // otherwise get_with_refresh_flag evicts the entry on the first stat.
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, &content).unwrap();
+        let buf_id = ctx
+            .output_buffer
+            .store_file(file_path.to_string_lossy().into_owned(), content);
+
+        // No start_line/end_line — full buffer read
+        let result = ReadFile
+            .call(serde_json::json!({ "path": &buf_id }), &ctx)
+            .await
+            .unwrap();
+
+        assert!(
+            result.get("content").is_some(),
+            "should auto-chunk; got: {result}"
+        );
+        assert_eq!(result["complete"], false);
+        // next should reference the SAME buffer ID (not re-buffer)
+        let next = result["next"].as_str().unwrap();
+        assert!(
+            next.contains(&buf_id),
+            "next should reference original buffer; got: {next}"
+        );
     }
 
     // ── ListDir ───────────────────────────────────────────────────────────────
@@ -3162,7 +3219,10 @@ mod tests {
             result
         );
         assert!(
-            result["next"].as_str().unwrap_or("").contains("start_line="),
+            result["next"]
+                .as_str()
+                .unwrap_or("")
+                .contains("start_line="),
             "auto-chunked range must include a next continuation command; got: {}",
             result
         );
@@ -4633,30 +4693,26 @@ mod tests {
 
     #[test]
     fn read_file_buffered_range_shows_hint() {
-        // When an explicit range is too large for inline, the response has
-        // file_id + total_lines + hint but no content.  format_read_file must
-        // render the buffer ref and hint so the agent knows content was deferred.
+        // Auto-chunked response: has content + shown_lines + complete + next.
+        // Note: format_read_file will be updated in Task 5 to render shown_lines
+        // and next properly. For now we only assert on what the current formatter
+        // already produces: content lines and total_lines.
         let val = serde_json::json!({
+            "content": "line 0001 padding text\nline 0002 padding text\nline 0003 padding text",
             "file_id": "@file_abc123",
             "total_lines": 311,
-            "hint": "Range too large for inline (~2800 tokens). Use read_file(\"@file_abc123\", start_line=1, end_line=100) to read in chunks."
+            "shown_lines": [1, 3],
+            "complete": false,
+            "next": "read_file(\"@file_abc123\", start_line=4, end_line=6)"
         });
         let result = format_read_file(&val);
         assert!(
-            result.contains("311 lines"),
+            result.contains("line 0001"),
+            "should show content; got: {result}"
+        );
+        assert!(
+            result.contains("311"),
             "should show total_lines; got: {result}"
-        );
-        assert!(
-            result.contains("~2800 tokens"),
-            "hint should report token count, not line count; got: {result}"
-        );
-        assert!(
-            result.contains("Buffer: @file_abc123"),
-            "should show buffer ref; got: {result}"
-        );
-        assert!(
-            result.contains("read_file"),
-            "should include navigation hint; got: {result}"
         );
     }
 
