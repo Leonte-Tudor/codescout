@@ -158,18 +158,38 @@ impl Tool for ReadFile {
                 // lines — making subsequent start_line/end_line navigation useless.
                 // Same root cause as BUG-025 (real-file path); this covers buffer refs.
                 if crate::tools::exceeds_inline_limit(&content) {
-                    let content_lines = content.lines().count();
+                    let content_total = content.lines().count();
                     let file_id = ctx
                         .output_buffer
-                        .store_file(format!("{}[{}-{}]", path, s, e), content);
-                    return Ok(json!({
+                        .store_file(format!("{}[{}-{}]", path, s, e), content.clone());
+
+                    // Auto-chunk: extract as much as fits the inline budget.
+                    // content is already the sub-range, so we work in sub-buffer line space (1-based).
+                    let (chunk, lines_shown, complete) = crate::util::text::extract_lines_to_budget(
+                        &content,
+                        1,
+                        usize::MAX,
+                        crate::tools::INLINE_BYTE_BUDGET,
+                    );
+                    // shown_lines reports original file line numbers for agent context
+                    let orig_start = s as usize;
+                    let orig_end = orig_start + lines_shown.saturating_sub(1);
+                    let mut result = json!({
+                        "content": chunk,
                         "file_id": file_id,
-                        "total_lines": content_lines,
-                        "hint": format!(
-                            "Range too large for inline ({content_lines} lines). \
-                             Use read_file(\"{file_id}\", start_line=1, end_line=100) to read in chunks."
-                        ),
-                    }));
+                        "total_lines": content_total,
+                        "shown_lines": [orig_start, orig_end],
+                        "complete": complete,
+                    });
+                    if !complete {
+                        // next uses sub-buffer line numbers (file_id contains the sub-range)
+                        let buf_next_start = lines_shown + 1;
+                        let buf_next_end = (buf_next_start + lines_shown - 1).min(content_total);
+                        result["next"] = json!(format!(
+                            "read_file(\"{file_id}\", start_line={buf_next_start}, end_line={buf_next_end})"
+                        ));
+                    }
+                    return Ok(result);
                 }
                 return Ok(json!({ "content": content, "total_lines": total_lines }));
             }
@@ -390,6 +410,7 @@ impl Tool for ReadFile {
             // explicit-range path.
             if crate::tools::exceeds_inline_limit(&content) {
                 let total_lines = content.lines().count();
+                let est_tokens = content.len() / 4;
                 let file_id = ctx
                     .output_buffer
                     .store_file(resolved.to_string_lossy().to_string(), content);
@@ -397,7 +418,7 @@ impl Tool for ReadFile {
                     "file_id": file_id,
                     "total_lines": total_lines,
                     "hint": format!(
-                        "Range too large for inline ({total_lines} lines). \
+                        "Range too large for inline (~{est_tokens} tokens). \
                          Use read_file(\"{file_id}\", start_line=1, end_line=100) to read in chunks."
                     ),
                 });
@@ -1869,11 +1890,12 @@ mod tests {
     async fn read_file_buffer_ref_large_range_buffers_as_file_ref() {
         // Regression test: when a line range read on a @file_* buffer ref extracts
         // content > TOOL_OUTPUT_BUFFER_THRESHOLD, read_file must store it as a new
-        // @file_* ref rather than returning {"content": "..."} inline.
-        // Without the fix, call_content wraps the large inline JSON in a @tool_*
-        // envelope — which encodes newlines as \n escapes, so total_lines counts
-        // JSON structure lines (4) rather than content lines, and any sub-range read
-        // with start_line > 4 returns empty content.
+        // @file_* ref AND return a first chunk inline (auto-chunk), rather than
+        // returning zero content or wrapping in a @tool_* envelope.
+        // Without the original fix, call_content would wrap large inline JSON in
+        // a @tool_* envelope — encoding newlines as \n escapes so total_lines
+        // counted JSON structure lines (4) and any sub-range with start_line > 4
+        // returned empty content.
         let (dir, ctx) = project_ctx().await;
 
         // Write a file large enough to exceed the inline threshold.
@@ -1899,8 +1921,8 @@ mod tests {
             .expect("large file should produce @file_* ref on first read")
             .to_string();
 
-        // Second read: ranged read on the @file_* ref — must produce another @file_*,
-        // not inline content that call_content would wrap in @tool_*.
+        // Second read: ranged read on the @file_* ref — must auto-chunk:
+        // return first chunk inline + file_id for continuation.
         let result = ReadFile
             .call(
                 json!({ "path": file_ref, "start_line": 1, "end_line": 300 }),
@@ -1919,9 +1941,20 @@ mod tests {
             300,
             "total_lines must reflect content lines, not JSON structure lines"
         );
+        // Auto-chunk: must return first chunk inline and signal incomplete.
         assert!(
-            result["hint"].as_str().unwrap_or("").contains("read_file"),
-            "buffered range must include a hint guiding sub-range reads; got: {}",
+            result["content"].as_str().is_some(),
+            "auto-chunked range must include first chunk of content; got: {}",
+            result
+        );
+        assert_eq!(
+            result["complete"], false,
+            "must signal incomplete for oversized range; got: {}",
+            result
+        );
+        assert!(
+            result["next"].as_str().unwrap_or("").contains("read_file"),
+            "must include a next continuation command; got: {}",
             result
         );
 
@@ -1938,6 +1971,75 @@ mod tests {
             sub["content"].as_str().unwrap_or("").contains("line 0050"),
             "sub-range on chained @file_* ref must return correct content; got: {}",
             sub
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_buffer_ref_range_auto_chunks() {
+        // When a buffer-ref range exceeds inline limit, the response should
+        // include the first chunk of content (not zero content), plus
+        // complete=false and a next command.
+        let (dir, ctx) = project_ctx().await;
+
+        // Write a real file large enough to exceed the inline threshold so the
+        // first read buffers it as a @file_* ref.
+        // 300 lines × ~40 bytes = ~12 KB, above TOOL_OUTPUT_BUFFER_THRESHOLD (10 KB).
+        let content: String = (1..=300)
+            .map(|i| format!("line {:04} padding_padding_padding_padd\n", i))
+            .collect();
+        assert!(
+            content.len() > crate::tools::TOOL_OUTPUT_BUFFER_THRESHOLD,
+            "test data must exceed threshold"
+        );
+        let path = dir.path().join("big.txt");
+        std::fs::write(&path, &content).unwrap();
+
+        // First read: no range — large file gets buffered as @file_*.
+        let r1 = ReadFile
+            .call(serde_json::json!({ "path": path.to_str().unwrap() }), &ctx)
+            .await
+            .unwrap();
+        let buf_id = r1["file_id"]
+            .as_str()
+            .expect("large file should produce @file_* ref on first read")
+            .to_string();
+
+        // Second read: ranged read on the @file_* ref — should auto-chunk.
+        let result = ReadFile
+            .call(
+                serde_json::json!({ "path": buf_id, "start_line": 1, "end_line": 300 }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        // Must have content (not empty)
+        assert!(
+            result.get("content").is_some(),
+            "should auto-chunk content; got: {result}"
+        );
+        // Must signal incomplete
+        assert_eq!(
+            result["complete"], false,
+            "should be incomplete; got: {result}"
+        );
+        // Must have a next command
+        let next = result["next"].as_str().expect("should have next command");
+        // next should reference the file_id and use sub-buffer-relative line numbers
+        assert!(
+            next.contains("start_line="),
+            "next should include start_line; got: {next}"
+        );
+        let file_id = result["file_id"].as_str().expect("should have file_id");
+        assert!(
+            next.contains(file_id),
+            "next should reference file_id; got: {next}"
+        );
+        // shown_lines should report original file line numbers
+        let shown = result["shown_lines"].as_array().unwrap();
+        assert_eq!(
+            shown[0], 1,
+            "shown_lines should start at original start_line"
         );
     }
 
@@ -4450,12 +4552,16 @@ mod tests {
         let val = serde_json::json!({
             "file_id": "@file_abc123",
             "total_lines": 311,
-            "hint": "Range too large for inline (311 lines). Use read_file(\"@file_abc123\", start_line=1, end_line=100) to read in chunks."
+            "hint": "Range too large for inline (~2800 tokens). Use read_file(\"@file_abc123\", start_line=1, end_line=100) to read in chunks."
         });
         let result = format_read_file(&val);
         assert!(
             result.contains("311 lines"),
             "should show total_lines; got: {result}"
+        );
+        assert!(
+            result.contains("~2800 tokens"),
+            "hint should report token count, not line count; got: {result}"
         );
         assert!(
             result.contains("Buffer: @file_abc123"),
