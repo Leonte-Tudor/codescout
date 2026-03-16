@@ -112,6 +112,9 @@ use the right tool. Small shortcuts compound into large context waste.
   - **TOML/YAML:** summary shows table structure → `read_file(path, toml_key="section")`
   - Source code summaries include top-level symbols. Use `start_line`/`end_line` for excerpts.
   Prefer `list_symbols` / `find_symbol` over `read_file` for source code navigation.
+  Large content is auto-chunked: the response includes as much content as fits inline, plus
+  `complete: false` and a `next` field with the exact continuation command to get more.
+  No need to guess chunk sizes — just follow the `next` command to continue reading.
 - `list_dir(path)` — list files and directories. Pass `recursive=true` for a full tree.
 - `search_pattern(pattern)` — regex search across files. Pass `context_lines` for
   merged context blocks. Scope with `path=`, limit with `max_results` (default 50).
@@ -285,6 +288,11 @@ The full content costs nothing to hold — query it on demand.
 | `@file_*` | plain text | `run_command("grep pattern @file_abc")` | `read_file("@file_abc", start_line=N, end_line=M)` |
 | `@cmd_*` | plain text | `run_command("grep pattern @cmd_abc")` | `read_file("@cmd_abc", start_line=N, end_line=M)` |
 | `@tool_*` | JSON object | `read_file("@tool_abc", json_path="$.field")` | `read_file("@tool_abc", start_line=N, end_line=M)` |
+
+**Response fields for `read_file`:**
+- `complete: bool` — true if all requested content was returned inline; false if more is available via `next`
+- `next: string` — the exact `read_file(...)` call to get the next chunk (only present when `complete: false`)
+- `shown_lines: [start, end]` — the original file line numbers of the content shown (present in auto-chunked responses)
 
 **Key distinction:** `@file_*` and `@cmd_*` contain plain text — grep/sed are the natural
 tools. `@tool_*` contains a JSON object (pretty-printed, multi-line) — use `json_path` to
