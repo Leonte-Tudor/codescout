@@ -41,6 +41,11 @@ pub(crate) const MAX_INLINE_TOKENS: usize = 2_500;
 /// in truncation code (run_command buffer-only paths).
 pub(crate) const TOOL_OUTPUT_BUFFER_THRESHOLD: usize = MAX_INLINE_TOKENS * 4;
 
+/// Byte budget for auto-chunked inline content. Set to 90% of
+/// TOOL_OUTPUT_BUFFER_THRESHOLD to leave headroom for the JSON envelope
+/// overhead (~500-1000 bytes for content/complete/next/shown_lines keys).
+pub(crate) const INLINE_BYTE_BUDGET: usize = TOOL_OUTPUT_BUFFER_THRESHOLD * 9 / 10;
+
 /// Check whether content should be buffered based on estimated token count.
 pub(crate) fn exceeds_inline_limit(text: &str) -> bool {
     text.len() / 4 > MAX_INLINE_TOKENS
