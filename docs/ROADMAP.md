@@ -55,6 +55,55 @@ See [`FEATURES.md`](FEATURES.md) for the full feature reference. Summary:
 
 Implemented features have been moved to [`FEATURES.md`](FEATURES.md).
 
+### MCP Elicitation Integration ✅ (Partial)
+
+Leverage the MCP elicitation spec (Claude Code 2.1.76, March 2026) for interactive user input:
+stdin prompts and PostCompact hook integration.
+
+> Reference: [`docs/TODO-mcp-elicitation.md`](../TODO-mcp-elicitation.md)
+
+**Implemented:**
+
+- **E-0: Elicitation plumbing** ✅ — Added `elicitation/requestInput` support to `ToolContext`.
+  Helper: `ctx.elicit(message, schema) -> ElicitResult`. Integrated into `ServerHandler` so
+  any tool can call it.
+
+- **E-3: Interactive sessions via elicitation** ✅ — `run_command(interactive: true)` drives
+  a process with piped stdin/stdout/stderr. Each round: display accumulated output, elicit
+  user input, feed to stdin. Settle detection: 150 ms silence window. Max 50 rounds guard.
+  Note: Practical for slow-interaction CLIs (setup wizards, REPLs); unsuitable for
+  high-frequency TUIs (ncurses, vim) due to MCP round-trip latency (~1–3 s).
+
+- **E-5: `PostCompact` hook integration** ✅ — Register for Claude Code's `PostCompact` hook.
+  On fire: invalidate stale LSP position caches (symbol positions shift when files change
+  during compaction). Optionally re-inject fresh project status into next request's
+  server instructions.
+
+- **E-6c: Auto-register Cargo dependencies** ✅ — During `activate_project`, scan `Cargo.lock`
+  and auto-register top N dependencies as libraries. Eliminates manual `register_library`
+  calls; `find_symbol(scope="lib:...")` immediately available (fixes BUG-022).
+
+**Removed (by design):**
+
+- **E-1: Tool disambiguation** ❌ — Removed. Elicitation is server→human, not server→AI.
+  Disambiguation (e.g., "which symbol match?") should be handled autonomously by the AI agent
+  based on context and heuristics. The LLM can reason about the most likely match given
+  conversation state.
+
+- **E-2: Dangerous command confirmation** ❌ — Removed. The two-round-trip `pending_ack` /
+  `acknowledge_risk` pattern works well for autonomous AI agents. Elicitation disrupts the
+  agent's autonomy and should be reserved for interactive human input, not confirmation loops.
+
+- **E-4: Mutation confirmation** ❌ — Removed. Same reasoning as E-1 and E-2: disambiguation
+  and confirmation should be handled autonomously by the AI agent, not via server-to-human
+  elicitation.
+
+- **E-6a/E-6b: PreToolUse hook proposals** ❌ — Research showed PreToolUse hooks cannot
+  trigger elicitation (they only return allow/block). Proposed `suggest_alternative` field
+  deferred pending deeper design of agent guidance patterns.
+
+---
+
 ### Multi-Agent Support (Generalize Beyond Claude Code)
 
 Make codescout usable by any MCP-capable agent — Copilot, Cursor, Cline, custom agents — with routing knowledge included so agents know *when* to reach for each tool.

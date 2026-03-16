@@ -1579,6 +1579,7 @@ mod tests {
             lsp: LspManager::new_arc(),
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
+            peer: None,
         }
     }
 
@@ -1595,6 +1596,7 @@ mod tests {
                     20,
                 )),
                 progress: None,
+                peer: None,
             },
         )
     }
@@ -3522,6 +3524,7 @@ mod tests {
             lsp: crate::lsp::LspManager::new_arc(),
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
+            peer: None,
         };
 
         // search_pattern with a path pointing into the library — the walker must
@@ -4672,6 +4675,7 @@ line4"
             lsp: std::sync::Arc::new(crate::lsp::LspManager::new()),
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
+            peer: None,
         };
         let file = dir.path().join("big.md");
         // Create a file > 10 KB (exceeds MAX_INLINE_TOKENS)

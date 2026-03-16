@@ -12,7 +12,7 @@ use rmcp::{
         RawContent, ServerCapabilities, ServerInfo, Tool as McpTool,
     },
     service::RequestContext,
-    ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
+    ErrorData as McpError, Peer, RoleServer, ServerHandler, ServiceExt,
 };
 use serde_json::Value;
 
@@ -127,6 +127,7 @@ impl CodeScoutServer {
         &self,
         req: CallToolRequestParams,
         progress: Option<Arc<progress::ProgressReporter>>,
+        peer: Option<Peer<RoleServer>>,
     ) -> std::result::Result<CallToolResult, McpError> {
         tracing::debug!(args = ?req.arguments, "tool call");
 
@@ -150,6 +151,7 @@ impl CodeScoutServer {
             lsp: self.lsp.clone(),
             output_buffer: self.output_buffer.clone(),
             progress,
+            peer,
         };
 
         let timeout_secs = if tool_skips_server_timeout(&req.name) {
@@ -257,7 +259,8 @@ impl ServerHandler for CodeScoutServer {
             req_ctx.peer.clone(),
             req_ctx.id.clone(),
         ));
-        self.call_tool_inner(req, progress).await
+        let peer = Some(req_ctx.peer.clone());
+        self.call_tool_inner(req, progress, peer).await
     }
 }
 
@@ -789,7 +792,7 @@ mod tests {
 
         let req = CallToolRequestParams::new("list_dir")
             .with_arguments(serde_json::from_value(serde_json::json!({"path": "."})).unwrap());
-        let result = server.call_tool_inner(req, None).await.unwrap();
+        let result = server.call_tool_inner(req, None, None).await.unwrap();
 
         let text = result
             .content

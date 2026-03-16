@@ -33,6 +33,7 @@ async fn project(files: &[(&str, &str)]) -> (tempfile::TempDir, ToolContext) {
         lsp: Arc::new(LspManager::new()),
         output_buffer: Arc::new(codescout::tools::output_buffer::OutputBuffer::new(20)),
         progress: None,
+        peer: None,
     };
     (dir, ctx)
 }

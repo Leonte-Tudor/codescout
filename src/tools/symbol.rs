@@ -2976,6 +2976,7 @@ impl Point {
                 lsp: lsp(),
                 output_buffer: buf(),
                 progress: None,
+                peer: None,
             },
         ))
     }
@@ -3415,6 +3416,7 @@ impl Point {
             lsp: lsp(),
             output_buffer: buf(),
             progress: None,
+            peer: None,
         };
         // Should error because no project, but NOT because of unknown param
         let err = ListSymbols
@@ -3438,6 +3440,7 @@ impl Point {
             lsp: lsp(),
             output_buffer: buf(),
             progress: None,
+            peer: None,
         };
 
         let err = ListSymbols
@@ -3463,6 +3466,7 @@ impl Point {
             lsp: lsp(),
             output_buffer: buf(),
             progress: None,
+            peer: None,
         };
 
         let err = ListSymbols
@@ -3490,6 +3494,7 @@ impl Point {
             lsp: lsp(),
             output_buffer: buf(),
             progress: None,
+            peer: None,
         };
 
         let err = ListSymbols
@@ -3512,6 +3517,7 @@ impl Point {
             lsp: lsp(),
             output_buffer: buf(),
             progress: None,
+            peer: None,
         };
         assert!(ListSymbols.call(json!({"path": "x"}), &ctx).await.is_err());
         assert!(FindSymbol
@@ -3570,6 +3576,7 @@ impl Point {
             lsp: lsp(),
             output_buffer: buf(),
             progress: None,
+            peer: None,
         };
 
         // Project-wide search (no relative_path) — LSP will fail/return empty,
@@ -3625,6 +3632,7 @@ impl Point {
             lsp: lsp(),
             output_buffer: buf(),
             progress: None,
+            peer: None,
         };
 
         // Project-wide (no path) — should find both root and nested files
@@ -3668,6 +3676,7 @@ impl Point {
             lsp: lsp(),
             output_buffer: buf(),
             progress: None,
+            peer: None,
         };
 
         // Target "src" specifically — should be shallow (depth 1)
@@ -3948,6 +3957,68 @@ impl Point {
         );
     }
 
+    #[test]
+    fn replace_symbol_with_ambiguous_name_path_returns_error() {
+        // When name_path matches 2+ symbols, find_unique_symbol_by_name_path must
+        // return a RecoverableError about ambiguity.
+        let test_file = std::env::temp_dir().join("ambig_test.rs");
+        let make_method = |parent: &str, name: &str| SymbolInfo {
+            name: name.to_string(),
+            name_path: format!("{}/{}", parent, name),
+            kind: crate::lsp::SymbolKind::Function,
+            file: test_file.clone(),
+            start_line: 0,
+            end_line: 5,
+            start_col: 0,
+            children: vec![],
+            range_start_line: None,
+            detail: None,
+        };
+        let symbols = vec![
+            SymbolInfo {
+                name: "ToolA".to_string(),
+                name_path: "ToolA".to_string(),
+                kind: crate::lsp::SymbolKind::Struct,
+                file: test_file.clone(),
+                start_line: 0,
+                end_line: 20,
+                start_col: 0,
+                children: vec![make_method("ToolA", "call")],
+                range_start_line: None,
+                detail: None,
+            },
+            SymbolInfo {
+                name: "ToolB".to_string(),
+                name_path: "ToolB".to_string(),
+                kind: crate::lsp::SymbolKind::Struct,
+                file: test_file.clone(),
+                start_line: 25,
+                end_line: 45,
+                start_col: 0,
+                children: vec![make_method("ToolB", "call")],
+                range_start_line: None,
+                detail: None,
+            },
+        ];
+
+        // Current behavior: find_unique_symbol_by_name_path returns ambiguity error.
+        let result = find_unique_symbol_by_name_path(&symbols, "call");
+        assert!(result.is_err(), "expected error for ambiguous name_path");
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("ambiguous"),
+            "expected 'ambiguous' in error, got: {err_str}"
+        );
+        assert!(
+            err_str.contains("ToolA/call"),
+            "expected ToolA/call in error, got: {err_str}"
+        );
+        assert!(
+            err_str.contains("ToolB/call"),
+            "expected ToolB/call in error, got: {err_str}"
+        );
+    }
+
     #[tokio::test]
     async fn find_referencing_symbols_returns_references() {
         if !std::process::Command::new("rust-analyzer")
@@ -3994,6 +4065,7 @@ fn main() {
             lsp: lsp(),
             output_buffer: buf(),
             progress: None,
+            peer: None,
         };
 
         // rust-analyzer needs time to load the Cargo project and build its index
@@ -4242,6 +4314,7 @@ fn main() {
                 lsp: lsp(),
                 output_buffer: buf(),
                 progress: None,
+                peer: None,
             },
         )
     }
@@ -6205,6 +6278,7 @@ fn main() {
             lsp,
             output_buffer: buf(),
             progress: None,
+            peer: None,
         };
 
         let result = FindSymbol
@@ -6360,6 +6434,7 @@ fn main() {
             lsp,
             output_buffer: buf(),
             progress: None,
+            peer: None,
         };
 
         let result = FindSymbol
@@ -6544,6 +6619,7 @@ fn main() {
             lsp: lsp(),
             output_buffer: buf(),
             progress: None,
+            peer: None,
         }
     }
 
@@ -6768,5 +6844,55 @@ fn main() {
                 file
             );
         }
+    }
+
+    /// find_symbol with multiple matches returns all of them.
+    #[tokio::test]
+    async fn find_symbol_with_multiple_matches_returns_all() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/a")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+        // Three files each defining a function named `process_*` — guarantees 3+ matches.
+        std::fs::write(
+            dir.path().join("src/a/alpha.rs"),
+            "pub fn process_alpha() -> i32 { 1 }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/a/beta.rs"),
+            "pub fn process_beta() -> i32 { 2 }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/a/gamma.rs"),
+            "pub fn process_gamma() -> i32 { 3 }\n",
+        )
+        .unwrap();
+
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        let ctx = ToolContext {
+            agent,
+            lsp: lsp(),
+            output_buffer: buf(),
+            progress: None,
+            peer: None, // no elicitation peer
+        };
+
+        let result = FindSymbol
+            .call(json!({ "pattern": "process" }), &ctx)
+            .await
+            .unwrap();
+
+        let symbols = result["symbols"].as_array().unwrap();
+        // With no peer, ALL matches must be returned (no disambiguation prompt).
+        assert!(
+            symbols.len() >= 3,
+            "should return all matches when peer=None, got {} symbols: {:?}",
+            symbols.len(),
+            result
+        );
+        // The total field must also reflect >= 3 results.
+        let total = result["total"].as_u64().unwrap_or(0);
+        assert!(total >= 3, "total should be >= 3 with no peer, got {total}");
     }
 }
