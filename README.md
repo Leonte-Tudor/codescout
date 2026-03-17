@@ -78,6 +78,13 @@ Supported languages: Rust, Python, TypeScript/JavaScript, Go, Java, Kotlin, C/C+
 
 → [Tool reference](docs/manual/src/tools/overview.md)
 
+## Experimental Features
+
+New features land on the `experiments` branch before reaching `master`.
+They may change or be removed without notice, and may not be in your installed release yet.
+
+→ [Browse experimental features](https://github.com/mareurs/codescout/blob/experiments/docs/manual/src/experimental/index.md)
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get started. PRs from Claude Code are welcome!
