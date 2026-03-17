@@ -3,7 +3,7 @@
 
 [[anchors]]
 path = "docs/ARCHITECTURE.md"
-hash = "f4d4009aa623a4c50d1535b986c83d73a57eea64fbcc22e45bc70501f376b848"
+hash = "fd391d558e8b56387490cdd915246ee408ffcd91268ed80159f0f55295453ba0"
 
 [[anchors]]
 path = ".codescout/project.toml"
@@ -11,11 +11,11 @@ hash = "3ad83f60b3f8098255e9572014c5e9c374f420563b72d32391c3c0a76d99c154"
 
 [[anchors]]
 path = "src/server.rs"
-hash = "e2a07690d540ce5de97cef0cd2c89a462d1bfeeae5fbca9367e08e92b14d49ae"
+hash = "30c287ff0735328b415309e3d75971a8b59fc3bcd6b2c89776b93d8b5d108947"
 
 [[anchors]]
 path = "src/util/path_security.rs"
-hash = "0eea0b551cbd8bd5943f14c5ee128f82c42a1015e83fb218b03af49a7db62b02"
+hash = "e7cfd9247c7c1d28ff08b9f134f37d1680c86603468aa3d8a0b389018a451b19"
 
 [[anchors]]
 path = "src/tools/mod.rs"
@@ -31,7 +31,7 @@ hash = "6920967f356f41a7ca4992d272ce59f855aaa1c0031c0039ea9fd900171bdb5f"
 
 [[anchors]]
 path = "src/embed/index.rs"
-hash = "eebedff29678bdad61376bc37e3bbb354d11cb70ba3c7a621f55d66e9133472c"
+hash = "95f4faa68029b72dfecc3bfb827600b6d0cc811c2a08143f01cb7e46a960e701"
 
 [[anchors]]
 path = "src/memory/classify.rs"
@@ -43,7 +43,7 @@ hash = "634907111126fdebc50e8572c2941c0c17cae2e3be47ec167b9be35b25b2b702"
 
 [[anchors]]
 path = "src/tools/memory.rs"
-hash = "e1b8e1cfa731e2a68e5659bbb1bbf850a303576d01d569038593d50f3a8dfb68"
+hash = "289412cec9d188a055ffc7d2d50fcb0155b0b7900247d64581e9465e7f1ca34d"
 
 [[anchors]]
 path = "src/tools/ast.rs"
@@ -59,4 +59,4 @@ hash = "c66adc745ef91a13bcdfb029b7705ed106fa380b0ff36445f136751d7e49d46d"
 
 [[anchors]]
 path = "CLAUDE.md"
-hash = "be607dc5741f8038cc698b1897e83433d24e9cbe552c19653c119fad1e5b305b"
+hash = "60ef5cea410c1f47f87d513462f0b65c32966a72d48b6d162ac20aa9a043cdf9"

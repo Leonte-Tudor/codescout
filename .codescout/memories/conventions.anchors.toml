@@ -3,7 +3,7 @@
 
 [[anchors]]
 path = "CLAUDE.md"
-hash = "a8216c86f4de25681c7a4997afdac782211fe1f97c6bc3292ef68d154a865550"
+hash = "60ef5cea410c1f47f87d513462f0b65c32966a72d48b6d162ac20aa9a043cdf9"
 
 [[anchors]]
 path = "src/lsp/mock.rs"
@@ -11,11 +11,11 @@ hash = "013b3c5899da8133f4320be8b307c3575558755413b23eaddd9cd39e08a0ae62"
 
 [[anchors]]
 path = "src/util/path_security.rs"
-hash = "eb9a3bdfefd627517d9b4454c0472b5c6a0798034582d635f125f404351cd776"
+hash = "e7cfd9247c7c1d28ff08b9f134f37d1680c86603468aa3d8a0b389018a451b19"
 
 [[anchors]]
 path = "src/prompts/server_instructions.md"
-hash = "28f3f81c61164516087fdb601b390683d9a7214edbb2d8215c4eaf5dd344ecb7"
+hash = "6beeed6cb1417736b1050de37d4919e5cbb86d165fc68a9c4be034ff79e76251"
 
 [[anchors]]
 path = "docs/PROGRESSIVE_DISCOVERABILITY.md"
@@ -27,8 +27,8 @@ hash = "aeb8e462af9460d96e2af2180baa982f3d1b354f293a758050157006e554d74f"
 
 [[anchors]]
 path = "src/prompts/onboarding_prompt.md"
-hash = "c01d43a2abcce92dc6e89a51349450c6d68fbc53f0497ded24c94d9f3c42f536"
+hash = "e5c4a6b580457d718ab68c82207c739cce5bce70cf49adc761d1601bf09b779b"
 
 [[anchors]]
 path = "src/tools/workflow.rs"
-hash = "12e1acd70fa969a04ebfa36f38cf8e9310f824a7e413d78a45922cdf09695400"
+hash = "378c0ecdcbdd80d251bdc620c1e6b1e45c89c76d3c1d0ffc521f4d488aa77fbd"

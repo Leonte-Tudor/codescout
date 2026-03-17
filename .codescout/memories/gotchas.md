@@ -1,5 +1,3 @@
-# Gotchas & Known Issues
-
 ## Embedding / Semantic Search
 
 - **sqlite-vec loads all embeddings into memory**: `sqlite-vec` extension loading is
@@ -24,9 +22,19 @@
 
 ## LSP
 
-- **Kotlin LSP multi-session conflict**: kotlin-lsp ≤ v0.253 uses an MVStore index
-  that only allows one session. If VS Code is open on the same project, `code -32800`
-  errors occur. `route_tool_error` catches this and provides the hint. Upgrade to v261+.
+- **Kotlin LSP multi-instance conflict**: Multiple kotlin-lsp instances on the same
+  git repo (including worktrees) fight over an `.app.lock` file. Symptoms: persistent
+  `code -32800` (RequestCancelled) on every request, even after retries.
+  - **v0.253 and earlier**: MVStore single-writer lock. No workaround except killing
+    competing processes.
+  - **v261**: Claims shared indexes but `.app.lock` still causes conflicts in practice
+    when multiple codescout instances target the same repo.
+  - **v262+** (installed 2026-03-15): Appears to fix multi-instance issues. Use
+    `--system-path` per instance if conflicts recur.
+  - **Diagnosis**: `ps aux | grep kotlin-l` to find competing processes. Check their
+    cwd with `ls -la /proc/<pid>/cwd` — worktrees share the same git repo root.
+  - **`route_tool_error`** in `server.rs` catches `-32800` as recoverable (not fatal)
+    so sibling parallel tool calls are not aborted.
 
 - **LSP cold start latency**: First call for a language spawns the LSP server. This can
   take 1–5 minutes for large projects (Kotlin/Java). The watch-channel barrier in
@@ -76,3 +84,12 @@
 - **`Path::file_stem()` does NOT return `None` for dotfiles**: On a path like `.hidden`,
   Rust treats the entire name as the stem — `file_stem()` returns `Some(".hidden")` and
   `extension()` returns `None`. See `src/memory/anchors.rs:183` for context.
+
+## Rust Lint Attributes
+
+- **`#[expect(lint)]` vs `#[allow(lint)]` (Rust 1.81+)**: `#[expect]` is stricter —
+  it becomes a compiler error if the lint does *not* fire. This is great for ensuring
+  suppressed warnings get cleaned up, but wrong when forward-declaring a constant or
+  symbol that will be used in the very next commit. Use `#[allow]` for intentional
+  temporary suppressions; use `#[expect]` only when the lint is active today and you
+  want a compile-time reminder to remove the suppression once the code is cleaned up.

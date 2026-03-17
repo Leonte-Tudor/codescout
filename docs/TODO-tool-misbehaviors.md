@@ -141,3 +141,30 @@ N}` — a small JSON that `call_content()` won't re-buffer as `@tool_*`. Regress
 
 ---
 ```
+
+### BUG-022 — Agent bypasses library tools, greps cargo registry directly
+
+**Date:** 2026-03-16
+**Severity:** Low — wasteful tokens, no data corruption
+**Status:** 🔍 ROOT CAUSE IDENTIFIED
+
+**What happened:**
+When exploring rmcp's elicitation API, the agent used raw `run_command("grep ...")` on
+`/home/marius/.cargo/registry/src/index.crates.io-*/rmcp-1.1.0/src/` instead of using
+codescout's library tools (`register_library` + `find_symbol(scope="lib:rmcp")`).
+
+**Expected:** Agent should register rmcp as a library and use structured symbol navigation.
+
+**Actual:** 3 raw grep commands returning unstructured text, wasting context tokens.
+
+**Root cause:** rmcp was not pre-registered as a library (`list_libraries` showed only
+`anyhow`). The agent defaulted to the familiar grep pattern rather than first registering
+the dependency and then using structured tools. The server instructions mention library
+auto-discovery via `goto_definition`, but that requires navigating to an rmcp symbol first —
+a chicken-and-egg problem when you don't yet know the API surface.
+
+**Fix options:**
+1. Auto-register top-N dependencies from `Cargo.lock` during `onboarding` or `activate_project`
+2. Add a hint to `search_pattern` when it detects results in a cargo registry path:
+   "Consider `register_library` + `find_symbol(scope=...)` for structured navigation"
+3. Add `register_library` suggestion to server instructions for the "Know nothing" row

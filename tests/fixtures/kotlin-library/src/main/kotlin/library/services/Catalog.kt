@@ -27,6 +27,22 @@ class Catalog<T : Searchable>(private val name: String) {
 /** Free function: create a default catalog for books. */
 fun createDefaultCatalog(): Catalog<Book> = Catalog("Main Library")
 
+/**
+ * Multi-line KDoc with preamble text before params.
+ *
+ * This function exists to test whether kotlin-language-server includes
+ * the full docstring (from the opening /**) in the symbol's `range.start`,
+ * or only starts the range at the first @param line.
+ *
+ * @param name The catalog name to use
+ * @param maxItems Maximum number of items allowed
+ * @return A new Catalog instance
+ */
+fun createNamedCatalog(name: String, maxItems: Int = 100): Catalog<Book> {
+    require(maxItems > 0) { "maxItems must be positive" }
+    return Catalog(name)
+}
+
 /** Extension: suspend function (coroutine). */
 suspend fun <T : Searchable> Catalog<T>.searchAsync(query: String): List<T> =
     search(query)
