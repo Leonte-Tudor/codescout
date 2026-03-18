@@ -1,7 +1,5 @@
 # LSP Startup Statistics
 
-> ⚠ Experimental — may change without notice.
-
 codescout records LSP cold-start timing to `.codescout/usage.db` and surfaces it
 in the project dashboard under "LSP Startup".
 

@@ -34,9 +34,11 @@
   - [After Onboarding](concepts/after-onboarding.md)
 
 - [Dashboard](concepts/dashboard.md)
+  - [LSP Startup Statistics](concepts/lsp-startup-stats.md)
 - [Git Worktrees](concepts/worktrees.md)
 
 - [Security & Permissions](concepts/security.md)
+  - [Compact Schemas & `activate_project` Safety](concepts/compact-schemas-and-activate-project-safety.md)
 
 - [Routing Plugin](concepts/routing-plugin.md)
   - [Superpowers Workflow](concepts/superpowers.md)
@@ -52,12 +54,14 @@
   - [Symbol Navigation](tools/symbol-navigation.md)
   - [File Operations](tools/file-operations.md)
   - [Editing](tools/editing.md)
+    - [Structural Edit Gate](tools/edit-file-structural-gate.md)
   - [Semantic Search](tools/semantic-search.md)
   - [Library Navigation](tools/library-navigation.md)
   - [Git](tools/git.md)
   - [AST Analysis](tools/ast.md)
   - [Memory](tools/memory.md)
   - [Workflow & Config](tools/workflow-and-config.md)
+    - [Read-Only `activate_project`](tools/activate-project-read-only.md)
   - [GitHub](tools/github.md)
 
 # Development

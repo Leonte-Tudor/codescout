@@ -1,5 +1,3 @@
-> ⚠ Experimental — may change without notice.
-
 # Compact Tool Schemas & `activate_project` Safety
 
 Two related improvements land together: tool schema descriptions were trimmed by ~24% (~1,763

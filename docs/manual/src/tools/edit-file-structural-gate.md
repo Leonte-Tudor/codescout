@@ -1,5 +1,3 @@
-> ⚠ Experimental — may change without notice.
-
 # Hard Gate for Structural Edits in `edit_file`
 
 `edit_file` now **refuses** multi-line edits that contain definition keywords on

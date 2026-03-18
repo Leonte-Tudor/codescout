@@ -127,7 +127,12 @@ For source code, prefer the symbol tools. They address code by name rather than 
 
 If `old_string` is not found, or appears multiple times without `replace_all: true`, the tool returns a recoverable error with the line numbers of all matches.
 
-**Multi-line edits on source files:** When `old_string` spans multiple lines in a `.rs`, `.py`, `.ts`, or similar file, the tool responds with a `pending_ack` handle and suggests a symbol tool instead. You can confirm the edit by re-running with `acknowledge_risk: true`, or by passing the returned handle as the `path`.
+**Multi-line edits on source files:** When `old_string` spans multiple lines and contains a
+definition keyword (`fn`, `class`, `def`, etc.) in an LSP-supported language, the tool
+**blocks the edit** and returns a `RecoverableError` suggesting the correct symbol tool.
+There is no bypass — use `replace_symbol`, `insert_code`, or `remove_symbol` instead.
+See [Structural Edit Gate](edit-file-structural-gate.md) for the full keyword table and
+gate logic.
 
 **Tips:**
 

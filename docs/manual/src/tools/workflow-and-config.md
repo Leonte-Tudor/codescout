@@ -208,6 +208,7 @@ On Unix the command runs under `sh -c`. On Windows it runs under `cmd /C`.
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `path` | string | yes | — | Absolute path to the project root directory |
+| `read_only` | boolean | no | `true` for non-home projects | Block write tools on this project |
 
 **Example:**
 
@@ -238,6 +239,11 @@ On Unix the command runs under `sh -c`. On Windows it runs under `cmd /C`.
 ```
 
 The tool returns an error if the path does not exist or is not a directory.
+
+**Read-only default:** Non-home projects activate in read-only mode by default — all write
+tools are blocked until you pass `read_only: false`. This prevents accidental edits when
+browsing another project for reference. See
+[Read-Only `activate_project`](activate-project-read-only.md) for the full behavior matrix.
 
 **Tips:** When working across multiple projects in a single session, call `activate_project` to switch between them. After activating, call `onboarding` to see whether the new project has been set up. The server starts with no active project — you must call `activate_project` (or have it activated via the `--project` CLI flag) before using any tool that requires a project context.
 
