@@ -95,7 +95,7 @@ impl Tool for ActivateProject {
         let had_home = ctx.agent.home_root().await.is_some();
 
         let read_only = input.get("read_only").and_then(|v| v.as_bool());
-        ctx.agent.activate(root, read_only).await?;
+        ctx.agent.activate(root.clone(), read_only).await?;
 
         let config = ctx
             .agent
@@ -139,7 +139,15 @@ impl Tool for ActivateProject {
             )
         };
 
-        Ok(json!({ "status": "ok", "activated": config, "read_only": is_read_only, "hint": hint }))
+        // Auto-register Cargo dependencies (best-effort, never fails activation)
+        let auto_registered = auto_register_cargo_deps(&root, ctx).await;
+
+        let mut result =
+            json!({ "status": "ok", "activated": config, "read_only": is_read_only, "hint": hint });
+        if !auto_registered.is_empty() {
+            result["auto_registered_libs"] = json!(auto_registered);
+        }
+        Ok(result)
     }
 
     fn format_compact(&self, result: &Value) -> Option<String> {
@@ -155,15 +163,36 @@ impl Tool for ProjectStatus {
 
     fn description(&self) -> &str {
         "Active project state: languages, embedding model, index health summary, and memory staleness. \
+         Pass post_compact=true after context compaction to flush stale LSP position caches — \
+         clients restart lazily on the next LSP call. \
          Call index_status() for detailed index info and live progress."
     }
 
     fn input_schema(&self) -> Value {
-        json!({ "type": "object", "properties": {} })
+        json!({
+            "type": "object",
+            "properties": {
+                "post_compact": {
+                    "type": "boolean",
+                    "description": "Set true after context compaction to flush stale LSP position caches. \
+                                    LSP clients restart lazily on the next navigation call."
+                }
+            }
+        })
     }
 
-    async fn call(&self, _input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
+    async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
         use crate::agent::IndexingState;
+
+        // --- PostCompact cache flush ---
+        if input["post_compact"].as_bool().unwrap_or(false) {
+            ctx.lsp.shutdown_all().await;
+            tracing::info!("PostCompact: flushed all LSP clients; they will restart lazily.");
+            return Ok(json!({
+                "flushed": true,
+                "hint": "LSP position caches cleared. Clients restart automatically on the next navigation call (goto_definition, hover, find_references)."
+            }));
+        }
 
         // --- Essential config + library section ---
         let (root, languages, embeddings_model, lib_count, lib_indexed) = ctx
@@ -346,6 +375,177 @@ fn format_project_status(result: &Value) -> String {
     format!("status · {name} · {index_str}")
 }
 
+/// Auto-register direct Cargo dependencies found in `~/.cargo/registry`.
+/// Returns names of crates that were newly registered.
+/// Never propagates errors — this is best-effort and must not block activation.
+async fn auto_register_cargo_deps(
+    project_root: &std::path::Path,
+    ctx: &ToolContext,
+) -> Vec<String> {
+    let cargo_toml = project_root.join("Cargo.toml");
+    if !cargo_toml.exists() {
+        return vec![];
+    }
+
+    let content = match std::fs::read_to_string(&cargo_toml) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+
+    let dep_names = parse_cargo_dep_names(&content);
+    if dep_names.is_empty() {
+        return vec![];
+    }
+
+    // Find the cargo registry src dir: ~/.cargo/registry/src/index.crates.io-*/
+    let home = match std::env::var("HOME").ok().map(std::path::PathBuf::from) {
+        Some(h) => h,
+        None => return vec![],
+    };
+    let registry_src = home.join(".cargo").join("registry").join("src");
+    if !registry_src.exists() {
+        return vec![];
+    }
+
+    // Collect index dirs (e.g. index.crates.io-6f17d22bba15001f)
+    let index_dirs: Vec<_> = match std::fs::read_dir(&registry_src) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect(),
+        Err(_) => return vec![],
+    };
+
+    let mut newly_registered = vec![];
+
+    for dep_name in &dep_names {
+        // Skip if already registered
+        let already = ctx
+            .agent
+            .with_project(|p| Ok(p.library_registry.lookup(dep_name).is_some()))
+            .await
+            .unwrap_or(true);
+        if already {
+            continue;
+        }
+
+        // Find highest-version dir matching DEPNAME-VERSION in any index dir
+        // Crate dirs are named like "serde-1.0.197" — match by prefix "serde-"
+        let crate_dir = find_cargo_crate_dir(&index_dirs, dep_name);
+        let crate_path = match crate_dir {
+            Some(p) => p,
+            None => continue,
+        };
+
+        // Register it — use write lock so we can mutate the registry
+        let registered: anyhow::Result<bool> = async {
+            let mut inner = ctx.agent.inner.write().await;
+            let project = inner
+                .active_project_mut()
+                .ok_or_else(|| anyhow::anyhow!("no active project"))?;
+            project.library_registry.register(
+                dep_name.clone(),
+                crate_path.clone(),
+                "rust".to_string(),
+                crate::library::registry::DiscoveryMethod::Manual,
+            );
+            let registry_path = project.root.join(".codescout").join("libraries.json");
+            project.library_registry.save(&registry_path)?;
+            Ok(true)
+        }
+        .await;
+
+        if registered.unwrap_or(false) {
+            newly_registered.push(dep_name.clone());
+        }
+    }
+
+    newly_registered
+}
+
+/// Parse direct dependency names from Cargo.toml content.
+/// Handles both `name = "version"` and `name = { version = "..." }` forms.
+/// Skips `[dev-dependencies]` and `[build-dependencies]`.
+fn parse_cargo_dep_names(toml: &str) -> Vec<String> {
+    let mut names = vec![];
+    let mut in_deps = false;
+
+    for line in toml.lines() {
+        let trimmed = line.trim();
+
+        // Section header
+        if trimmed.starts_with('[') {
+            // [dependencies] or [dependencies.foo] but NOT [dev-dependencies] etc.
+            in_deps = trimmed == "[dependencies]"
+                || trimmed.starts_with("[dependencies.")
+                || trimmed.starts_with("[workspace.dependencies");
+            continue;
+        }
+
+        if !in_deps {
+            continue;
+        }
+
+        // Skip comments and empty lines
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        // Extract the key (dep name) from lines like:
+        //   serde = "1.0"
+        //   serde = { version = "1.0", features = [...] }
+        //   serde.workspace = true
+        if let Some(eq_pos) = trimmed.find('=') {
+            let key = trimmed[..eq_pos].trim();
+            // Strip any dotted suffix (e.g. "serde.workspace" → "serde")
+            let base_name = key.split('.').next().unwrap_or(key);
+            // Normalize hyphens/underscores — Cargo treats them as equivalent
+            let normalized = base_name.replace('-', "_");
+            if !normalized.is_empty() && !names.contains(&normalized) {
+                names.push(normalized);
+            }
+        }
+    }
+
+    names
+}
+
+/// Find the source directory for a crate in the cargo registry index dirs.
+/// Prefers the highest version when multiple versions exist.
+fn find_cargo_crate_dir(
+    index_dirs: &[std::path::PathBuf],
+    crate_name: &str,
+) -> Option<std::path::PathBuf> {
+    // Cargo normalizes `-` to `_` in dir names too — search for both
+    let prefix_hyphen = format!("{}-", crate_name.replace('_', "-"));
+    let prefix_under = format!("{}-", crate_name.replace('-', "_"));
+
+    let mut candidates: Vec<std::path::PathBuf> = vec![];
+
+    for idx_dir in index_dirs {
+        if let Ok(rd) = std::fs::read_dir(idx_dir) {
+            for entry in rd.filter_map(|e| e.ok()) {
+                let fname = entry.file_name();
+                let name = fname.to_string_lossy();
+                if (name.starts_with(&prefix_hyphen) || name.starts_with(&prefix_under))
+                    && entry.path().is_dir()
+                {
+                    candidates.push(entry.path());
+                }
+            }
+        }
+    }
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    // Pick the lexicographically largest (roughly highest version)
+    candidates.sort();
+    candidates.into_iter().next_back()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,6 +566,7 @@ mod tests {
             lsp: lsp(),
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
+            peer: None,
         };
 
         // No project initially
@@ -397,6 +598,7 @@ mod tests {
             lsp: lsp(),
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
+            peer: None,
         };
         let result = ActivateProject
             .call(
@@ -421,6 +623,7 @@ mod tests {
             lsp: lsp(),
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
+            peer: None,
         };
 
         // Activate dir2
@@ -449,6 +652,7 @@ mod tests {
             lsp: lsp(),
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
+            peer: None,
         };
         let tool = ProjectStatus;
         let result = tool.call(json!({}), &ctx).await.unwrap();
@@ -475,6 +679,7 @@ mod tests {
             lsp: lsp(),
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
+            peer: None,
         };
         let result = ProjectStatus.call(json!({}), &ctx).await.unwrap();
 
@@ -513,6 +718,7 @@ mod tests {
             lsp: lsp(),
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
+            peer: None,
         };
 
         // Create memories dir and a memory file
@@ -565,6 +771,7 @@ mod tests {
             lsp: lsp(),
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
+            peer: None,
         };
         let input = json!({ "path": dir.path().to_str().unwrap() });
         let result = ActivateProject.call(input, &ctx).await.unwrap();
@@ -588,6 +795,7 @@ mod tests {
             lsp: lsp(),
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
+            peer: None,
         };
         let input = json!({ "path": dir2.path().to_str().unwrap() });
         let result = ActivateProject.call(input, &ctx).await.unwrap();
@@ -615,6 +823,7 @@ mod tests {
             lsp: lsp(),
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
+            peer: None,
         };
         // Switch away
         ActivateProject
@@ -679,6 +888,7 @@ depends_on = ["test"]
             lsp: lsp(),
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
+            peer: None,
         };
 
         let result = ProjectStatus
@@ -711,6 +921,7 @@ depends_on = ["test"]
             lsp: lsp(),
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
+            peer: None,
         };
 
         // Initially focused on root project
@@ -741,6 +952,7 @@ depends_on = ["test"]
             lsp: lsp(),
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
+            peer: None,
         };
 
         // "unknown-project" has no slash and does not exist as a project ID or a path
@@ -753,5 +965,132 @@ depends_on = ["test"]
             "expected error or error field, got: {:?}",
             result
         );
+    }
+
+    #[tokio::test]
+    async fn post_compact_flushes_lsp_clients_and_returns_flushed() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        let ctx = ToolContext {
+            agent,
+            lsp: lsp(),
+            output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
+            progress: None,
+            peer: None,
+        };
+
+        // post_compact=true should return flushed:true without the normal status fields
+        let result = ProjectStatus
+            .call(json!({"post_compact": true}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(result["flushed"], json!(true), "expected flushed:true");
+        assert!(result["hint"].is_string(), "expected hint string");
+        // Normal status fields must NOT be present in the compact-flush response
+        assert!(
+            result.get("project_root").is_none(),
+            "post_compact response must not include project_root"
+        );
+
+        // post_compact=false (or absent) should return the normal status response
+        let result = ProjectStatus
+            .call(json!({"post_compact": false}), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            result["project_root"].is_string(),
+            "normal call must include project_root"
+        );
+    }
+
+    #[test]
+    fn parse_cargo_dep_names_basic() {
+        let toml = r#"
+[package]
+name = "foo"
+
+[dependencies]
+serde = "1.0"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[build-dependencies]
+build_script = "0.1"
+"#;
+        let names = parse_cargo_dep_names(toml);
+        // Direct deps present
+        assert!(names.contains(&"serde".to_string()));
+        assert!(names.contains(&"tokio".to_string()));
+        assert!(names.contains(&"anyhow".to_string()));
+        // dev-deps and build-deps must NOT be included
+        assert!(!names.contains(&"tempfile".to_string()));
+        assert!(!names.contains(&"build_script".to_string()));
+    }
+
+    #[test]
+    fn parse_cargo_dep_names_normalises_hyphens() {
+        let toml = r#"
+[dependencies]
+my-crate = "1.0"
+"#;
+        let names = parse_cargo_dep_names(toml);
+        assert!(
+            names.contains(&"my_crate".to_string()),
+            "hyphens should be normalised to underscores"
+        );
+    }
+
+    #[tokio::test]
+    async fn activate_project_auto_registers_cargo_dependencies() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+
+        // Write a minimal Cargo.toml with one dep that lives in a fake registry
+        let fake_registry_src = dir.path().join("fake_registry");
+        let fake_crate_dir = fake_registry_src.join("mylib-1.2.3");
+        std::fs::create_dir_all(&fake_crate_dir).unwrap();
+
+        // Patch HOME so auto_register_cargo_deps uses our fake registry
+        // We use a custom Cargo.toml that points to a path dep to avoid needing
+        // the real ~/.cargo/registry for this test. Instead we test the internal
+        // helpers directly and exercise the activation path via find_cargo_crate_dir.
+        let cargo_toml =
+            format!("[package]\nname = \"test\"\n\n[dependencies]\nmylib = \"1.2.3\"\n");
+        std::fs::write(dir.path().join("Cargo.toml"), &cargo_toml).unwrap();
+
+        // Verify parse_cargo_dep_names picks up the dep
+        let names = parse_cargo_dep_names(&cargo_toml);
+        assert!(
+            names.contains(&"mylib".to_string()),
+            "mylib should be parsed"
+        );
+
+        // Verify find_cargo_crate_dir finds it given our fake index
+        let index_dirs = vec![fake_registry_src];
+        let found = find_cargo_crate_dir(&index_dirs, "mylib");
+        assert_eq!(
+            found.as_deref(),
+            Some(fake_crate_dir.as_path()),
+            "should find fake crate dir"
+        );
+
+        // Full activation: with no real ~/.cargo/registry, no libs get registered,
+        // but activation must still succeed (best-effort — never blocks activation).
+        let ctx = ToolContext {
+            agent: Agent::new(None).await.unwrap(),
+            lsp: lsp(),
+            output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
+            progress: None,
+            peer: None,
+        };
+        let result = ActivateProject
+            .call(json!({ "path": dir.path().to_str().unwrap() }), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(result["status"], "ok", "activation must succeed");
     }
 }

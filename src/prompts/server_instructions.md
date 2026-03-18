@@ -242,6 +242,16 @@ Additional GitHub tools (`github_identity`, `github_issue`, `github_pr`, `github
 are available when `security.github_enabled = true` in `.codescout/project.toml`.
 Restart the server after changing this setting.
 
+## Elicitation — Interactive Questions from Tools
+
+Some tools may pause mid-execution to ask you questions via elicitation dialogs:
+
+- **`run_command(interactive: true)`** — Drives an interactive process (REPL, setup wizard)
+  via a loop of input prompts.
+
+**If you see a form or dialog,** fill it in with your choice/confirmation, or leave it blank
+and press enter to cancel. Cancelled operations are safe — no mutations occur.
+
 ## Output System
 
 **File paths in tool output are relative to the project root** (e.g. `src/tools/mod.rs`,

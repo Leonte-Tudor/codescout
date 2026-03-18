@@ -39,6 +39,7 @@ async fn ctx_with_mock(
         lsp: MockLspProvider::with_client(mock),
         output_buffer: std::sync::Arc::new(codescout::tools::output_buffer::OutputBuffer::new(20)),
         progress: None,
+        peer: None,
     };
     (dir, ctx)
 }
