@@ -64,15 +64,21 @@ lsof -i :8080
 ### Server crashes on startup
 
 This usually means a required shared library is missing (common with the
-`local-embed` feature, which needs ONNX Runtime).
+`local-embed` feature, which needs ONNX Runtime as a native system library).
 
 **Fix:** Check the error output on stderr. If it mentions `libonnxruntime`,
-install the ONNX Runtime or switch to the `remote-embed` feature:
+install ONNX Runtime on your system, or switch to Ollama (recommended) for
+local-free embeddings without native dependencies:
 
 ```bash
-# Reinstall with only remote embedding support
-cargo install codescout --no-default-features --features remote-embed
+# Rebuild using only the remote backend (supports Ollama, OpenAI, etc.)
+git clone https://github.com/mareurs/codescout.git
+cd codescout
+cargo install --path . --no-default-features --features remote-embed
 ```
+
+Then start Ollama and configure codescout to use it — see
+[Ollama setup](../configuration/embedding-backends.md#ollama-default).
 
 ---
 
@@ -246,12 +252,18 @@ was enabled.
 **Fix:** Reinstall with an embedding backend:
 
 ```bash
-# Remote (Ollama, OpenAI)
+# Remote backend — supports Ollama (recommended), OpenAI, and compatible servers
 cargo install codescout --features remote-embed
 
-# Local (CPU, no external service)
-cargo install codescout --features local-embed
+# Local CPU backend — requires building from source (not available via crates.io)
+git clone https://github.com/mareurs/codescout.git
+cd codescout
+cargo install --path . --features local-embed
 ```
+
+> **Tip:** For a free, local setup without building from source, use
+> [Ollama](https://ollama.com/) with the default `remote-embed` binary.
+> See [Embedding Backends](../configuration/embedding-backends.md#ollama-default).
 
 ---
 

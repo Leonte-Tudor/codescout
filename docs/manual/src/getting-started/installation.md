@@ -139,7 +139,7 @@ Re-run with `force: true` to rebuild from scratch: ask your agent `"Run codescou
 
 ## Feature Flags
 
-codescout has three embedding modes, controlled at compile time via Cargo features:
+codescout has two embedding modes, controlled at compile time via Cargo features:
 
 > **See also:** [Embedding Backends](../configuration/embedding-backends.md) —
 > full backend comparison, recommended models, and per-backend configuration.
@@ -147,27 +147,28 @@ codescout has three embedding modes, controlled at compile time via Cargo featur
 | Feature | What it does | When to use it |
 |---|---|---|
 | `remote-embed` (default) | HTTP client for OpenAI-compatible embedding APIs | You have Ollama, OpenAI, or a compatible server running |
-| `local-embed` | CPU embeddings via fastembed-rs and ONNX Runtime | You want embeddings with no external service |
-| both | Both backends compiled in; backend selected at runtime via config | Maximum flexibility |
+| `local-embed` | CPU embeddings via fastembed-rs and ONNX Runtime | Air-gapped machines; **requires building from source** |
 
-### Installing with Local Embeddings
+> **Want free, local embeddings without building from source?** Use
+> [Ollama](https://ollama.com/) — it is the recommended path. Install Ollama,
+> pull a model (`ollama pull nomic-embed-text`), and codescout will use it
+> automatically. The published `cargo install codescout` binary supports Ollama
+> out of the box with no extra flags.
+
+### Local Embeddings via fastembed (`local-embed`)
+
+The `local-embed` feature depends on ONNX Runtime as a native system library. Because of
+this native dependency, it is **not available via `cargo install codescout`** from crates.io.
+To use it you must build from source:
 
 ```bash
-cargo install codescout --features local-embed
+git clone https://github.com/mareurs/codescout.git
+cd codescout
+cargo install --path . --features local-embed
 ```
 
-The first time you build a semantic search index, the local backend model (typically
-`nomic-embed-text`, ~130MB) downloads automatically to `~/.cache/huggingface/hub/`. Subsequent
-uses are fully offline.
-
-### Installing with Both Backends
-
-```bash
-cargo install codescout --features remote-embed,local-embed
-```
-
-Switch between backends per-project by setting `embed_backend` in `.codescout/project.toml`.
-See [Embedding Backends](../configuration/embedding-backends.md) for details.
+The first time you build a semantic search index, the local backend model downloads
+automatically to `~/.cache/huggingface/hub/`. Subsequent uses are fully offline.
 
 ### Minimal Install (No Embeddings)
 

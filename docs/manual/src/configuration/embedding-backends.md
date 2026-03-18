@@ -204,23 +204,29 @@ download.
 
 **Model string format:** `"local:<EmbeddingModel-variant>"`
 
-**Requires:** building with the `local-embed` Cargo feature (not included in the default
-`remote-embed` build)
+**Requires:** building from source with the `local-embed` Cargo feature. This backend is
+**not available in the published `cargo install codescout` binary** because ONNX Runtime is
+a native system library that cannot be bundled through crates.io.
+
+> **Looking for free local embeddings without building from source?** Use [Ollama](#ollama-default)
+> instead — it is the recommended path for most users.
 
 **Model cache:** `~/.cache/huggingface/hub/` — downloaded on first use, then fully offline
 
 ### Build
 
-Install with local embedding support:
+Clone the repository and build with local embedding support:
 
 ```bash
-cargo install codescout --features local-embed
+git clone https://github.com/mareurs/codescout.git
+cd codescout
+cargo install --path . --features local-embed
 ```
 
 Or, to have both local and remote backends available simultaneously:
 
 ```bash
-cargo install codescout --features remote-embed,local-embed
+cargo install --path . --features remote-embed,local-embed
 ```
 
 ### Configuration
@@ -287,10 +293,14 @@ is for manual overrides.
 
 - **Ollama is running** → `ollama:nomic-embed-text` (fast, 8192-token context, 137 MB).
   Upgrade to `ollama:bge-m3` for higher retrieval quality at the cost of a 1.2 GB download.
-- **No Ollama, CPU-only machine** → `local:JinaEmbeddingsV2BaseCode` (code-specific,
-  8192-token context, ~300 MB). Outperforms general GPU models on code benchmarks.
-- **Constrained machine (low RAM or disk)** → `local:AllMiniLML6V2Q` (22 MB, CPU-safe).
+- **No Ollama, CPU-only machine, can build from source** → `local:JinaEmbeddingsV2BaseCode`
+  (code-specific, 8192-token context, ~300 MB). Build with `--features local-embed` from the
+  [repository](https://github.com/mareurs/codescout). Outperforms general GPU models on code.
+- **No Ollama, CPU-only, `cargo install` only** → not currently supported. Install Ollama
+  (it runs on CPU too, just slower) or use `openai:text-embedding-3-small`.
+- **Constrained machine (low RAM or disk), building from source** → `local:AllMiniLML6V2Q`
+  (22 MB, CPU-safe). Build with `--features local-embed`.
 - **Best search quality, cloud acceptable** → `openai:text-embedding-3-small`.
-- **Air-gapped or full data privacy required** → `local:JinaEmbeddingsV2BaseCode` or
-  `local:AllMiniLML6V2Q` (build with `--features local-embed`).
+- **Air-gapped or full data privacy required** → build from source with `--features local-embed`
+  and use `local:JinaEmbeddingsV2BaseCode` or `local:AllMiniLML6V2Q`.
 - **Self-hosted TEI, vLLM, or similar** → `custom:<model>@<base-url>`.
