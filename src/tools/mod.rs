@@ -25,8 +25,6 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use rmcp::model::Content;
-use rmcp::service::RoleServer;
-use rmcp::Peer;
 use serde_json::Value;
 
 use crate::agent::Agent;
@@ -67,56 +65,6 @@ pub struct ToolContext {
     pub lsp: Arc<dyn LspProvider>,
     pub output_buffer: Arc<output_buffer::OutputBuffer>,
     pub progress: Option<Arc<progress::ProgressReporter>>,
-    /// MCP peer for sending elicitation requests to the client.
-    /// `None` in tests or when the client doesn't support elicitation.
-    pub peer: Option<Peer<RoleServer>>,
-}
-
-impl ToolContext {
-    /// Request structured input from the user via MCP elicitation.
-    ///
-    /// Returns `Ok(Some(T))` if the user provided data, `Ok(None)` if elicitation
-    /// is unavailable (no peer, client doesn't support it, or user provided no content),
-    /// or an error if the user declined/cancelled.
-    ///
-    /// `UserDeclined` and `UserCancelled` are wrapped as [`RecoverableError`] so they
-    /// route to `isError: false` — these are expected user-driven outcomes, not fatal
-    /// tool failures. The LLM can handle them gracefully without aborting sibling calls.
-    pub async fn elicit<T>(&self, message: impl Into<String>) -> anyhow::Result<Option<T>>
-    where
-        T: rmcp::service::ElicitationSafe + for<'de> serde::Deserialize<'de>,
-    {
-        let Some(ref peer) = self.peer else {
-            return Ok(None);
-        };
-        match peer.elicit::<T>(message).await {
-            Ok(data) => Ok(data),
-            Err(rmcp::service::ElicitationError::CapabilityNotSupported) => Ok(None),
-            Err(rmcp::service::ElicitationError::NoContent) => Ok(None),
-            Err(rmcp::service::ElicitationError::UserDeclined) => {
-                Err(RecoverableError::with_hint(
-                    "User declined the elicitation request",
-                    "Re-issue the call with a more specific argument to avoid the disambiguation prompt",
-                )
-                .into())
-            }
-            Err(rmcp::service::ElicitationError::UserCancelled) => {
-                Err(RecoverableError::with_hint(
-                    "User cancelled the elicitation request",
-                    "Re-issue the call with a more specific argument to avoid the disambiguation prompt",
-                )
-                .into())
-            }
-            Err(rmcp::service::ElicitationError::ParseError { error, data }) => {
-                Err(RecoverableError::with_hint(
-                    format!("Could not parse elicitation response: {error}"),
-                    format!("Received data: {data}"),
-                )
-                .into())
-            }
-            Err(e) => Err(e.into()),
-        }
-    }
 }
 
 /// A recoverable tool error: the LLM gave bad input and can self-correct.
@@ -474,7 +422,6 @@ mod tests {
             lsp: crate::lsp::LspManager::new_arc(),
             output_buffer: std::sync::Arc::new(output_buffer::OutputBuffer::new(20)),
             progress: None,
-            peer: None,
         }
     }
 
@@ -873,52 +820,5 @@ mod tests {
         assert_eq!(super::safe_truncate(s, 4), "ab"); // still inside
         assert_eq!(super::safe_truncate(s, 5), "ab\u{2500}");
         assert_eq!(super::safe_truncate(s, 100), s); // clamp to len
-    }
-
-    // ---- elicitation tests ----
-
-    #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-    struct TestConfirm {
-        confirm: bool,
-    }
-    rmcp::elicit_safe!(TestConfirm);
-
-    #[tokio::test]
-    async fn elicit_returns_none_when_no_peer() {
-        let ctx = bare_ctx().await;
-        let result = ctx.elicit::<TestConfirm>("Test?").await;
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_none());
-    }
-
-    #[test]
-    fn elicit_user_declined_is_recoverable_error() {
-        // UserDeclined must produce a RecoverableError (isError: false at MCP level),
-        // not a plain anyhow error (isError: true). We verify this by constructing the
-        // error the same way the elicit() match arm does and checking the downcast.
-        let e: anyhow::Error = RecoverableError::with_hint(
-            "User declined the elicitation request",
-            "Re-issue the call with a more specific argument to avoid the disambiguation prompt",
-        )
-        .into();
-        assert!(
-            e.downcast_ref::<RecoverableError>().is_some(),
-            "UserDeclined must be a RecoverableError so it routes to isError:false"
-        );
-    }
-
-    #[test]
-    fn elicit_user_cancelled_is_recoverable_error() {
-        // UserCancelled must produce a RecoverableError (isError: false at MCP level),
-        // not a plain anyhow error (isError: true).
-        let e: anyhow::Error = RecoverableError::with_hint(
-            "User cancelled the elicitation request",
-            "Re-issue the call with a more specific argument to avoid the disambiguation prompt",
-        )
-        .into();
-        assert!(
-            e.downcast_ref::<RecoverableError>().is_some(),
-            "UserCancelled must be a RecoverableError so it routes to isError:false"
-        );
     }
 }

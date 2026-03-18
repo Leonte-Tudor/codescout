@@ -848,7 +848,6 @@ mod tests {
                     20,
                 )),
                 progress: None,
-                peer: None,
             },
         )
     }
@@ -874,7 +873,6 @@ mod tests {
                     20,
                 )),
                 progress: None,
-                peer: None,
             },
         )
     }
@@ -958,7 +956,6 @@ mod tests {
             lsp: LspManager::new_arc(),
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
-            peer: None,
         };
         assert!(SemanticSearch
             .call(json!({ "query": "test" }), &ctx)
@@ -1171,7 +1168,6 @@ mod tests {
             lsp: LspManager::new_arc(),
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
-            peer: None,
         };
         let result = IndexStatus
             .call(json!({"threshold": 0.1}), &ctx)

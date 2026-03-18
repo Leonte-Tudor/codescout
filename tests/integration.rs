@@ -26,7 +26,6 @@ async fn project_with_files(files: &[(&str, &str)]) -> (tempfile::TempDir, ToolC
         lsp: LspManager::new_arc(),
         output_buffer: std::sync::Arc::new(codescout::tools::output_buffer::OutputBuffer::new(20)),
         progress: None,
-        peer: None,
     };
     (dir, ctx)
 }
@@ -495,7 +494,6 @@ async fn write_allowed_when_project_provided_at_startup_even_with_worktrees() {
         lsp: LspManager::new_arc(),
         output_buffer: std::sync::Arc::new(codescout::tools::output_buffer::OutputBuffer::new(20)),
         progress: None,
-        peer: None,
     };
 
     // 3. Write should succeed — worktree guard bypassed because project was
