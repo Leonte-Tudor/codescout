@@ -142,6 +142,113 @@ N}` — a small JSON that `call_content()` won't re-buffer as `@tool_*`. Regress
 ---
 ```
 
+### BUG-027 — `replace_symbol` / `remove_symbol`: Kotlin LSP `range.start` lands mid-docstring, leaving unclosed `/**`
+
+**Date:** 2026-03-18
+**Severity:** High — silently corrupts Kotlin source files; causes cascading "Unclosed comment" + "Unresolved reference" compile errors
+**Status:** ✅ Fixed (2026-03-18)
+
+**What happened:**
+Called `replace_symbol("createSolver", ...)` on a Kotlin file where `createSolver` had a
+multi-line KDoc with preamble text before `@param` tags:
+
+```kotlin
+// line 106: /**
+// line 107:  * Create a configured Stage1 solver for a specific tier.
+// line 108:  *
+// line 109:  * @param tier ...        ← kotlin-language-server reports range.start HERE
+// line 110:  * @param lessonCount ...
+// ...
+// line 113:  */
+// line 114: fun createSolver(
+```
+
+`replace_symbol` replaced from line 109 onward. Lines 106–108 (`/**`, description, blank `*`)
+were left in the file. The new body also started with `/**`, producing two nested `/**`
+openers with only one `*/` — an unclosed block comment. Kotlin compiler error:
+`Syntax error: Unclosed comment at EOF`.
+
+**Root cause:**
+`kotlin-language-server` returns `DocumentSymbol.range.start` pointing to the first `@param`
+tag line instead of the `/**` opener, when the KDoc has preamble text (description + blank
+line) before its first `@` tag. Functions with short KDocs (no preamble, or only description,
+no `@param`) are unaffected — their `range.start` correctly lands on `/**`.
+
+codescout's `editing_start_line` (`src/tools/symbol.rs`) trusts `range_start_line`
+(= `ds.range.start.line`) unconditionally. When it points mid-comment, `replace_symbol`
+leaves the `/**` opener orphaned.
+
+**Reproduction:**
+1. Kotlin file with a function whose KDoc has preamble text before first `@param`:
+   ```kotlin
+   /**
+    * Description paragraph.
+    *
+    * @param x ...
+    */
+   fun foo(x: Int) { ... }
+   ```
+2. Call `replace_symbol("foo", new_body_starting_with_/**/)`.
+3. Observe: original `/**\n * Description paragraph.\n *\n` left in file; new `/**` appended.
+4. Kotlin compiler reports "Unclosed comment".
+
+**Fix (src/tools/symbol.rs — `editing_start_line`):**
+When `range_start_line` is `Some(r)` and the line at `r` is inside a block comment
+(starts with `*` after trimming), walk backward to find the `/**` opener:
+
+```rust
+fn editing_start_line(sym: &SymbolInfo, lines: &[&str]) -> usize {
+    if let Some(r) = sym.range_start_line {
+        let r = r as usize;
+        // Kotlin LSP (and possibly others) may report range.start inside a /** */ block —
+        // at the first @param line rather than the /** opener. Walk back to fix it.
+        if r < lines.len() && lines[r].trim_start().starts_with('*') {
+            for i in (0..r).rev() {
+                if lines[i].trim_start().starts_with("/**") {
+                    return i;
+                }
+            }
+        }
+        return r;
+    }
+    find_insert_before_line(lines, sym.start_line as usize)
+}
+```
+
+Also add a Kotlin fixture test: function with multi-line KDoc + @params → assert
+`body_start_line` == line of `/**`, not the `@param` line.
+
+---
+
+### BUG-028 — `create_file` / `edit_file`: does not notify LSP, leaving index stale
+
+**Date:** 2026-03-18
+**Severity:** Medium — after writing a file, `find_symbol` / `list_symbols` return stale results until LSP restarts
+**Status:** ✅ Fixed (2026-03-18)
+
+**What happened:**
+After `create_file` rewrote a Kotlin fixture file with a new function added, subsequent
+`list_symbols` and `find_symbol` calls did not return the new function. The Kotlin LSP was
+still serving the pre-write symbol table. Only an `/mcp` reconnect (which kills and restarts
+the LSP process) refreshed the index.
+
+**Root cause:**
+`create_file` (and `edit_file` for non-LSP-structural changes) writes directly to disk without
+sending `textDocument/didChange` (or `didOpen` + `didChange`) to any running LSP client for
+that file's language. The LSP only re-reads on the next `didOpen` — which only fires if the
+file hasn't been opened before in the current session.
+
+**Fix:**
+After any write to a source file (`create_file`, `edit_file`), call
+`ctx.lsp.notify_file_changed(&full_path).await` — the same `did_change` notification that
+`replace_symbol` and `insert_code` already send. This ensures the LSP re-indexes the file
+before the next `document_symbols` call.
+
+Check: `create_file` and `edit_file` both already have access to `ctx.lsp` — just missing
+the `notify_file_changed` call.
+
+---
+
 ### BUG-022 — Agent bypasses library tools, greps cargo registry directly
 
 **Date:** 2026-03-16

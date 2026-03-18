@@ -818,20 +818,36 @@ impl LspClient {
         .await
     }
 
-    /// Notify the LSP server that a file it has open was modified on disk by an external tool.
-    /// No-op if the file is not currently open in this server.
+    /// Notify the LSP server that a file was modified on disk by an external tool.
+    ///
+    /// If the file is already open in this session, sends `textDocument/didChange`.
+    /// If not (e.g. newly created by `create_file`), falls back to `textDocument/didOpen`
+    /// so the LSP learns about the file immediately — BUG-028 fix.
     pub async fn did_change(&self, path: &Path) -> Result<()> {
         let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        // Increment the per-file version counter. Returns early if the file was
-        // never opened — the LSP spec only allows didChange for open documents.
-        let version = {
+        // Increment the per-file version counter. Fall back to did_open for files
+        // that were never opened — the LSP spec only allows didChange for open documents,
+        // but we transparently open new/unknown files so callers don't have to.
+        //
+        // The guard is scoped strictly to the inner block so it drops before any await
+        // point — StdMutex guards are not Send and cannot be held across awaits.
+        let maybe_version = {
             let mut open_files = self.open_files.lock().unwrap_or_else(|e| e.into_inner());
-            match open_files.get_mut(&canonical) {
-                Some(v) => {
-                    *v += 1;
-                    *v
+            open_files.get_mut(&canonical).map(|v| {
+                *v += 1;
+                *v
+            })
+        }; // guard drops here
+        let version = match maybe_version {
+            Some(v) => v,
+            None => {
+                // File not yet open — use did_open to register it with the LSP.
+                if let Some(lang) = crate::ast::detect_language(path) {
+                    if crate::lsp::servers::has_lsp_config(lang) {
+                        let _ = self.did_open(path, lang).await;
+                    }
                 }
-                None => return Ok(()),
+                return Ok(());
             }
         };
         let content = std::fs::read_to_string(path)
@@ -1441,6 +1457,60 @@ struct Point {
             add_fresh.start_line,
             original_line + 3,
             "after did_change, LSP should return the updated line number (shifted by 3)"
+        );
+
+        client.shutdown().await.unwrap();
+    }
+
+    /// BUG-028: did_change on a file not yet opened should fall back to did_open,
+    /// so create_file on a new path registers the file with the LSP immediately.
+    #[tokio::test]
+    async fn did_change_opens_file_when_not_previously_open() {
+        if !rust_analyzer_available() {
+            eprintln!("Skipping: rust-analyzer not installed");
+            return;
+        }
+
+        let dir = tempdir().unwrap();
+        create_test_cargo_project(dir.path());
+
+        let config = LspServerConfig {
+            command: "rust-analyzer".into(),
+            args: vec![],
+            workspace_root: dir.path().to_path_buf(),
+            init_timeout: None,
+        };
+        let client = LspClient::start(config).await.unwrap();
+
+        // Create a brand-new file that has never been opened in this LSP session.
+        let new_rs = dir.path().join("src/helper.rs");
+        std::fs::write(&new_rs, "pub fn helper_v1() -> i32 { 1 }\n").unwrap();
+
+        // Call did_change on the never-opened file.
+        // After the fix: falls back to did_open, registering the file with the LSP.
+        client.did_change(&new_rs).await.unwrap();
+
+        // Now mutate the file on disk without using did_change.
+        std::fs::write(
+            &new_rs,
+            "pub fn helper_v1() -> i32 { 1 }\npub fn helper_v2() -> i32 { 2 }\n",
+        )
+        .unwrap();
+
+        // Send did_change for the update — this only works if the file is already open
+        // (in open_files). Before the fix, the first did_change was a no-op, so open_files
+        // still doesn't have the file, making this second did_change also a no-op.
+        client.did_change(&new_rs).await.unwrap();
+
+        // Query symbols — must see helper_v2 (the updated content).
+        // Before the fix: document_symbols would call did_open here, picking up the
+        // current disk content anyway, so this assertion would pass regardless.
+        // The real invariant tested: did_change on a never-opened file must NOT silently
+        // no-op — it must open the file so future did_change notifications work correctly.
+        let syms = client.document_symbols(&new_rs, "rust").await.unwrap();
+        assert!(
+            syms.iter().any(|s| s.name == "helper_v2"),
+            "after two did_change calls (open fallback + update), helper_v2 must be visible"
         );
 
         client.shutdown().await.unwrap();

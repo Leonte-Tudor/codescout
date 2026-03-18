@@ -1558,23 +1558,48 @@ impl Tool for Hover {
     }
 }
 
-/// Walk upward from a symbol’s start line to find the insertion point that
-/// lands before any doc comments and attributes. Used ONLY for insert_code(before)
-/// positioning — never for modifying a symbol’s own range.
-///
-/// Krait-style: language-agnostic, recognizes doc comments and attributes from
-/// Rust (#[...]), Python/Java/TS (@decorator), JSDoc/JavaDoc (/** ... */),
-/// and Rust module-level doc comments (//!). Does NOT consume blank lines —
-/// blank lines are structural separators and are left in place.
 /// Compute the true start of a symbol declaration for editing (remove/replace).
 ///
 /// Uses the LSP `range.start` (which includes attributes, doc comments, decorators)
 /// when available. Falls back to the heuristic `find_insert_before_line` when the
 /// LSP doesn't provide a separate full range (workspace/symbol, tree-sitter).
+///
+/// Special case (BUG-027): some LSP servers (e.g. kotlin-language-server) report
+/// `range.start` inside a `/** */` block comment — at the first `@param` tag rather
+/// than the `/**` opener. When detected (line starts with `*` but not `/**` or `/*`),
+/// we run `find_insert_before_line` from that point to walk back to the true opener.
+///
+/// The walk-back result is **validated**: we check that we actually landed on a `/**`
+/// or `/*` opener. If not (e.g. the `*` was a dereference or multiplication, not a
+/// doc-comment continuation), we discard the walk-back and trust the LSP's original
+/// `range_start_line`. This keeps the fix language-agnostic — it covers Kotlin, Java,
+/// Scala, and any future LSP with the same quirk — without risking false positives
+/// in languages where `*`-prefixed lines have non-comment meaning (e.g. Rust `*mut`).
 fn editing_start_line(sym: &crate::lsp::SymbolInfo, lines: &[&str]) -> usize {
-    sym.range_start_line
-        .map(|r| r as usize)
-        .unwrap_or_else(|| find_insert_before_line(lines, sym.start_line as usize))
+    if let Some(r) = sym.range_start_line {
+        let r = r as usize;
+        // Detect mid-block-comment position: continuation lines inside /** */ start
+        // with `*` but not `/**` or `/*`. This is language-agnostic and covers all
+        // C-style block comment languages (Kotlin, Java, JS, TS, Rust, etc.).
+        if r < lines.len() {
+            let t = lines[r].trim_start();
+            if t.starts_with('*') && !t.starts_with("/**") && !t.starts_with("/*") {
+                let walked = find_insert_before_line(lines, r);
+                // Validate: confirm we landed on a block comment opener.
+                // If not, the `*` was something else (dereference, multiplication) —
+                // discard the walk-back and trust the LSP's original range.
+                if walked < lines.len() {
+                    let landed = lines[walked].trim_start();
+                    if landed.starts_with("/**") || landed.starts_with("/*") {
+                        return walked;
+                    }
+                }
+                return r;
+            }
+        }
+        return r;
+    }
+    find_insert_before_line(lines, sym.start_line as usize)
 }
 /// Get the true end line for write operations (insert_code after, replace_symbol).
 ///
@@ -1608,7 +1633,7 @@ fn editing_end_line(sym: &crate::lsp::SymbolInfo) -> u32 {
 /// - Multi-line attributes: `#[cfg(\n    ...\n)]` (tracks bracket nesting)
 /// - Python/Java decorators: `@decorator`, `@app.route("/path")`
 /// - Doc comments: `///`, `//!`, `/** ... */`
-/// - Block comments: `/* ... */` (multi-line)
+/// - Block comments: `/* ... */` (multi-line), including bare `*` continuation lines
 fn find_insert_before_line(lines: &[&str], symbol_start: usize) -> usize {
     let mut cursor = symbol_start;
     // Track unclosed brackets when scanning upward through multi-line attributes.
@@ -1642,6 +1667,7 @@ fn find_insert_before_line(lines: &[&str], symbol_start: usize) -> usize {
             || trimmed.starts_with("//!")
             || trimmed.starts_with("/**")
             || trimmed.starts_with("* ")
+            || trimmed == "*"   // bare asterisk: blank continuation line in /** */ blocks
             || trimmed == "*/"
             || trimmed.starts_with("/*");
 
@@ -5253,6 +5279,24 @@ fn main() {
     }
 
     #[test]
+    fn find_insert_before_line_walks_past_kdoc_bare_asterisk_line() {
+        // A bare `*` continuation line (KDoc/JSDoc blank doc line) must not stop the walk.
+        // Reproduces the root cause of BUG-027: kotlin-language-server reports range.start
+        // mid-docstring; the heuristic must walk past bare `*` lines to reach `/**`.
+        let lines = vec![
+            "other code",             // 0
+            "",                       // 1 — blank line: stops the walk
+            "    /**",                // 2 — doc opener: expected editing start
+            "     * Description.",    // 3
+            "     *",                 // 4 — bare asterisk (blank doc continuation)
+            "     * @param x ...",    // 5
+            "     */",                // 6
+            "    fun foo(x: Int) {}", // 7 — symbol_start
+        ];
+        assert_eq!(find_insert_before_line(&lines, 7), 2);
+    }
+
+    #[test]
     fn find_insert_before_line_at_start_of_file() {
         let lines = vec!["/// Doc", "fn foo() {}"];
         assert_eq!(find_insert_before_line(&lines, 1), 0);
@@ -5313,6 +5357,102 @@ fn main() {
         ];
         // No range_start_line → heuristic walks back past #[test] #[ignore]
         assert_eq!(editing_start_line(&sym, &lines), 1);
+    }
+
+    #[test]
+    fn editing_start_line_walks_back_to_block_comment_opener_when_lsp_range_is_mid_comment() {
+        // Reproduces BUG-027: kotlin-language-server sets range.start at the first @param
+        // line inside a KDoc block, not at the `/**` opener. If editing_start_line trusts
+        // this blindly, replace_symbol leaves `/**\n * preamble\n *\n` behind — an unclosed
+        // block comment that cascades into Kotlin "Unresolved reference" compile errors.
+        let sym = crate::lsp::SymbolInfo {
+            name: "createSolver".to_string(),
+            name_path: "Stage1SolverConfigFactory/createSolver".to_string(),
+            kind: crate::lsp::SymbolKind::Function,
+            file: std::path::PathBuf::from("Stage1SolverConfigFactory.kt"),
+            start_line: 6, // "fun createSolver("
+            end_line: 9,
+            start_col: 4,
+            children: vec![],
+            range_start_line: Some(3), // Kotlin LSP lands here: "* @param lessonCount"
+            detail: None,
+        };
+        let lines = vec![
+            "    /**",                                 // 0 ← correct editing start
+            "     * Create a configured solver.",      // 1
+            "     *",                                  // 2 — bare asterisk
+            "     * @param lessonCount Number of ...", // 3 ← range_start_line (Kotlin LSP bug)
+            "     * @param moveThreadCount Threads",   // 4
+            "     */",                                 // 5
+            "    fun createSolver(",                   // 6 ← start_line
+            "        lessonCount: Int,",               // 7
+            "        moveThreadCount: Int = 4,",       // 8
+            "    ): Solver<Stage1Solution> { }",       // 9
+        ];
+        // Must return 0 (the `/**` opener), not 3 (the Kotlin LSP's wrong range.start)
+        assert_eq!(editing_start_line(&sym, &lines), 0);
+    }
+
+    #[test]
+    fn editing_start_line_does_not_walk_back_from_attribute_even_if_lsp_range_set() {
+        // Regression: attributes (#[attr]) must NOT trigger the block-comment walk-back.
+        // range_start_line = Some(5) pointing to `#[ignore]` must be used as-is.
+        let sym = crate::lsp::SymbolInfo {
+            name: "foo".to_string(),
+            name_path: "foo".to_string(),
+            kind: crate::lsp::SymbolKind::Function,
+            file: std::path::PathBuf::from("test.rs"),
+            start_line: 8,
+            end_line: 12,
+            start_col: 0,
+            children: vec![],
+            range_start_line: Some(5), // `#[ignore]` — NOT inside a block comment
+            detail: None,
+        };
+        let lines = vec![
+            "other code", // 0
+            "",           // 1
+            "/// doc1",   // 2
+            "/// doc2",   // 3
+            "#[test]",    // 4
+            "#[ignore]",  // 5 ← range_start_line — correctly at attribute start
+            "// between", // 6
+            "// gap",     // 7
+            "fn foo() {", // 8 ← start_line
+            "    body",   // 9
+            "}",          // 10
+        ];
+        // Must return 5 unchanged — not walk back further into the doc comments
+        assert_eq!(editing_start_line(&sym, &lines), 5);
+    }
+
+    #[test]
+    fn editing_start_line_discards_walkback_when_no_block_comment_opener() {
+        // Validate the safety net: if range_start_line points to a `*`-prefixed line
+        // that is NOT inside a /** */ block (e.g. a Rust dereference or raw pointer),
+        // the walk-back should be discarded and the original range_start_line returned.
+        let sym = crate::lsp::SymbolInfo {
+            name: "foo".to_string(),
+            name_path: "foo".to_string(),
+            kind: crate::lsp::SymbolKind::Function,
+            file: std::path::PathBuf::from("test.rs"),
+            start_line: 3,
+            end_line: 5,
+            start_col: 0,
+            children: vec![],
+            range_start_line: Some(2), // points to `*mut u8` — NOT a doc comment
+            detail: None,
+        };
+        let lines = vec![
+            "use std::ptr;", // 0
+            "",              // 1 — blank line stops heuristic walk-back
+            "*mut u8",       // 2 ← range_start_line (hypothetical: `*`-prefixed non-comment)
+            "fn foo() {",    // 3 ← start_line
+            "    body",      // 4
+            "}",             // 5
+        ];
+        // Walk-back reaches line 2, doesn't find /** or /*, so discards and returns 2
+        assert_eq!(editing_start_line(&sym, &lines), 2);
     }
 
     // ── symbol_to_json body extraction: full-range (includes attributes) ─────
