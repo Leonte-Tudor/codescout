@@ -22,6 +22,11 @@ These are non-negotiable. Violating the letter IS violating the spirit.
    in a follow-up: `cargo test` → `grep FAILED @cmd_id`. Never `cargo test 2>&1 | grep FAILED`.
    The buffer system exists to save your context window — use it.
 
+4. **ACTIVATE THE HOME PROJECT WITH WRITE ACCESS AT SESSION START.** At the start of every
+   session, call `activate_project(".", read_only: false)`. This ensures write tools work on
+   the current working directory — the server may have been left in an unknown state by a
+   previous session or subagent.
+
 ## How to Choose the Right Tool
 
 ### By knowledge level
@@ -292,3 +297,4 @@ Instructions" — project-specific guidance. Edit the file to customize AI behav
 9. **Semantic search for "how does X work?"** Then drill into results with symbol tools.
 10. **Read `language-patterns` memory before writing or editing code.** `memory(action="read", topic="language-patterns")` contains per-language anti-patterns and correct patterns. Consult it before code changes or code review.
 11. **Prefer local git over GitHub API for local history.** `run_command("git blame/log/diff ...")` is faster and has full history. Use `github_repo` only for remote-only operations: releases, remote branches, cross-repo code search, forking.
+12. **Call `activate_project(".", read_only: false)` at the start of every session.** Ensures write access on the CWD regardless of prior server state.
