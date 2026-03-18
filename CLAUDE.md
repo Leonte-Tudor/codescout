@@ -90,12 +90,45 @@ git rebase master          # the original feature commit will NOT be auto-droppe
 git rebase -i master       # drop the original feature commit from the list
 ```
 
-### Publishing to crates.io
+### Release Cycle
 
-- **Always publish from `master`**, never from `experiments` or feature branches.
-- Bump the version in `Cargo.toml` on master, commit it, then run `cargo publish`.
-- Tag every release: `git tag vX.Y.Z` on the publish commit, then `git push --tags`.
-- Token is stored in `.env` (gitignored): `CARGO_REGISTRY_TOKEN=...` — load with `CARGO_REGISTRY_TOKEN=$(grep CARGO_REGISTRY_TOKEN .env | cut -d= -f2) cargo publish`.
+Full release checklist — run from `master`, never from `experiments` or feature branches.
+
+```bash
+# 1. Bump version in Cargo.toml
+#    Edit version = "X.Y.Z" in Cargo.toml
+
+# 2. Build release binary and verify
+cargo build --release
+cargo test
+cargo clippy -- -D warnings
+
+# 3. Commit the version bump
+git add Cargo.toml Cargo.lock
+git commit -m "chore: bump version to X.Y.Z"
+
+# 4. Tag the release
+git tag vX.Y.Z
+
+# 5. Publish to crates.io
+CARGO_REGISTRY_TOKEN=$(grep CARGO_REGISTRY_TOKEN .env | cut -d= -f2) cargo publish
+
+# 6. Push commit + tag
+git push
+git push --tags
+
+# 7. Create GitHub release with release notes
+gh release create vX.Y.Z --title "vX.Y.Z" --notes "release notes here"
+
+# 8. Rebase experiments on the new master
+git checkout experiments && git rebase master
+```
+
+**Notes:**
+- Token is stored in `.env` (gitignored): `CARGO_REGISTRY_TOKEN=...`
+- Use semver: patch for bug fixes, minor for new features, major for breaking changes
+- Release notes should list features, dep upgrades, and doc changes
+- Always rebase `experiments` after the release push
 
 ### Standard Ship Sequence
 
