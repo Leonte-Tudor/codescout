@@ -36,6 +36,10 @@ enum Commands {
         /// Enable debug logging to .codescout/debug.log
         #[arg(long)]
         debug: bool,
+
+        /// Enable diagnostic logging to .codescout/diagnostic-<hash>.log
+        #[arg(long)]
+        diagnostic: bool,
     },
 
     /// Index the current project for semantic search
@@ -73,12 +77,14 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Logging init happens before CLI parsing so startup errors are captured.
-    // We peek at raw args to detect --debug before clap processes them.
-    // Caveat: this fires for any subcommand that receives "--debug" as an argument.
-    // Currently only `start` has --debug, so this is safe — revisit if other
+    // We peek at raw args to detect --debug / --diagnostic before clap processes them.
+    // Caveat: this fires for any subcommand that receives these flags as arguments.
+    // Currently only `start` has them, so this is safe — revisit if other
     // subcommands add conflicting flags.
     let debug_mode = std::env::args().any(|a| a == "--debug");
-    let _log_guard = codescout::logging::init(debug_mode);
+    let diagnostic_mode = std::env::args().any(|a| a == "--diagnostic");
+    let log_state = codescout::logging::init(debug_mode, diagnostic_mode);
+    let _log_guards = log_state.guards;
 
     let cli = Cli::parse();
 
@@ -90,9 +96,20 @@ async fn main() -> Result<()> {
             port,
             auth_token,
             debug,
+            diagnostic,
         } => {
             tracing::info!("Starting codescout MCP server (transport={})", transport);
-            codescout::server::run(project, &transport, &host, port, auth_token, debug).await?;
+            codescout::server::run(
+                project,
+                &transport,
+                &host,
+                port,
+                auth_token,
+                debug,
+                diagnostic,
+                log_state.instance_id,
+            )
+            .await?;
         }
         Commands::Index { project, force } => {
             let root = project

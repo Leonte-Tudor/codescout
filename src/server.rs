@@ -131,6 +131,14 @@ impl CodeScoutServer {
     ) -> std::result::Result<CallToolResult, McpError> {
         tracing::debug!(args = ?req.arguments, "tool call");
 
+        let arg_keys: Vec<&str> = req
+            .arguments
+            .as_ref()
+            .map(|m| m.keys().map(|k| k.as_str()).collect())
+            .unwrap_or_default();
+        tracing::info!(tool = %req.name, ?arg_keys, "tool_call");
+        let tool_start = std::time::Instant::now();
+
         let tool = self.find_tool(&req.name).ok_or_else(|| {
             McpError::invalid_params(format!("unknown tool: '{}'", req.name), None)
         })?;
@@ -192,9 +200,13 @@ impl CodeScoutServer {
             Err(e) => route_tool_error(e),
         };
 
-        tracing::debug!(
-            ok = call_result.is_error.map_or(true, |e| !e),
-            "tool result"
+        let ok = call_result.is_error.map_or(true, |e| !e);
+        tracing::debug!(ok, "tool result");
+        tracing::info!(
+            tool = %req.name,
+            duration_ms = tool_start.elapsed().as_millis() as u64,
+            ok,
+            "tool_done"
         );
 
         // Strip the absolute project root from all output to reduce token usage.
@@ -337,6 +349,7 @@ pub(crate) async fn shutdown_signal() {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     project: Option<PathBuf>,
     transport: &str,
@@ -344,6 +357,8 @@ pub async fn run(
     port: u16,
     auth_token: Option<String>,
     debug: bool,
+    diagnostic: bool,
+    instance_id: Option<String>,
 ) -> Result<()> {
     // If no --project given, auto-detect from CWD (Claude Code launches servers from the project dir)
     let project = project.or_else(|| std::env::current_dir().ok());
@@ -353,11 +368,30 @@ pub async fn run(
     };
     let agent = Agent::new(project).await?;
 
-    // Heartbeat: only in debug mode — distinguishes idle from hung.
-    if debug {
+    let instance_tag = instance_id.as_deref().unwrap_or("----");
+
+    if diagnostic {
+        let project_display = agent
+            .project_root()
+            .await
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<none>".to_string());
+        tracing::info!(
+            pid = std::process::id(),
+            version = env!("CARGO_PKG_VERSION"),
+            instance = %instance_tag,
+            project = %project_display,
+            transport = %transport,
+            "codescout_start"
+        );
+    }
+
+    // Heartbeat: in debug mode or diagnostic mode — distinguishes idle from hung.
+    if debug || diagnostic {
         let agent_hb = agent.clone();
         let lsp_hb = lsp.clone();
         let start = tokio::time::Instant::now();
+        let instance_tag_hb = instance_tag.to_owned();
         let _heartbeat = tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             interval.tick().await; // Skip the immediate first tick
@@ -370,7 +404,13 @@ pub async fn run(
                 } else {
                     0
                 };
-                tracing::debug!(uptime_secs, active_projects, ?lsp_servers, "heartbeat");
+                tracing::info!(
+                    instance = %instance_tag_hb,
+                    uptime_secs,
+                    active_projects,
+                    ?lsp_servers,
+                    "heartbeat"
+                );
             }
         });
     }
@@ -390,10 +430,16 @@ pub async fn run(
             // Wait for service to end OR shutdown signal
             tokio::select! {
                 result = service.waiting() => {
-                    result.map_err(|e| anyhow::anyhow!("MCP server exited: {}", e))?;
+                    match result {
+                        Ok(reason) => tracing::info!(instance = %instance_tag, ?reason, "service_exit"),
+                        Err(e) => {
+                            tracing::info!(instance = %instance_tag, %e, "service_exit join_error");
+                            return Err(anyhow::anyhow!("MCP server exited: {}", e));
+                        }
+                    }
                 }
                 _ = shutdown_signal() => {
-                    tracing::info!("Received shutdown signal");
+                    tracing::info!(instance = %instance_tag, reason = "Signal", "service_exit");
                 }
             }
 

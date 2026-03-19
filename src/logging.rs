@@ -21,30 +21,83 @@ pub fn rotate_logs(dir: &Path) {
     let _ = std::fs::rename(dir.join("debug.log"), dir.join("debug.log.1"));
 }
 
-/// Initialise tracing. When `debug` is true:
-/// - Rotates `.codescout/debug.log` (keeps last 3)
-/// - Adds a file layer at DEBUG level alongside the stderr INFO layer
-/// - Returns a `WorkerGuard` that MUST be held for the lifetime of `main`
-///   (dropping it flushes the non-blocking writer)
+/// Generate a 4-hex-char random instance ID for log file naming.
+/// Uses std::hash::RandomState which is randomly seeded per process.
+fn generate_instance_id() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_usize(std::process::id() as usize);
+    format!("{:04x}", hasher.finish() as u16)
+}
+
+/// Rotate diagnostic log files: keep the 6 most recent by mtime.
+/// Different from `rotate_logs` which uses numbered backups for a single file.
+pub fn rotate_diagnostic_logs(dir: &Path) {
+    const KEEP: usize = 6;
+
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("diagnostic-") && name.ends_with(".log")
+        })
+        .filter_map(|e| {
+            let mtime = e.metadata().ok()?.modified().ok()?;
+            Some((e.path(), mtime))
+        })
+        .collect();
+
+    if entries.len() <= KEEP {
+        return;
+    }
+
+    // Sort newest first
+    entries.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Remove everything beyond the 6th
+    for (path, _) in &entries[KEEP..] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Logging init result — holds worker guards and optional instance ID.
+pub struct LoggingGuards {
+    /// MUST be held for the lifetime of main. Dropping flushes and closes writers.
+    pub guards: Vec<WorkerGuard>,
+    /// 4-hex-char instance ID when diagnostic mode is active, for span injection.
+    pub instance_id: Option<String>,
+}
+
+/// Initialise tracing.
 ///
-/// When `debug` is false, only the stderr INFO layer is installed.
-/// Returns `None` in that case.
-pub fn init(debug: bool) -> Option<WorkerGuard> {
+/// - `debug`: enables DEBUG-level file logging to `.codescout/debug.log` (verbose)
+/// - `diagnostic`: enables INFO-level file logging to `.codescout/diagnostic-<hash>.log`
+///
+/// Returns guards that MUST be held for the lifetime of `main`, plus the
+/// diagnostic instance ID (if active) for root span injection.
+pub fn init(debug: bool, diagnostic: bool) -> LoggingGuards {
+    let mut guards = Vec::new();
+
     let stderr_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
         .with_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")));
 
-    if debug {
-        let log_dir = std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            .join(".codescout");
+    let log_dir = std::env::current_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .join(".codescout");
 
+    if debug || diagnostic {
         if let Err(e) = std::fs::create_dir_all(&log_dir) {
             eprintln!("codescout: could not create log directory: {e}");
         }
+    }
 
+    // --- Debug file layer (DEBUG level) ---
+    let debug_layer = if debug {
         rotate_logs(&log_dir);
-
         match std::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -53,35 +106,148 @@ pub fn init(debug: bool) -> Option<WorkerGuard> {
         {
             Ok(file) => {
                 let (non_blocking, guard) = tracing_appender::non_blocking(file);
-                let file_layer = tracing_subscriber::fmt::layer()
-                    .with_writer(non_blocking)
-                    .with_ansi(false)
-                    .with_filter(EnvFilter::new("debug"));
-
-                tracing_subscriber::registry()
-                    .with(stderr_layer)
-                    .with(file_layer)
-                    .try_init()
-                    .ok();
-
-                return Some(guard);
+                guards.push(guard);
+                Some(
+                    tracing_subscriber::fmt::layer()
+                        .with_writer(non_blocking)
+                        .with_ansi(false)
+                        .with_filter(EnvFilter::new("debug")),
+                )
             }
             Err(e) => {
-                eprintln!("codescout: could not open debug log, falling back to stderr only: {e}");
+                eprintln!("codescout: could not open debug log: {e}");
+                None
             }
         }
-    }
+    } else {
+        None
+    };
+
+    // --- Diagnostic file layer (INFO level) ---
+    let mut instance_id = None;
+    let diagnostic_layer = if diagnostic {
+        rotate_diagnostic_logs(&log_dir);
+        let id = generate_instance_id();
+        let filename = format!("diagnostic-{id}.log");
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(log_dir.join(&filename))
+        {
+            Ok(file) => {
+                let (non_blocking, guard) = tracing_appender::non_blocking(file);
+                guards.push(guard);
+                instance_id = Some(id);
+                Some(
+                    tracing_subscriber::fmt::layer()
+                        .with_writer(non_blocking)
+                        .with_ansi(false)
+                        .with_filter(EnvFilter::new("info")),
+                )
+            }
+            Err(e) => {
+                eprintln!("codescout: could not open diagnostic log {filename}: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     tracing_subscriber::registry()
         .with(stderr_layer)
+        .with(debug_layer)
+        .with(diagnostic_layer)
         .try_init()
         .ok();
-    None
+
+    LoggingGuards {
+        guards,
+        instance_id,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rotate_diagnostic_keeps_last_6() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create 8 diagnostic files with staggered mtimes
+        for i in 0..8 {
+            let path = dir.path().join(format!("diagnostic-{:04x}.log", i));
+            std::fs::write(&path, format!("log {i}")).unwrap();
+            let mtime = filetime::FileTime::from_unix_time(1000 + i as i64, 0);
+            filetime::set_file_mtime(&path, mtime).unwrap();
+        }
+
+        super::rotate_diagnostic_logs(dir.path());
+
+        let mut remaining: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        remaining.sort();
+        assert_eq!(
+            remaining.len(),
+            6,
+            "should keep exactly 6 files: {remaining:?}"
+        );
+        // The two oldest (0000 and 0001) should be deleted
+        assert!(!remaining.contains(&"diagnostic-0000.log".to_string()));
+        assert!(!remaining.contains(&"diagnostic-0001.log".to_string()));
+    }
+
+    #[test]
+    fn rotate_diagnostic_ignores_non_diagnostic_files() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create 8 diagnostic files + 3 non-diagnostic files
+        for i in 0..8 {
+            let path = dir.path().join(format!("diagnostic-{:04x}.log", i));
+            std::fs::write(&path, format!("log {i}")).unwrap();
+            let mtime = filetime::FileTime::from_unix_time(1000 + i as i64, 0);
+            filetime::set_file_mtime(&path, mtime).unwrap();
+        }
+        std::fs::write(dir.path().join("debug.log"), "debug").unwrap();
+        std::fs::write(dir.path().join("debug.log.1"), "debug old").unwrap();
+        std::fs::write(dir.path().join("random.txt"), "other").unwrap();
+
+        super::rotate_diagnostic_logs(dir.path());
+
+        let all: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        // 6 diagnostic + 3 non-diagnostic = 9
+        assert_eq!(
+            all.len(),
+            9,
+            "non-diagnostic files must be untouched: {all:?}"
+        );
+    }
+
+    #[test]
+    fn generate_instance_id_is_4_hex_chars() {
+        let id = super::generate_instance_id();
+        assert_eq!(id.len(), 4, "instance ID must be 4 chars: got '{id}'");
+        assert!(
+            id.chars().all(|c| c.is_ascii_hexdigit()),
+            "instance ID must be hex: got '{id}'"
+        );
+    }
+
+    #[test]
+    fn generate_instance_id_varies_across_calls() {
+        // RandomState is randomly seeded, so two calls should differ.
+        // There's a 1/65536 chance of collision — acceptable for a test.
+        let a = super::generate_instance_id();
+        let b = super::generate_instance_id();
+        assert_ne!(a, b, "instance IDs should vary across calls");
+    }
 
     #[test]
     fn rotate_keeps_last_3() {
