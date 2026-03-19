@@ -329,23 +329,32 @@ pub fn generate_auth_token() -> String {
     format!("{:016x}{:016x}", hi, lo)
 }
 
-/// Wait for SIGINT (Ctrl-C) or SIGTERM.
-pub(crate) async fn shutdown_signal() {
-    let ctrl_c = tokio::signal::ctrl_c();
+/// Wait for SIGINT (Ctrl-C), SIGTERM, or SIGHUP and return the signal name.
+///
+/// SIGHUP is sent when the parent process (e.g. Claude Code) exits abruptly without
+/// sending SIGTERM first. Without this handler, codescout dies silently with no log entry.
+pub(crate) async fn shutdown_signal() -> &'static str {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c().await.ok();
+        "SIGINT"
+    };
 
     #[cfg(unix)]
     {
         let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .expect("failed to install SIGTERM handler");
+        let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+            .expect("failed to install SIGHUP handler");
         tokio::select! {
-            _ = ctrl_c => {}
-            _ = sigterm.recv() => {}
+            v = ctrl_c => v,
+            _ = sigterm.recv() => "SIGTERM",
+            _ = sighup.recv() => "SIGHUP",
         }
     }
 
     #[cfg(not(unix))]
     {
-        ctrl_c.await.ok();
+        ctrl_c.await
     }
 }
 
@@ -438,8 +447,8 @@ pub async fn run(
                         }
                     }
                 }
-                _ = shutdown_signal() => {
-                    tracing::info!(instance = %instance_tag, reason = "Signal", "service_exit");
+                reason = shutdown_signal() => {
+                    tracing::info!(instance = %instance_tag, reason, "service_exit");
                 }
             }
 

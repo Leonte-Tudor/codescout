@@ -34,7 +34,9 @@ pub async fn serve(
     }
 
     axum::serve(listener, router)
-        .with_graceful_shutdown(crate::server::shutdown_signal())
+        .with_graceful_shutdown(async {
+            let _ = crate::server::shutdown_signal().await;
+        })
         .await?;
 
     Ok(())
