@@ -1864,7 +1864,10 @@ async fn run_command_interactive(
         // Elicit next input from the user.
         let display_output = if accumulated_output.len() > 4000 {
             // Show only the tail to keep the elicitation dialog readable.
-            &accumulated_output[accumulated_output.len() - 4000..]
+            &accumulated_output[crate::tools::floor_char_boundary(
+                &accumulated_output,
+                accumulated_output.len() - 4000,
+            )..]
         } else {
             &accumulated_output
         };
