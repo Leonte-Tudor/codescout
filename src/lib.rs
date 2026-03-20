@@ -13,6 +13,7 @@ pub mod library;
 pub mod logging;
 pub mod lsp;
 pub mod memory;
+pub mod platform;
 pub mod prompts;
 pub mod server;
 pub mod tools;
