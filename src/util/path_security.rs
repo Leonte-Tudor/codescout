@@ -193,8 +193,8 @@ fn canonicalize_write_target(path: &Path) -> PathBuf {
 ///
 /// - Relative paths are resolved against `project_root` (if available).
 /// - Absolute paths are used as-is.
-/// - The resolved path is checked against the deny-list.
-/// - Paths inside registered library roots are always allowed (read-only).
+/// - The resolved path is checked against the deny-list (unless `Root` profile).
+/// - Library paths are subject to the same deny-list as all other reads.
 pub fn validate_read_path(
     raw: &str,
     project_root: Option<&Path>,
@@ -682,7 +682,8 @@ mod tests {
             Some(Path::new("/tmp/other_project")),
             &config,
         );
-        // Path is inside a registered library root — should succeed.
+        // Path is not on the deny-list — it happens to be inside a library root,
+        // but library roots receive no special exemption from deny-list checks.
         assert!(result.is_ok());
     }
 
