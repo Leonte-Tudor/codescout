@@ -118,6 +118,24 @@ fn require_owner_repo(owner: &str, repo: &str) -> Result<(), RecoverableError> {
             "Provide owner (GitHub username/org) and repo (repository name)",
         ));
     }
+    // Reject null bytes
+    if owner.contains('\0') || repo.contains('\0') {
+        return Err(RecoverableError::with_hint(
+            "owner/repo contains null byte",
+            "GitHub owner and repo names must not contain null bytes",
+        ));
+    }
+    // GitHub owner/repo names: alphanumeric, hyphens, dots, underscores
+    let valid = |s: &str| {
+        s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_')
+    };
+    if !valid(owner) || !valid(repo) {
+        return Err(RecoverableError::with_hint(
+            "owner/repo contains invalid characters",
+            "GitHub owner and repo names may only contain alphanumeric characters, hyphens, dots, and underscores",
+        ));
+    }
     Ok(())
 }
 
@@ -1459,5 +1477,14 @@ mod tests {
         let json = r#"[{"name":"main","protected":true},{"name":"feature","protected":false}]"#;
         let v: Value = serde_json::from_str(json).unwrap();
         assert_eq!(v[0]["name"], "main");
+    }
+
+    #[test]
+    fn require_owner_repo_rejects_special_chars() {
+        assert!(require_owner_repo("valid-owner", "valid.repo_123").is_ok());
+        assert!(require_owner_repo("owner;rm -rf", "repo").is_err());
+        assert!(require_owner_repo("owner", "repo\0evil").is_err());
+        assert!(require_owner_repo("owner/injection", "repo").is_err());
+        assert!(require_owner_repo("owner", "repo name").is_err());
     }
 }
