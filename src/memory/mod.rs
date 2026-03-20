@@ -370,4 +370,15 @@ mod tests {
         // Must be a file path, not the directory itself
         assert_ne!(path, store.memories_dir);
     }
+
+    #[test]
+    fn dashboard_topic_is_sanitized() {
+        // The dashboard handler extracts `topic` from the URL path and passes it
+        // to MemoryStore::read/write. sanitize_topic is used inside topic_path,
+        // so the dashboard is already protected. This test confirms it (C-10).
+        let (_dir, store) = make_store();
+        let path = store.topic_path("../../etc/passwd");
+        assert!(path.starts_with(&store.memories_dir));
+    }
+
 }
