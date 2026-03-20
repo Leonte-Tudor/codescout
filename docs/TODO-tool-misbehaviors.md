@@ -302,6 +302,236 @@ insertion logic may be using `selection_range.end` (which points to the name) in
 
 ---
 
+### BUG-030 — `replace_symbol`: replacing `mod tests` eats adjacent function body
+
+**Date:** 2026-03-20
+**Severity:** High — silently destroys neighboring function, producing compile errors
+**Status:** Open
+
+**What happened:**
+After BUG-029 corrupted `src/lsp/transport.rs` (insert_code placed code inside
+`write_produces_valid_framing`), attempted to fix by calling
+`replace_symbol("tests", "src/lsp/transport.rs", <full corrected mod tests body>)`.
+
+Expected: only the `mod tests` block (lines 56–118) replaced with the new body.
+
+Actual: `replace_symbol` replaced lines 56–118, but the `write_message` function body
+(lines 47–54) was **also consumed**. The replacement left `write_message` as an empty
+function signature with no body:
+
+```rust
+pub async fn write_message<W: AsyncWriteExt + Unpin>(writer: &mut W, msg: &Value) -> Result<()> {
+#[cfg(test)]
+mod tests {
+    // ... new body starts here, immediately after the opening brace
+```
+
+The `write_message` function's body (`let body = serde_json::to_string(msg)?; ...`) was
+deleted entirely. Compiler error: `unclosed delimiter` because `write_message`'s `{` was
+never closed.
+
+**Reproduction:**
+1. File: `src/lsp/transport.rs` with this structure:
+   ```rust
+   pub async fn write_message(...) -> Result<()> {
+       let body = serde_json::to_string(msg)?;
+       // ... 5 lines of body
+   }
+
+   #[cfg(test)]
+   mod tests {
+       // ... 60 lines of tests
+   }
+   ```
+2. Call `replace_symbol("tests", "src/lsp/transport.rs", <new mod tests body>)`
+3. Observe: `write_message` body deleted, `mod tests` now starts inside `write_message`'s braces
+
+**Root cause hypothesis:**
+The LSP `DocumentSymbol.range` for `mod tests` likely extends upward to include the blank
+line and possibly the closing `}` of the preceding function. rust-analyzer may report
+`range.start` for `mod tests` at the `#[cfg(test)]` attribute line, but the
+`editing_start_line` logic in `src/tools/symbol.rs` may walk further back to include
+preceding blank lines or comments, accidentally consuming the end of `write_message`.
+
+Alternatively, the `range.start.line` for the `mod tests` block may point to line 47
+(inside `write_message`) rather than line 56 (`#[cfg(test)]`), because rust-analyzer
+sometimes includes leading whitespace/blank lines in the symbol range.
+
+**Key debugging info:**
+- File: `src/lsp/transport.rs`, Rust, rust-analyzer LSP
+- Symbol: `mod tests` (module kind)
+- The `write_message` function ends at line ~54, `#[cfg(test)]` starts at line 56
+- `replace_symbol` replaced lines "56-118" per its response, but the actual effect was
+  that lines 47-54 (write_message body) were also gone
+
+**Fix ideas:**
+1. In `replace_symbol`, after computing the replacement range, verify the start line is
+   NOT inside another symbol's range (cross-reference with `document_symbols` results)
+2. Add a sanity check: if the line at `range.start` contains code that doesn't look like
+   the symbol being replaced (e.g., not `#[cfg(test)]` or `mod`), refuse the edit
+3. Write a regression test: file with `fn foo() { ... }\n\n#[cfg(test)]\nmod tests { ... }`,
+   replace `tests` → verify `foo` body is untouched
+
+---
+
+### BUG-031 — `replace_symbol`: duplicates doc comment and signature, leaving orphaned opening brace
+
+**Date:** 2026-03-20
+**Severity:** High — produces unparseable source (unclosed delimiter)
+**Status:** Open
+
+**What happened:**
+Called `replace_symbol("is_source_path", "src/util/path_security.rs", <new body>)` to
+update a small function with cached regex logic.
+
+Expected: the old function (lines 571–577) replaced with the new body.
+
+Actual: the old doc comment + signature (3 lines) were **left in place**, and the new
+body (including its own doc comment + signature) was **appended after them**, producing:
+
+```rust
+/// Returns true if the path refers to a source code file (by extension).
+/// Used to gate `edit_file` multi-line source edits.
+pub fn is_source_path(path: &str) -> bool {   // ← OLD, now an unclosed brace
+/// Returns true if the path refers to a source code file (by extension).
+/// Used to gate `edit_file` multi-line source edits.
+pub fn is_source_path(path: &str) -> bool {   // ← NEW body starts here
+    static RE: std::sync::OnceLock<Option<Regex>> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(SOURCE_EXTENSIONS).ok())
+        .as_ref()
+        .is_some_and(|re| re.is_match(path))
+}
+```
+
+Compiler error: `unclosed delimiter` at EOF (the old `{` on line 573 was never closed).
+
+**Reproduction:**
+1. File: `src/util/path_security.rs` with a short function:
+   ```rust
+   /// Returns true if the path refers to a source code file (by extension).
+   /// Used to gate `edit_file` multi-line source edits.
+   pub fn is_source_path(path: &str) -> bool {
+       Regex::new(SOURCE_EXTENSIONS)
+           .map(|re| re.is_match(path))
+           .unwrap_or(false)
+   }
+   ```
+2. Call `replace_symbol("is_source_path", "src/util/path_security.rs", <new body with doc comments>)`
+   where `new_body` starts with `/// Returns true...`
+3. Observe: old doc comment + signature left in place; new body appended below them
+
+**Root cause hypothesis:**
+`replace_symbol` computes the replacement range using `editing_start_line` (which should
+include doc comments) and `range.end.line`. The issue may be that `editing_start_line` is
+returning the **body** start line (the `{` line) rather than the doc comment start line.
+So only the body (lines 573–577) is replaced, while the doc comments + signature
+(lines 568–572) survive. The new body, which includes its own doc comments, is then
+inserted starting at line 573, creating the duplication.
+
+**Key debugging info:**
+- File: `src/util/path_security.rs`, Rust, rust-analyzer LSP
+- Symbol: `is_source_path` (function kind)
+- `replace_symbol` response said `replaced_lines: "571-577"` — this matches the old body
+  range but NOT the doc comment lines (568-570)
+- The `new_body` parameter included doc comments starting with `///`
+- The function is standalone (not inside an impl block), near the end of the file,
+  just before `#[cfg(test)] mod tests`
+
+**Fix ideas:**
+1. Compare `replaced_lines` start with the first `///` doc comment line above the function
+   — if they don't match, the range missed the doc comments
+2. When `new_body` starts with `///` or `#[`, verify that `editing_start_line` walked back
+   to include the existing doc comments/attributes
+3. Regression test: function with `/// doc\npub fn foo() { old }` → `replace_symbol` with
+   body starting with `/// doc\npub fn foo() { new }` → verify no duplication
+
+---
+
+### BUG-032 — `remove_symbol`: leaves orphaned `impl` block code after enum removal
+
+**Date:** 2026-03-20
+**Severity:** High — produces unparseable source
+**Status:** Open
+
+**What happened:**
+Called `remove_symbol("SourceFilter", "src/embed/index.rs")` to remove an enum, followed by
+`remove_symbol("impl SourceFilter", "src/embed/index.rs")` to remove its impl block.
+
+Expected: both the enum (10 lines) and its impl block (10 lines) cleanly removed.
+
+Actual: The first `remove_symbol` on the enum reported `removed_lines: "28-37"` and appeared
+to succeed. The second `remove_symbol` on `impl SourceFilter` reported
+`removed_lines: "39-48"` — but the actual file content showed the impl block body was
+**still present** starting at line 29, now orphaned (no `impl SourceFilter {` header, no
+closing `}`). The file had:
+
+```rust
+// line 28: (blank, after enum removal)
+
+impl SourceFilter {                        // ← should have been removed
+    /// Convert to the `Option<&str>` format used by the search functions.
+    pub fn as_sql_filter(&self) -> Option<&'static str> {
+        match self {
+            SourceFilter::All => None,
+            SourceFilter::SourceOnly => Some("source"),
+            SourceFilter::NonSourceOnly => Some("non-source"),
+        }
+    }
+}
+        .join("embeddings")               // ← code from the NEXT function, now malformed
+        .join("project.db")
+```
+
+The `remove_symbol` for the impl block removed incorrect lines, and the remaining code
+from the next function (`project_db_path`) was left orphaned.
+
+**Reproduction:**
+1. File: `src/embed/index.rs` with:
+   ```rust
+   // line 28: doc comment
+   pub enum SourceFilter { ... }      // lines 29-37
+
+   impl SourceFilter { ... }          // lines 39-48
+
+   /// Path to the embedding database
+   pub fn project_db_path(...) { ... } // lines 50+
+   ```
+2. Call `remove_symbol("SourceFilter", "src/embed/index.rs")`
+3. Call `remove_symbol("impl SourceFilter", "src/embed/index.rs")`
+4. Observe: impl body still present, next function corrupted
+
+**Root cause hypothesis:**
+After the first `remove_symbol` deleted lines 28-37, the LSP did NOT receive a
+`didChange` notification (or the notification was processed asynchronously). The second
+`remove_symbol` call used **stale line numbers** from the pre-deletion state.
+`removed_lines: "39-48"` was correct for the original file but wrong for the modified
+file (where the impl block had shifted up by 10 lines to lines 29-38). The tool deleted
+lines 39-48 of the **new** file, which contained the beginning of `project_db_path`.
+
+This is a classic **stale index** problem: sequential symbol edits on the same file
+require the LSP to re-index between operations, but `remove_symbol` may not wait for
+the re-index to complete before returning line numbers for the second operation.
+
+**Key debugging info:**
+- File: `src/embed/index.rs`, Rust, rust-analyzer LSP
+- Two sequential `remove_symbol` calls on the same file
+- First call: `removed_lines: "28-37"` (10 lines deleted → all subsequent lines shift up by 10)
+- Second call: `removed_lines: "39-48"` (these were the ORIGINAL line numbers, not adjusted)
+- The impl block was at original lines 39-48, which after deletion would be at lines 29-38
+
+**Fix ideas:**
+1. After `remove_symbol` deletes lines, send `didChange` AND wait for the LSP to re-index
+   (poll `document_symbols` until the removed symbol no longer appears) before returning
+2. If two `remove_symbol` calls target the same file, the second should re-resolve the
+   symbol position from the LSP rather than using cached line numbers
+3. Consider a `remove_symbols` (plural) API that batches multiple removals on the same
+   file, computing all ranges first, then applying deletions bottom-up (highest line
+   numbers first) to avoid shift invalidation
+4. Regression test: file with `enum Foo { ... }\nimpl Foo { ... }\nfn bar() { ... }` →
+   remove Foo, then remove impl Foo → verify bar is untouched
+
+---
+
 ### BUG-022 — Agent bypasses library tools, greps cargo registry directly
 
 **Date:** 2026-03-16
