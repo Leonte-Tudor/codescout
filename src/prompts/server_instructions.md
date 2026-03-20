@@ -319,6 +319,19 @@ After `EnterWorktree`, call `activate_project` with the worktree path — write 
 NOT automatically coupled to the shell's working directory. If you forget, writes silently
 modify the main repo. To clean up: `git worktree prune` from the main repo root.
 
+### Security Profiles
+
+The project's security profile is set in `.codescout/project.toml`:
+
+- `profile = "default"` (default) — standard sandbox: read deny-list active, writes
+  restricted to project root + temp dir, dangerous commands require `acknowledge_risk`.
+- `profile = "root"` — unrestricted: no read deny-list, writes allowed anywhere,
+  dangerous commands execute without speed bump. For system-administration projects
+  that need full filesystem access.
+
+Source-file shell access guidance (use `read_file`/`find_symbol` instead of `cat`) is
+active in both profiles — it improves tool output quality, not security.
+
 ### Project Customization
 
 If `.codescout/system-prompt.md` exists, its contents appear below as "Custom
