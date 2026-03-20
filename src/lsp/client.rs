@@ -547,6 +547,18 @@ impl LspClient {
             open_files.insert(canonical, 1);
         }
 
+        const MAX_DID_OPEN_SIZE: u64 = 10 * 1024 * 1024; // 10 MiB
+        if let Ok(metadata) = std::fs::metadata(path) {
+            if metadata.len() > MAX_DID_OPEN_SIZE {
+                tracing::debug!(
+                    "skipping didOpen for large file ({} bytes): {}",
+                    metadata.len(),
+                    path.display()
+                );
+                return Ok(());
+            }
+        }
+
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read file for didOpen: {:?}", path))?;
         let uri = path_to_uri(path)?;
