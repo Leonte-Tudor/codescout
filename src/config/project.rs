@@ -159,6 +159,7 @@ fn default_true() -> bool {
 impl SecuritySection {
     pub fn to_path_security_config(&self) -> crate::util::path_security::PathSecurityConfig {
         crate::util::path_security::PathSecurityConfig {
+            profile: crate::util::path_security::SecurityProfile::Default,
             denied_read_patterns: self.denied_read_patterns.clone(),
             extra_write_roots: self
                 .extra_write_roots

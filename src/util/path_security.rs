@@ -62,9 +62,23 @@ const DEFAULT_DENIED_EXACT: &[&str] = &[];
 // Public config type
 // ---------------------------------------------------------------------------
 
+/// Security profile controlling how strict path and command validation is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SecurityProfile {
+    /// Standard sandbox: deny-lists, write boundaries, dangerous command checks.
+    #[default]
+    Default,
+    /// Unrestricted: all path and command gates are disabled.
+    /// For system-administration projects that need full filesystem access.
+    Root,
+}
+
+
 /// Security configuration for path validation.
 #[derive(Debug, Clone)]
 pub struct PathSecurityConfig {
+    /// Security profile: `Default` (sandboxed) or `Root` (unrestricted).
+    pub profile: SecurityProfile,
     /// Additional path patterns to deny reads from (beyond built-in defaults).
     pub denied_read_patterns: Vec<String>,
     /// Additional directories where writes are allowed (beyond project root).
@@ -92,6 +106,7 @@ pub struct PathSecurityConfig {
 impl Default for PathSecurityConfig {
     fn default() -> Self {
         Self {
+            profile: SecurityProfile::Default,
             denied_read_patterns: Vec::new(),
             extra_write_roots: Vec::new(),
             shell_command_mode: "warn".into(),
@@ -203,6 +218,18 @@ pub fn validate_read_path(
         bail!("path contains null byte");
     }
 
+    if config.profile == SecurityProfile::Root {
+        let path = Path::new(raw);
+        let resolved = if path.is_absolute() {
+            PathBuf::from(raw)
+        } else if let Some(root) = project_root {
+            root.join(raw)
+        } else {
+            bail!("relative path '{}' requires an active project", raw);
+        };
+        return Ok(best_effort_canonicalize(&resolved));
+    }
+
     let path = Path::new(raw);
     let resolved = if path.is_absolute() {
         PathBuf::from(raw)
@@ -239,6 +266,16 @@ pub fn validate_write_path(
     }
     if raw.contains('\0') {
         bail!("path contains null byte");
+    }
+
+    if config.profile == SecurityProfile::Root {
+        let path = Path::new(raw);
+        let resolved = if path.is_absolute() {
+            PathBuf::from(raw)
+        } else {
+            project_root.join(raw)
+        };
+        return Ok(canonicalize_write_target(&resolved));
     }
 
     let path = Path::new(raw);
@@ -388,6 +425,10 @@ const DEFAULT_DANGEROUS_PATTERNS: &[(&str, &str)] = &[
 /// Returns the matched pattern description if dangerous, `None` if safe.
 /// Respects `shell_allow_always` overrides from config.
 pub fn is_dangerous_command(command: &str, config: &PathSecurityConfig) -> Option<String> {
+    if config.profile == SecurityProfile::Root {
+        return None;
+    }
+
     // 1. Check allow-list first — if command contains any allow string, it's safe.
     for allow in &config.shell_allow_always {
         if command.contains(allow.as_str()) {
@@ -1403,4 +1444,65 @@ mod tests {
         // tail is the first token of its segment — blocked
         assert!(check_source_file_access("tail src/main.rs | grep error").is_some());
     }
+
+    // ── SecurityProfile tests ───────────────────────────────────────────
+
+    #[test]
+    fn root_profile_bypasses_read_deny_list() {
+        let dir = tempdir().unwrap();
+        let ssh_dir = dir.path().join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).unwrap();
+        let key_file = ssh_dir.join("id_rsa");
+        std::fs::write(&key_file, "secret").unwrap();
+
+        let mut config = PathSecurityConfig::default();
+        config.profile = SecurityProfile::Root;
+
+        let result = validate_read_path(
+            key_file.to_str().unwrap(),
+            Some(dir.path()),
+            &config,
+        );
+        assert!(result.is_ok(), "root profile should bypass read deny-list");
+    }
+
+    #[test]
+    fn root_profile_bypasses_write_boundary() {
+        let dir = tempdir().unwrap();
+        let outside = dir.path().join("outside_project");
+        std::fs::create_dir_all(&outside).unwrap();
+        let target = outside.join("file.txt");
+
+        let project_root = dir.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        let mut config = PathSecurityConfig::default();
+        config.profile = SecurityProfile::Root;
+
+        let result = validate_write_path(
+            target.to_str().unwrap(),
+            &project_root,
+            &config,
+        );
+        assert!(result.is_ok(), "root profile should bypass write boundary");
+    }
+
+    #[test]
+    fn root_profile_bypasses_dangerous_command_check() {
+        let mut config = PathSecurityConfig::default();
+        config.profile = SecurityProfile::Root;
+
+        let result = is_dangerous_command("rm -rf /", &config);
+        assert!(result.is_none(), "root profile should skip dangerous command check");
+    }
+
+    #[test]
+    fn default_profile_still_enforces_all_gates() {
+        let config = PathSecurityConfig::default();
+        assert_eq!(config.profile, SecurityProfile::Default);
+
+        let result = is_dangerous_command("rm -rf /", &config);
+        assert!(result.is_some());
+    }
+
 }
