@@ -148,7 +148,7 @@ implementation status tracking.
 
 ### CRITICAL — Must fix
 
-- [ ] **C-2: `anchor_path_for_topic` path traversal** — `memory/anchors.rs:246`.
+- [x] **C-2: `anchor_path_for_topic` path traversal** — `memory/anchors.rs:246`.
   Topic name passed unsanitized to `memories_dir.join()`. Fix: route through same
   `Path::components()` filtering as `topic_path`.
 
@@ -168,16 +168,16 @@ implementation status tracking.
 - [ ] **C-9: LSP server binary names are Unix-only** — `lsp/servers/mod.rs:10-70`.
   Fix: platform-aware binary resolution.
 
-- [ ] **C-10: Dashboard memory topic path traversal** — `dashboard/api/memories.rs`.
+- [x] **C-10: Dashboard memory topic path traversal** — `dashboard/api/memories.rs`.
   Same root cause as C-2. Fix: shared `sanitize_topic()` + post-join containment
   assertion.
 
 ### Reclassified/Removed from Critical
 
-- [-] **C-1: `shell_allow_always` substring bypass** — REMOVED. `shell_allow_always`
+- [x] **C-1: `shell_allow_always` substring bypass** — REMOVED. `shell_allow_always`
   dropped entirely in the root mode design.
 
-- [ ] **C-4: Library path exemption doc mismatch** — downgraded to MEDIUM. Doc/test
+- [x] **C-4: Library path exemption doc mismatch** — downgraded to MEDIUM. Doc/test
   claim an exemption that doesn't exist in code. Fix: correct the docstring and test
   comment (no code change needed — deny-list should apply to library paths too).
 
