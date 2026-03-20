@@ -249,6 +249,59 @@ the `notify_file_changed` call.
 
 ---
 
+### BUG-029 — `insert_code`: `position: "after"` inserts inside function body instead of after it
+
+**Date:** 2026-03-20
+**Severity:** High — silently corrupts source files by splitting function bodies
+**Status:** Open
+
+**What happened:**
+Called `insert_code("tests/write_produces_valid_framing", "src/lsp/transport.rs", code, "after")`
+to add two new test functions after the last test in a `mod tests` block.
+
+Expected: new functions inserted after the closing `}` of `write_produces_valid_framing`.
+
+Actual: the new code was inserted **inside** `write_produces_valid_framing`'s body, splitting
+the function in half. The original function's `let msg = json!(...)` ended up separated from
+the rest of its body by the two new functions. Result:
+
+```
+    async fn write_produces_valid_framing() {
+        let msg = json!({"test": true});
+
+    #[tokio::test]                           // ← inserted HERE, inside the function
+    async fn rejects_oversized_content_length() { ... }
+
+    #[tokio::test]
+    async fn accepts_normal_content_length() { ... }
+
+        let mut buf = Vec::new();            // ← remainder of write_produces_valid_framing
+        write_message(&mut buf, &msg).await.unwrap();
+        ...
+    }
+```
+
+Compiler warning: `cannot test inner items` (test functions defined inside another function).
+
+**Reproduction:**
+1. File with a `mod tests` block containing multiple `#[tokio::test]` async functions
+2. Call `insert_code(name_path="tests/write_produces_valid_framing", path="src/lsp/transport.rs", code="<two test fns>", position="after")`
+3. Observe: code lands inside the function body, not after it
+
+**Root cause hypothesis:**
+`insert_code` with `position: "after"` likely uses the LSP `DocumentSymbol.range.end` to find
+the insertion point. For a function inside a `mod tests` block, the range may end at the last
+line of the function body (before the closing `}`) rather than after it. Alternatively, the
+insertion logic may be using `selection_range.end` (which points to the name) instead of
+`range.end` (which should encompass the entire symbol including braces).
+
+**Fix ideas:**
+1. Verify that `insert_code` uses `range.end` (not `selection_range.end`) for the "after" position
+2. After computing the insertion line, verify the line after it is outside the symbol's range
+3. Add a test: `insert_code_after_places_code_after_closing_brace` with a multi-function mod block
+
+---
+
 ### BUG-022 — Agent bypasses library tools, greps cargo registry directly
 
 **Date:** 2026-03-16
