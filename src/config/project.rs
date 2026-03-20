@@ -94,9 +94,6 @@ pub struct IgnoredPathsSection {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecuritySection {
-    /// Additional path patterns to deny reads from (beyond built-in deny-list).
-    #[serde(default)]
-    pub denied_read_patterns: Vec<String>,
     /// Additional directories where writes are allowed (beyond project root).
     #[serde(default)]
     pub extra_write_roots: Vec<String>,
@@ -119,9 +116,6 @@ pub struct SecuritySection {
     /// github_repo is always available. (default: false)
     #[serde(default)]
     pub github_enabled: bool,
-    /// Command substrings that bypass dangerous-command detection.
-    #[serde(default)]
-    pub shell_allow_always: Vec<String>,
     /// Additional regex patterns to flag as dangerous commands.
     #[serde(default)]
     pub shell_dangerous_patterns: Vec<String>,
@@ -130,7 +124,6 @@ pub struct SecuritySection {
 impl Default for SecuritySection {
     fn default() -> Self {
         Self {
-            denied_read_patterns: Vec::new(),
             extra_write_roots: Vec::new(),
             shell_command_mode: default_shell_mode(),
             shell_output_limit_bytes: default_shell_output_limit(),
@@ -138,7 +131,6 @@ impl Default for SecuritySection {
             file_write_enabled: true,
             indexing_enabled: true,
             github_enabled: false,
-            shell_allow_always: Vec::new(),
             shell_dangerous_patterns: Vec::new(),
         }
     }
@@ -160,7 +152,7 @@ impl SecuritySection {
     pub fn to_path_security_config(&self) -> crate::util::path_security::PathSecurityConfig {
         crate::util::path_security::PathSecurityConfig {
             profile: crate::util::path_security::SecurityProfile::Default,
-            denied_read_patterns: self.denied_read_patterns.clone(),
+
             extra_write_roots: self
                 .extra_write_roots
                 .iter()
@@ -173,7 +165,7 @@ impl SecuritySection {
             indexing_enabled: self.indexing_enabled,
             github_enabled: self.github_enabled,
             library_paths: Vec::new(),
-            shell_allow_always: self.shell_allow_always.clone(),
+
             shell_dangerous_patterns: self.shell_dangerous_patterns.clone(),
         }
     }

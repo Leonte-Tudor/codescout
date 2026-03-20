@@ -6,7 +6,7 @@
 //!
 //! - **Reads** are allowed anywhere on disk *except* a built-in deny-list of
 //!   sensitive credential paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, etc.) plus
-//!   any user-configured `denied_read_patterns`. Use [`validate_read_path`].
+//!   Use [`validate_read_path`].
 //!
 //! - **Writes** are restricted to the active project root by default. The
 //!   caller may extend this with `extra_write_roots` in [`PathSecurityConfig`],
@@ -73,14 +73,11 @@ pub enum SecurityProfile {
     Root,
 }
 
-
 /// Security configuration for path validation.
 #[derive(Debug, Clone)]
 pub struct PathSecurityConfig {
     /// Security profile: `Default` (sandboxed) or `Root` (unrestricted).
     pub profile: SecurityProfile,
-    /// Additional path patterns to deny reads from (beyond built-in defaults).
-    pub denied_read_patterns: Vec<String>,
     /// Additional directories where writes are allowed (beyond project root).
     pub extra_write_roots: Vec<PathBuf>,
     /// Shell command mode: "unrestricted", "warn" (default), "disabled"
@@ -97,8 +94,6 @@ pub struct PathSecurityConfig {
     pub github_enabled: bool,
     /// Read-only library paths (registered via LibraryRegistry).
     pub library_paths: Vec<PathBuf>,
-    /// Command substrings that bypass dangerous-command detection.
-    pub shell_allow_always: Vec<String>,
     /// Additional regex patterns to flag as dangerous commands.
     pub shell_dangerous_patterns: Vec<String>,
 }
@@ -107,7 +102,6 @@ impl Default for PathSecurityConfig {
     fn default() -> Self {
         Self {
             profile: SecurityProfile::Default,
-            denied_read_patterns: Vec::new(),
             extra_write_roots: Vec::new(),
             shell_command_mode: "warn".into(),
             shell_output_limit_bytes: 100 * 1024,
@@ -116,7 +110,6 @@ impl Default for PathSecurityConfig {
             indexing_enabled: true,
             github_enabled: false,
             library_paths: Vec::new(),
-            shell_allow_always: Vec::new(),
             shell_dangerous_patterns: Vec::new(),
         }
     }
@@ -145,7 +138,7 @@ fn expand_home(pattern: &str) -> Option<PathBuf> {
 }
 
 /// Build the full list of denied read paths (defaults + user-configured).
-fn denied_read_paths(config: &PathSecurityConfig) -> Vec<PathBuf> {
+fn denied_read_paths(_config: &PathSecurityConfig) -> Vec<PathBuf> {
     let mut denied = Vec::new();
     for p in DEFAULT_DENIED_PREFIXES
         .iter()
@@ -160,11 +153,6 @@ fn denied_read_paths(config: &PathSecurityConfig) -> Vec<PathBuf> {
     {
         if let Ok(sysroot) = std::env::var("SYSTEMROOT") {
             denied.push(PathBuf::from(&sysroot).join("System32").join("config"));
-        }
-    }
-    for p in &config.denied_read_patterns {
-        if let Some(expanded) = expand_home(p) {
-            denied.push(expanded);
         }
     }
     denied
@@ -423,20 +411,12 @@ const DEFAULT_DANGEROUS_PATTERNS: &[(&str, &str)] = &[
 /// Check if a command matches a dangerous pattern.
 ///
 /// Returns the matched pattern description if dangerous, `None` if safe.
-/// Respects `shell_allow_always` overrides from config.
 pub fn is_dangerous_command(command: &str, config: &PathSecurityConfig) -> Option<String> {
     if config.profile == SecurityProfile::Root {
         return None;
     }
 
-    // 1. Check allow-list first — if command contains any allow string, it's safe.
-    for allow in &config.shell_allow_always {
-        if command.contains(allow.as_str()) {
-            return None;
-        }
-    }
-
-    // 2. Check built-in dangerous patterns.
+    // Check built-in dangerous patterns.
     for (pattern, description) in DEFAULT_DANGEROUS_PATTERNS {
         if let Ok(re) = Regex::new(pattern) {
             if re.is_match(command) {
@@ -445,7 +425,7 @@ pub fn is_dangerous_command(command: &str, config: &PathSecurityConfig) -> Optio
         }
     }
 
-    // 3. Check user-configured dangerous patterns.
+    // Check user-configured dangerous patterns.
     for pattern in &config.shell_dangerous_patterns {
         if let Ok(re) = Regex::new(pattern) {
             if re.is_match(command) {
@@ -684,24 +664,6 @@ mod tests {
     }
 
     #[test]
-    fn read_custom_denied_pattern() {
-        let secret_dir = std::env::temp_dir().join("code_explorer_secret_test");
-        let secret_str = secret_dir.to_str().unwrap().to_string();
-        let config = PathSecurityConfig {
-            denied_read_patterns: vec![secret_str.clone()],
-            extra_write_roots: vec![],
-            ..Default::default()
-        };
-        // Create the directory so canonicalize works
-        if secret_dir.exists() || std::fs::create_dir_all(&secret_dir).is_ok() {
-            let test_path = format!("{}/data.txt", secret_str);
-            let result = validate_read_path(&test_path, None, &config);
-            assert!(result.is_err());
-            let _ = std::fs::remove_dir(&secret_dir);
-        }
-    }
-
-    #[test]
     fn validate_read_path_accepts_library_paths() {
         let dir = tempdir().unwrap();
         let lib_root = dir.path().join("libs/tokio");
@@ -785,7 +747,6 @@ mod tests {
         std::fs::create_dir_all(extra.path().join("sub")).unwrap();
 
         let config = PathSecurityConfig {
-            denied_read_patterns: vec![],
             extra_write_roots: vec![extra.path().to_path_buf()],
             ..Default::default()
         };
@@ -848,23 +809,6 @@ mod tests {
             "writes to a path under CWD should be allowed even if outside project root: {:?}",
             result.err()
         );
-    }
-
-    #[test]
-    fn write_to_tmp_denied_even_in_deny_list() {
-        // If someone adds /tmp/secret to the deny-list, it should still be blocked
-        // (deny-list runs before the allowed-roots check).
-        let project = tempdir().unwrap();
-        let config = PathSecurityConfig {
-            denied_read_patterns: vec!["/tmp/secret".to_string()],
-            ..Default::default()
-        };
-        let result = validate_write_path("/tmp/secret/key", project.path(), &config);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("protected location"));
     }
 
     #[test]
@@ -1186,15 +1130,6 @@ mod tests {
     }
 
     #[test]
-    fn allow_always_bypasses_detection() {
-        let mut config = PathSecurityConfig::default();
-        config.shell_allow_always = vec!["git push --force".to_string()];
-        assert!(is_dangerous_command("git push --force origin main", &config).is_none());
-        // Other dangerous commands still detected
-        assert!(is_dangerous_command("rm -rf /tmp", &config).is_some());
-    }
-
-    #[test]
     fn custom_dangerous_patterns() {
         let mut config = PathSecurityConfig::default();
         config.shell_dangerous_patterns = vec!["kubectl delete".to_string()];
@@ -1458,11 +1393,7 @@ mod tests {
         let mut config = PathSecurityConfig::default();
         config.profile = SecurityProfile::Root;
 
-        let result = validate_read_path(
-            key_file.to_str().unwrap(),
-            Some(dir.path()),
-            &config,
-        );
+        let result = validate_read_path(key_file.to_str().unwrap(), Some(dir.path()), &config);
         assert!(result.is_ok(), "root profile should bypass read deny-list");
     }
 
@@ -1479,11 +1410,7 @@ mod tests {
         let mut config = PathSecurityConfig::default();
         config.profile = SecurityProfile::Root;
 
-        let result = validate_write_path(
-            target.to_str().unwrap(),
-            &project_root,
-            &config,
-        );
+        let result = validate_write_path(target.to_str().unwrap(), &project_root, &config);
         assert!(result.is_ok(), "root profile should bypass write boundary");
     }
 
@@ -1493,7 +1420,10 @@ mod tests {
         config.profile = SecurityProfile::Root;
 
         let result = is_dangerous_command("rm -rf /", &config);
-        assert!(result.is_none(), "root profile should skip dangerous command check");
+        assert!(
+            result.is_none(),
+            "root profile should skip dangerous command check"
+        );
     }
 
     #[test]
@@ -1504,5 +1434,4 @@ mod tests {
         let result = is_dangerous_command("rm -rf /", &config);
         assert!(result.is_some());
     }
-
 }
