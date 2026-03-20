@@ -10,13 +10,12 @@ pub fn truncate(s: &str, max_chars: usize) -> String {
     }
 }
 
-/// Count lines in a string (1-indexed: an empty string has 1 line).
+/// Count lines in a string. An empty string has 0 lines.
 pub fn count_lines(s: &str) -> usize {
     if s.is_empty() {
-        1
-    } else {
-        s.lines().count()
+        return 0;
     }
+    s.lines().count()
 }
 
 /// Extract a line range from text (1-indexed, inclusive). Returns empty string
@@ -108,7 +107,7 @@ mod tests {
 
     #[test]
     fn count_lines_empty() {
-        assert_eq!(count_lines(""), 1);
+        assert_eq!(count_lines(""), 0);
     }
 
     #[test]
