@@ -883,7 +883,8 @@ impl LspClient {
 impl Drop for LspClient {
     fn drop(&mut self) {
         // Abort the reader task
-        if let Ok(mut guard) = self.reader_handle.lock() {
+        {
+            let mut guard = self.reader_handle.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(handle) = guard.take() {
                 handle.abort();
             }

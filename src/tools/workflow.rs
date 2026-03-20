@@ -2098,14 +2098,16 @@ async fn run_command_inner(
             // and contains only alphanumeric chars, hyphens, and dots — no
             // shell metacharacters. We document this invariant rather than
             // adding a shell-escape dependency.
-            debug_assert!(
-                tmpfile.chars().all(|c| c.is_alphanumeric()
-                    || c == '/'
-                    || c == '-'
-                    || c == '_'
-                    || c == '.'),
-                "tmpfile path contains unexpected characters: {tmpfile}"
-            );
+            if !tmpfile
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '/' || c == '-' || c == '_' || c == '.')
+            {
+                return Err(super::RecoverableError::new(format!(
+                    "temporary file path contains unexpected characters: {}",
+                    tmpfile,
+                ))
+                .into());
+            }
             let cmd = format!(
                 "{} | tee {} | {}",
                 resolved_command[..pipe_pos].trim_end(),

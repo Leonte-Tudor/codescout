@@ -25,6 +25,28 @@ use std::sync::Once;
 
 use super::schema::{CodeChunk, SearchResult};
 
+/// Filter for source file types in embedding search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceFilter {
+    /// Include all files
+    All,
+    /// Only source code files
+    SourceOnly,
+    /// Only non-source files (docs, config)
+    NonSourceOnly,
+}
+
+impl SourceFilter {
+    /// Convert to the `Option<&str>` format used by the search functions.
+    pub fn as_sql_filter(&self) -> Option<&'static str> {
+        match self {
+            SourceFilter::All => None,
+            SourceFilter::SourceOnly => Some("source"),
+            SourceFilter::NonSourceOnly => Some("non-source"),
+        }
+    }
+}
+
 /// Path to the embedding database within a project.
 pub fn db_path(project_root: &Path) -> PathBuf {
     project_root.join(".codescout").join("embeddings.db")
