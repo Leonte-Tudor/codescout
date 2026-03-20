@@ -51,23 +51,18 @@ pub fn diff_tree_to_tree(
             git2::Delta::Modified => DiffStatus::Modified,
             git2::Delta::Deleted => DiffStatus::Deleted,
             git2::Delta::Renamed => {
-                let old = delta
-                    .old_file()
-                    .path()
-                    .unwrap()
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                let old = match delta.old_file().path() {
+                    Some(p) => p.to_string_lossy().replace('\\', "/"),
+                    None => continue,
+                };
                 DiffStatus::Renamed { old_path: old }
             }
             _ => continue, // Ignore typechange, copied, etc.
         };
-        let path = delta
-            .new_file()
-            .path()
-            .or_else(|| delta.old_file().path())
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
+        let path = match delta.new_file().path().or_else(|| delta.old_file().path()) {
+            Some(p) => p.to_string_lossy().replace('\\', "/"),
+            None => continue,
+        };
         entries.push(DiffEntry { path, status });
     }
     Ok(entries)
