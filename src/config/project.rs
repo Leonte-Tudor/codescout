@@ -94,6 +94,9 @@ pub struct IgnoredPathsSection {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecuritySection {
+    /// Security profile: "default" (sandboxed) or "root" (unrestricted).
+    #[serde(default)]
+    pub profile: crate::util::path_security::SecurityProfile,
     /// Additional directories where writes are allowed (beyond project root).
     #[serde(default)]
     pub extra_write_roots: Vec<String>,
@@ -124,6 +127,7 @@ pub struct SecuritySection {
 impl Default for SecuritySection {
     fn default() -> Self {
         Self {
+            profile: crate::util::path_security::SecurityProfile::Default,
             extra_write_roots: Vec::new(),
             shell_command_mode: default_shell_mode(),
             shell_output_limit_bytes: default_shell_output_limit(),
@@ -151,8 +155,7 @@ fn default_true() -> bool {
 impl SecuritySection {
     pub fn to_path_security_config(&self) -> crate::util::path_security::PathSecurityConfig {
         crate::util::path_security::PathSecurityConfig {
-            profile: crate::util::path_security::SecurityProfile::Default,
-
+            profile: self.profile,
             extra_write_roots: self
                 .extra_write_roots
                 .iter()
@@ -467,5 +470,25 @@ fetch_timeout_secs = 120
         assert!(!config.libraries.auto_index);
         assert!(!config.libraries.auto_fetch_sources);
         assert_eq!(config.libraries.fetch_timeout_secs, 300);
+    }
+
+    #[test]
+    fn security_profile_parses_from_toml() {
+        let toml_str = "[project]\nname = \"test\"\n\n[security]\nprofile = \"root\"\n";
+        let config: ProjectConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.security.profile,
+            crate::util::path_security::SecurityProfile::Root
+        );
+    }
+
+    #[test]
+    fn security_profile_defaults_to_default() {
+        let toml_str = "[project]\nname = \"test\"\n\n[security]\nshell_enabled = true\n";
+        let config: ProjectConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.security.profile,
+            crate::util::path_security::SecurityProfile::Default
+        );
     }
 }

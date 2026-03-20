@@ -63,7 +63,8 @@ const DEFAULT_DENIED_EXACT: &[&str] = &[];
 // ---------------------------------------------------------------------------
 
 /// Security profile controlling how strict path and command validation is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum SecurityProfile {
     /// Standard sandbox: deny-lists, write boundaries, dangerous command checks.
     #[default]
