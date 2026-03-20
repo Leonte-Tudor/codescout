@@ -405,12 +405,18 @@ pub fn is_dangerous_command(command: &str, config: &PathSecurityConfig) -> Optio
         return None;
     }
 
-    // Check built-in dangerous patterns.
-    for (pattern, description) in DEFAULT_DANGEROUS_PATTERNS {
-        if let Ok(re) = Regex::new(pattern) {
-            if re.is_match(command) {
-                return Some(description.to_string());
-            }
+    // Check built-in dangerous patterns (cached).
+    static DANGEROUS_REGEXES: std::sync::OnceLock<Vec<(Regex, &'static str)>> =
+        std::sync::OnceLock::new();
+    let cached = DANGEROUS_REGEXES.get_or_init(|| {
+        DEFAULT_DANGEROUS_PATTERNS
+            .iter()
+            .filter_map(|(pattern, desc)| Regex::new(pattern).ok().map(|re| (re, *desc)))
+            .collect()
+    });
+    for (re, description) in cached.iter() {
+        if re.is_match(command) {
+            return Some(description.to_string());
         }
     }
 
@@ -513,8 +519,14 @@ fn split_outside_quotes(s: &str, seps: &[&str]) -> Vec<String> {
 ///   inside the heredoc body is not a filename argument. Segments containing `<<` are
 ///   skipped — the operator unambiguously means stdin redirection.
 pub fn check_source_file_access(command: &str) -> Option<String> {
-    let cmd_re = Regex::new(SOURCE_ACCESS_COMMANDS).ok()?;
-    let ext_re = Regex::new(SOURCE_EXTENSIONS).ok()?;
+    static CMD_RE: std::sync::OnceLock<Option<Regex>> = std::sync::OnceLock::new();
+    static EXT_RE: std::sync::OnceLock<Option<Regex>> = std::sync::OnceLock::new();
+    let cmd_re = CMD_RE
+        .get_or_init(|| Regex::new(SOURCE_ACCESS_COMMANDS).ok())
+        .as_ref()?;
+    let ext_re = EXT_RE
+        .get_or_init(|| Regex::new(SOURCE_EXTENSIONS).ok())
+        .as_ref()?;
 
     // Split on compound-command operators and pipes, respecting quoted strings.
     // Order: "&&"/"||" before "|" so that "||" is not mis-split as two "|" tokens.
@@ -559,13 +571,11 @@ pub fn check_source_file_access(command: &str) -> Option<String> {
 /// Returns true if the path refers to a source code file (by extension).
 /// Used to gate `edit_file` multi-line source edits.
 pub fn is_source_path(path: &str) -> bool {
-    Regex::new(SOURCE_EXTENSIONS)
-        .map(|re| re.is_match(path))
-        .unwrap_or(false)
+    static RE: std::sync::OnceLock<Option<Regex>> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(SOURCE_EXTENSIONS).ok())
+        .as_ref()
+        .is_some_and(|re| re.is_match(path))
 }
-
-// ---------------------------------------------------------------------------
-// Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]

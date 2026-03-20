@@ -354,8 +354,9 @@ impl OutputBuffer {
     ///   auto-refreshed from disk because the underlying file had changed
     pub fn resolve_refs(&self, command: &str) -> Result<(String, Vec<PathBuf>, bool, Vec<String>)> {
         // Guard: @ack_* handles are for deferred execution, not content interpolation.
-        if Regex::new(r"@ack_[0-9a-f]{8}")
-            .expect("valid regex")
+        static ACK_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+        if ACK_RE
+            .get_or_init(|| Regex::new(r"@ack_[0-9a-f]{8}").expect("valid regex"))
             .is_match(command)
         {
             return Err(RecoverableError::with_hint(
@@ -365,7 +366,10 @@ impl OutputBuffer {
             .into());
         }
 
-        let re = Regex::new(r"@(?:cmd|file|tool|bg)_[0-9a-f]{8}(\.err)?").expect("valid regex");
+        static REF_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+        let re = REF_RE.get_or_init(|| {
+            Regex::new(r"@(?:cmd|file|tool|bg)_[0-9a-f]{8}(\.err)?").expect("valid regex")
+        });
 
         let refs: Vec<&str> = re.find_iter(command).map(|m| m.as_str()).collect();
         if refs.is_empty() {
