@@ -277,7 +277,7 @@ impl Tool for GithubIssue {
         } else {
             String::new()
         };
-        let limit = params["limit"].as_u64().unwrap_or(30).to_string();
+        let limit = params["limit"].as_u64().unwrap_or(30).min(100).to_string();
         let number = params["number"].as_u64().map(|n| n.to_string());
 
         match method {
@@ -528,7 +528,7 @@ impl Tool for GithubPr {
         } else {
             String::new()
         };
-        let limit = params["limit"].as_u64().unwrap_or(30).to_string();
+        let limit = params["limit"].as_u64().unwrap_or(30).min(100).to_string();
         let number = params["number"].as_u64().map(|n| n.to_string());
 
         match method {
@@ -1146,7 +1146,7 @@ impl Tool for GithubRepo {
         } else {
             String::new()
         };
-        let limit = params["limit"].as_u64().unwrap_or(30).to_string();
+        let limit = params["limit"].as_u64().unwrap_or(30).min(100).to_string();
 
         match method {
             "search" => {

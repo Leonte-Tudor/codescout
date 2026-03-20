@@ -288,6 +288,13 @@ impl ProjectConfig {
     pub fn load_or_default(root: &Path) -> Result<Self> {
         let config_path = root.join(".codescout").join("project.toml");
         if config_path.exists() {
+            let metadata = std::fs::metadata(&config_path)?;
+            if metadata.len() > 1024 * 1024 {
+                anyhow::bail!(
+                    "project.toml exceeds 1 MiB limit ({} bytes)",
+                    metadata.len()
+                );
+            }
             let text = std::fs::read_to_string(&config_path)?;
             Ok(toml::from_str(&text)?)
         } else {

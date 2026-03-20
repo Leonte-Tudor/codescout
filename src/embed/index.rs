@@ -913,7 +913,8 @@ pub fn read_file_embeddings(conn: &Connection, file_path: &str) -> Result<Vec<Ol
             let blob: Vec<u8> = row.get(1)?;
             Ok(OldChunk {
                 content,
-                embedding: bytes_to_f32(&blob),
+                embedding: bytes_to_f32(&blob)
+                    .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1229,8 +1230,14 @@ pub fn search_multi_db(
     Ok(all_results)
 }
 
-fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
-    bytes
+fn bytes_to_f32(bytes: &[u8]) -> Result<Vec<f32>> {
+    if bytes.len() % 4 != 0 {
+        anyhow::bail!(
+            "embedding blob size {} is not aligned to 4 bytes",
+            bytes.len()
+        );
+    }
+    Ok(bytes
         .chunks_exact(4)
         .map(|b| {
             f32::from_le_bytes(
@@ -1238,7 +1245,7 @@ fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
                     .expect("chunks_exact(4) guarantees 4-byte slices"),
             )
         })
-        .collect()
+        .collect())
 }
 
 /// Result of change detection: which files need re-indexing and which were deleted.
