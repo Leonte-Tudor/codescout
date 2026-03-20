@@ -886,9 +886,7 @@ impl Drop for LspClient {
             // (signal 15) is safe to send to a child process — it requests clean termination
             // without undefined behaviour. The `u32 as i32` cast is safe because Linux PIDs
             // are assigned from a range that fits in i32 (maximum 4,194,304 on 64-bit kernels).
-            unsafe {
-                libc::kill(pid as i32, libc::SIGTERM);
-            }
+            let _ = crate::platform::terminate_process(pid);
         }
     }
 }
@@ -1386,8 +1384,10 @@ struct Point {
         let pid = client.child_pid.unwrap();
 
         // Verify child is alive
-        let alive = unsafe { libc::kill(pid as i32, 0) };
-        assert_eq!(alive, 0, "child should be alive before drop");
+        assert!(
+            crate::platform::process_alive(pid),
+            "child should be alive before drop"
+        );
 
         // Drop the client
         drop(client);
@@ -1396,8 +1396,10 @@ struct Point {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         // Verify child is dead
-        let dead = unsafe { libc::kill(pid as i32, 0) };
-        assert_ne!(dead, 0, "child should be dead after drop");
+        assert!(
+            !crate::platform::process_alive(pid),
+            "child should be dead after drop"
+        );
     }
 
     /// Reproduce the stale-position bug: after editing a file on disk without sending
