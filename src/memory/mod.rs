@@ -118,14 +118,29 @@ impl MemoryStore {
     }
 
     pub(crate) fn topic_path(&self, topic: &str) -> PathBuf {
-        // Sanitize: replace ".." components to prevent directory traversal.
-        let safe = topic.replace("..", "__");
-        // Strip leading path separators to prevent absolute paths from replacing
-        // the base directory when passed to PathBuf::join.
-        let safe = safe.trim_start_matches('/').trim_start_matches('\\');
-        // Ensure empty topics produce a path inside memories_dir (not the dir itself).
-        let safe = if safe.is_empty() { "_empty" } else { safe };
+        let safe = sanitize_topic(topic);
         self.memories_dir.join(safe).with_extension("md")
+    }
+}
+
+/// Sanitize a memory topic name to prevent directory traversal.
+///
+/// Uses `Path::components()` to keep only `Normal` segments, discarding
+/// `.`, `..`, root prefixes, and embedded separators.
+pub(crate) fn sanitize_topic(topic: &str) -> String {
+    use std::path::{Component, Path};
+    let sanitized: PathBuf = Path::new(topic)
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+    let result = sanitized.to_string_lossy().into_owned();
+    if result.is_empty() {
+        "_empty".to_string()
+    } else {
+        result
     }
 }
 
@@ -328,5 +343,31 @@ mod tests {
             }
             // Either works or returns error — no panic
         }
+    }
+
+    #[test]
+    fn topic_path_blocks_dot_slash_traversal() {
+        let (_dir, store) = make_store();
+        let path = store.topic_path("a/./b/../../../etc/passwd");
+        assert!(
+            path.starts_with(&store.memories_dir),
+            "path {:?} must be inside {:?}",
+            path,
+            store.memories_dir,
+        );
+    }
+
+    #[test]
+    fn topic_path_blocks_single_dot() {
+        let (_dir, store) = make_store();
+        let path = store.topic_path(".");
+        assert!(
+            path.starts_with(&store.memories_dir),
+            "path {:?} must be inside {:?}",
+            path,
+            store.memories_dir,
+        );
+        // Must be a file path, not the directory itself
+        assert_ne!(path, store.memories_dir);
     }
 }

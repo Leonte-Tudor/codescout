@@ -244,7 +244,8 @@ pub fn check_all_memories(project_root: &Path, memories_dir: &Path) -> Result<Va
 
 /// Get the anchor sidecar path for a given memory topic within a memories directory.
 pub fn anchor_path_for_topic(memories_dir: &Path, topic: &str) -> std::path::PathBuf {
-    memories_dir.join(format!("{}.anchors.toml", topic))
+    let safe = super::sanitize_topic(topic);
+    memories_dir.join(format!("{}.anchors.toml", safe))
 }
 
 /// Seed or merge anchors for a memory topic after a write.
@@ -679,5 +680,17 @@ mod tests {
         };
         let json = serde_json::to_value(&sf_deleted).unwrap();
         assert_eq!(json["status"], "deleted");
+    }
+
+    #[test]
+    fn anchor_path_blocks_traversal() {
+        let memories_dir = std::path::PathBuf::from("/tmp/test_memories");
+        let path = anchor_path_for_topic(&memories_dir, "../../etc/passwd");
+        assert!(
+            path.starts_with(&memories_dir),
+            "anchor path {:?} must be inside {:?}",
+            path,
+            memories_dir,
+        );
     }
 }
