@@ -91,11 +91,12 @@ impl OutputGuard {
             Some("full") => OutputMode::Focused,
             _ => OutputMode::Exploring,
         };
-        let offset = input["offset"].as_u64().unwrap_or(0) as usize;
-        let limit = input["limit"].as_u64().unwrap_or(50) as usize;
+        let offset = super::optional_u64_param(input, "offset").unwrap_or(0) as usize;
+        let explicit_limit = super::optional_u64_param(input, "limit");
+        let limit = explicit_limit.unwrap_or(50) as usize;
 
         // If the caller explicitly specifies a limit, honour it in exploring mode too.
-        let (max_files, max_results) = if input["limit"].is_number() {
+        let (max_files, max_results) = if explicit_limit.is_some() {
             (limit, limit)
         } else {
             (200, 200)

@@ -4,15 +4,8 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use super::format::format_overflow;
-use super::{parse_bool_param, RecoverableError, Tool, ToolContext};
+use super::{optional_u64_param, parse_bool_param, RecoverableError, Tool, ToolContext};
 use crate::util::text::extract_lines;
-
-/// Parse a JSON value as u64, accepting both numbers and numeric strings.
-/// MCP clients (including Claude Code) sometimes send integer params as strings.
-fn as_u64_lenient(v: &Value) -> Option<u64> {
-    v.as_u64()
-        .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
-}
 
 // ── read_file ────────────────────────────────────────────────────────────────
 
@@ -137,8 +130,8 @@ impl Tool for ReadFile {
             }
 
             let total_lines = text.lines().count();
-            let start = as_u64_lenient(&input["start_line"]);
-            let end = as_u64_lenient(&input["end_line"]);
+            let start = optional_u64_param(&input, "start_line");
+            let end = optional_u64_param(&input, "end_line");
             if let (Some(s), Some(e)) = (start, end) {
                 if s == 0 || e < s {
                     return Err(RecoverableError::with_hint(
@@ -230,8 +223,8 @@ impl Tool for ReadFile {
         )?;
 
         // Extract line range (both must be present for a targeted read)
-        let start_line = as_u64_lenient(&input["start_line"]);
-        let end_line = as_u64_lenient(&input["end_line"]);
+        let start_line = optional_u64_param(&input, "start_line");
+        let end_line = optional_u64_param(&input, "end_line");
 
         // Both start_line and end_line must be provided together
         if start_line.is_some() != end_line.is_some() {
@@ -579,7 +572,7 @@ impl Tool for ListDir {
             &security,
         )?;
         let recursive = parse_bool_param(&input["recursive"]);
-        let explicit_max_depth = input["max_depth"].as_u64().map(|d| d as usize);
+        let explicit_max_depth = optional_u64_param(&input, "max_depth").map(|d| d as usize);
         let guard = OutputGuard::from_input(&input);
 
         // Determine requested depth:
@@ -707,11 +700,12 @@ impl Tool for SearchPattern {
             project_root.as_deref(),
             &security,
         )?;
-        let max = input["max_results"]
-            .as_u64()
-            .or_else(|| input["limit"].as_u64())
+        let max = optional_u64_param(&input, "max_results")
+            .or_else(|| optional_u64_param(&input, "limit"))
             .unwrap_or(50) as usize;
-        let context_lines = input["context_lines"].as_u64().unwrap_or(0).min(20) as usize;
+        let context_lines = optional_u64_param(&input, "context_lines")
+            .unwrap_or(0)
+            .min(20) as usize;
         let re = regex::RegexBuilder::new(pattern)
             .size_limit(1 << 20)
             .dfa_size_limit(1 << 20)
@@ -916,9 +910,8 @@ impl Tool for FindFile {
             project_root.as_deref(),
             &security,
         )?;
-        let max = input["max_results"]
-            .as_u64()
-            .or_else(|| input["limit"].as_u64())
+        let max = optional_u64_param(&input, "max_results")
+            .or_else(|| optional_u64_param(&input, "limit"))
             .unwrap_or(100) as usize;
 
         let glob = globset::GlobBuilder::new(pattern)
@@ -4998,15 +4991,6 @@ line5",
 line3
 line4"
         );
-    }
-
-    #[test]
-    fn as_u64_lenient_parses_numbers_and_strings() {
-        assert_eq!(super::as_u64_lenient(&json!(42)), Some(42));
-        assert_eq!(super::as_u64_lenient(&json!("42")), Some(42));
-        assert_eq!(super::as_u64_lenient(&json!("abc")), None);
-        assert_eq!(super::as_u64_lenient(&json!(null)), None);
-        assert_eq!(super::as_u64_lenient(&json!("")), None);
     }
 
     #[tokio::test]

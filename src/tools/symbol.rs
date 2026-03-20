@@ -8,7 +8,7 @@ use crate::tools::RecoverableError;
 
 use super::format::{format_line_range, format_overflow};
 use super::output::{OutputGuard, OutputMode, OverflowInfo};
-use super::{parse_bool_param, Tool, ToolContext};
+use super::{optional_bool_param, optional_u64_param, parse_bool_param, Tool, ToolContext};
 use crate::ast;
 use crate::lsp::SymbolInfo;
 
@@ -441,7 +441,7 @@ impl Tool for ListSymbols {
     }
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
         let rel_path = get_path_param(&input, false)?.unwrap_or(".");
-        let depth = input["depth"].as_u64().unwrap_or(1) as usize;
+        let depth = optional_u64_param(&input, "depth").unwrap_or(1) as usize;
         let guard = OutputGuard::from_input(&input);
         let include_docs = parse_bool_param(&input["include_docs"]);
         let scope = crate::library::scope::Scope::parse(input["scope"].as_str());
@@ -826,11 +826,9 @@ impl Tool for FindSymbol {
             input["kind"].as_str()
         };
 
-        let include_body = input["include_body"]
-            .as_bool()
-            .or_else(|| input["include_body"].as_str().and_then(|s| s.parse().ok()))
+        let include_body = optional_bool_param(&input, "include_body")
             .unwrap_or_else(|| guard.should_include_body());
-        let depth = input["depth"].as_u64().unwrap_or(0) as usize;
+        let depth = optional_u64_param(&input, "depth").unwrap_or(0) as usize;
         let scope = crate::library::scope::Scope::parse(input["scope"].as_str());
 
         let root = ctx.agent.require_project_root().await?;

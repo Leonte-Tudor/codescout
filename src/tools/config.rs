@@ -1,6 +1,6 @@
 //! Configuration and project management tools.
 
-use super::{Tool, ToolContext};
+use super::{optional_bool_param, parse_bool_param, Tool, ToolContext};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
@@ -91,10 +91,13 @@ impl Tool for ActivateProject {
             )
             .into());
         }
+        // Canonicalize so relative paths like "." resolve to absolute paths,
+        // enabling correct home_root comparison in agent.activate().
+        let root = root.canonicalize().unwrap_or(root);
         // Capture before activate() — activate sets home_root on first call
         let had_home = ctx.agent.home_root().await.is_some();
 
-        let read_only = input.get("read_only").and_then(|v| v.as_bool());
+        let read_only = optional_bool_param(&input, "read_only");
         ctx.agent.activate(root.clone(), read_only).await?;
 
         let config = ctx
@@ -185,7 +188,7 @@ impl Tool for ProjectStatus {
         use crate::agent::IndexingState;
 
         // --- PostCompact cache flush ---
-        if input["post_compact"].as_bool().unwrap_or(false) {
+        if parse_bool_param(&input["post_compact"]) {
             ctx.lsp.shutdown_all().await;
             tracing::info!("PostCompact: flushed all LSP clients; they will restart lazily.");
             return Ok(json!({

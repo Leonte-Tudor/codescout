@@ -219,6 +219,60 @@ pub fn parse_bool_param(val: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 
+/// Extract an optional boolean parameter with lenient coercion.
+///
+/// Returns `Some(bool)` if the parameter is present and coercible (native JSON
+/// boolean or `"true"`/`"false"` string), `None` if absent or null. This is
+/// the `Option`-returning counterpart to [`parse_bool_param`] — use it when
+/// the caller needs to distinguish "not provided" from "explicitly false".
+pub fn optional_bool_param(input: &serde_json::Value, name: &str) -> Option<bool> {
+    let val = input.get(name)?;
+    if val.is_null() {
+        return None;
+    }
+    val.as_bool()
+        .or_else(|| val.as_str().and_then(|s| s.parse::<bool>().ok()))
+}
+
+/// Extract an optional u64 parameter with lenient coercion.
+///
+/// Accepts both native JSON numbers and string-encoded integers (`"42"` → 42).
+/// Returns `None` if the parameter is absent, null, or not coercible.
+pub fn optional_u64_param(input: &serde_json::Value, name: &str) -> Option<u64> {
+    let val = input.get(name)?;
+    if val.is_null() {
+        return None;
+    }
+    val.as_u64()
+        .or_else(|| val.as_str().and_then(|s| s.trim().parse::<u64>().ok()))
+}
+
+/// Extract an optional i64 parameter with lenient coercion.
+///
+/// Accepts both native JSON numbers and string-encoded integers (`"-1"` → -1).
+/// Returns `None` if the parameter is absent, null, or not coercible.
+pub fn optional_i64_param(input: &serde_json::Value, name: &str) -> Option<i64> {
+    let val = input.get(name)?;
+    if val.is_null() {
+        return None;
+    }
+    val.as_i64()
+        .or_else(|| val.as_str().and_then(|s| s.trim().parse::<i64>().ok()))
+}
+
+/// Extract an optional f64 parameter with lenient coercion.
+///
+/// Accepts both native JSON numbers and string-encoded floats (`"0.5"` → 0.5).
+/// Returns `None` if the parameter is absent, null, or not coercible.
+pub fn optional_f64_param(input: &serde_json::Value, name: &str) -> Option<f64> {
+    let val = input.get(name)?;
+    if val.is_null() {
+        return None;
+    }
+    val.as_f64()
+        .or_else(|| val.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+}
+
 /// Block write operations when git worktrees exist but the agent hasn't
 /// explicitly called `activate_project` to confirm which project to write to.
 ///
@@ -358,6 +412,7 @@ pub trait Tool: Send + Sync {
                 COMPACT_SUMMARY_MAX_BYTES,
                 COMPACT_SUMMARY_HARD_MAX_BYTES,
             );
+
             // Return a *structured* JSON response so agents consistently look for
             // the `output_id` field — the same field name `run_command` uses for its
             // `@cmd_*` refs.  The previous prose format ("summary\nFull result: @ref")
@@ -411,6 +466,57 @@ mod tests {
         assert!(!parse_bool_param(&json!(null)));
         assert!(!parse_bool_param(&json!(42)));
         assert!(!parse_bool_param(&json!("yes")));
+    }
+
+    #[test]
+    fn optional_bool_param_returns_none_when_absent() {
+        use serde_json::json;
+        assert_eq!(optional_bool_param(&json!({}), "flag"), None);
+        assert_eq!(optional_bool_param(&json!({"flag": null}), "flag"), None);
+    }
+
+    #[test]
+    fn optional_bool_param_coerces_strings() {
+        use serde_json::json;
+        assert_eq!(optional_bool_param(&json!({"x": true}), "x"), Some(true));
+        assert_eq!(optional_bool_param(&json!({"x": false}), "x"), Some(false));
+        assert_eq!(optional_bool_param(&json!({"x": "true"}), "x"), Some(true));
+        assert_eq!(
+            optional_bool_param(&json!({"x": "false"}), "x"),
+            Some(false)
+        );
+        assert_eq!(optional_bool_param(&json!({"x": "yes"}), "x"), None);
+        assert_eq!(optional_bool_param(&json!({"x": 42}), "x"), None);
+    }
+
+    #[test]
+    fn optional_u64_param_coerces_strings() {
+        use serde_json::json;
+        assert_eq!(optional_u64_param(&json!({}), "n"), None);
+        assert_eq!(optional_u64_param(&json!({"n": null}), "n"), None);
+        assert_eq!(optional_u64_param(&json!({"n": 42}), "n"), Some(42));
+        assert_eq!(optional_u64_param(&json!({"n": "42"}), "n"), Some(42));
+        assert_eq!(optional_u64_param(&json!({"n": " 7 "}), "n"), Some(7));
+        assert_eq!(optional_u64_param(&json!({"n": "abc"}), "n"), None);
+        assert_eq!(optional_u64_param(&json!({"n": "-1"}), "n"), None);
+    }
+
+    #[test]
+    fn optional_i64_param_coerces_strings() {
+        use serde_json::json;
+        assert_eq!(optional_i64_param(&json!({}), "n"), None);
+        assert_eq!(optional_i64_param(&json!({"n": -5}), "n"), Some(-5));
+        assert_eq!(optional_i64_param(&json!({"n": "-5"}), "n"), Some(-5));
+        assert_eq!(optional_i64_param(&json!({"n": "abc"}), "n"), None);
+    }
+
+    #[test]
+    fn optional_f64_param_coerces_strings() {
+        use serde_json::json;
+        assert_eq!(optional_f64_param(&json!({}), "t"), None);
+        assert_eq!(optional_f64_param(&json!({"t": 0.5}), "t"), Some(0.5));
+        assert_eq!(optional_f64_param(&json!({"t": "0.5"}), "t"), Some(0.5));
+        assert_eq!(optional_f64_param(&json!({"t": "abc"}), "t"), None);
     }
 
     #[test]

@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::process::Command;
 
-use crate::tools::{parse_bool_param, RecoverableError, Tool, ToolContext};
+use crate::tools::{optional_u64_param, parse_bool_param, RecoverableError, Tool, ToolContext};
 
 // ── Shared execution ──────────────────────────────────────────────────────────
 
@@ -277,8 +277,11 @@ impl Tool for GithubIssue {
         } else {
             String::new()
         };
-        let limit = params["limit"].as_u64().unwrap_or(30).min(100).to_string();
-        let number = params["number"].as_u64().map(|n| n.to_string());
+        let limit = optional_u64_param(&params, "limit")
+            .unwrap_or(30)
+            .min(100)
+            .to_string();
+        let number = optional_u64_param(&params, "number").map(|n| n.to_string());
 
         match method {
             "list" => {
@@ -432,7 +435,7 @@ impl Tool for GithubIssue {
             }
             "add_sub_issue" => {
                 let num = require_number(&number, "add_sub_issue")?;
-                let sub_id = params["sub_issue_id"].as_u64().ok_or_else(|| {
+                let sub_id = optional_u64_param(&params, "sub_issue_id").ok_or_else(|| {
                     RecoverableError::with_hint(
                         "sub_issue_id required",
                         "Provide the sub-issue node ID",
@@ -447,7 +450,7 @@ impl Tool for GithubIssue {
             }
             "remove_sub_issue" => {
                 let num = require_number(&number, "remove_sub_issue")?;
-                let sub_id = params["sub_issue_id"].as_u64().ok_or_else(|| {
+                let sub_id = optional_u64_param(&params, "sub_issue_id").ok_or_else(|| {
                     RecoverableError::with_hint(
                         "sub_issue_id required",
                         "Provide the sub-issue node ID",
@@ -528,8 +531,11 @@ impl Tool for GithubPr {
         } else {
             String::new()
         };
-        let limit = params["limit"].as_u64().unwrap_or(30).min(100).to_string();
-        let number = params["number"].as_u64().map(|n| n.to_string());
+        let limit = optional_u64_param(&params, "limit")
+            .unwrap_or(30)
+            .min(100)
+            .to_string();
+        let number = optional_u64_param(&params, "number").map(|n| n.to_string());
 
         match method {
             "list" => {
@@ -749,7 +755,7 @@ impl Tool for GithubPr {
             }
             "submit_review" => {
                 let num = require_number(&number, "submit_review")?;
-                let rev_id = params["review_id"].as_u64().ok_or_else(|| {
+                let rev_id = optional_u64_param(&params, "review_id").ok_or_else(|| {
                     RecoverableError::with_hint("review_id required", "Provide the review ID")
                 })?;
                 let event = params["event"].as_str().ok_or_else(|| {
@@ -774,7 +780,7 @@ impl Tool for GithubPr {
             }
             "delete_review" => {
                 let num = require_number(&number, "delete_review")?;
-                let rev_id = params["review_id"].as_u64().ok_or_else(|| {
+                let rev_id = optional_u64_param(&params, "review_id").ok_or_else(|| {
                     RecoverableError::with_hint("review_id required", "Provide the review ID")
                 })?;
                 require_owner_repo(owner, repo)?;
@@ -795,7 +801,7 @@ impl Tool for GithubPr {
                     .as_str()
                     .map(|c| format!("commit_id={c}"));
                 let path_field = params["path"].as_str().map(|p| format!("path={p}"));
-                let line_field = params["line"].as_u64().map(|l| format!("line={l}"));
+                let line_field = optional_u64_param(&params, "line").map(|l| format!("line={l}"));
                 let mut gh_args =
                     vec!["api", "--method", "POST", &endpoint, "--field", &body_field];
                 if let Some(ref f) = commit_field {
@@ -812,7 +818,7 @@ impl Tool for GithubPr {
             }
             "add_reply_to_comment" => {
                 let num = require_number(&number, "add_reply_to_comment")?;
-                let cid = params["comment_id"].as_u64().ok_or_else(|| {
+                let cid = optional_u64_param(&params, "comment_id").ok_or_else(|| {
                     RecoverableError::with_hint(
                         "comment_id required",
                         "Provide the comment ID to reply to",
@@ -1146,7 +1152,10 @@ impl Tool for GithubRepo {
         } else {
             String::new()
         };
-        let limit = params["limit"].as_u64().unwrap_or(30).min(100).to_string();
+        let limit = optional_u64_param(&params, "limit")
+            .unwrap_or(30)
+            .min(100)
+            .to_string();
 
         match method {
             "search" => {

@@ -1,7 +1,7 @@
 //! Semantic search tools backed by the embedding index.
 
 use super::format::format_overflow;
-use super::{parse_bool_param, Tool, ToolContext};
+use super::{optional_f64_param, optional_u64_param, parse_bool_param, Tool, ToolContext};
 use serde_json::{json, Value};
 
 pub struct SemanticSearch;
@@ -36,7 +36,7 @@ impl Tool for SemanticSearch {
         use super::output::OutputGuard;
 
         let query = super::require_str_param(&input, "query")?;
-        let limit = input["limit"].as_u64().unwrap_or(10) as usize;
+        let limit = optional_u64_param(&input, "limit").unwrap_or(10) as usize;
         let include_memories = parse_bool_param(&input["include_memories"]);
         let project_filter = input
             .get("project")
@@ -574,7 +574,9 @@ impl Tool for IndexStatus {
                     "hint": "Drift detection is opted out. Re-enable it in .codescout/project.toml:\n[embeddings]\ndrift_detection_enabled = true"
                 });
             } else {
-                let threshold = input["threshold"].as_f64().map(|v| v as f32).unwrap_or(0.1);
+                let threshold = optional_f64_param(&input, "threshold")
+                    .map(|v| v as f32)
+                    .unwrap_or(0.1);
                 let path_filter = input["path"].as_str().map(|s| s.to_string());
                 let guard = OutputGuard::from_input(&input);
 

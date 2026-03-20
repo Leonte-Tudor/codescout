@@ -634,7 +634,7 @@ impl Tool for Memory {
             }
             "recall" => {
                 let query = super::require_str_param(&input, "query")?;
-                let limit = input["limit"].as_u64().unwrap_or(5) as usize;
+                let limit = super::optional_u64_param(&input, "limit").unwrap_or(5) as usize;
                 let bucket_filter = input["bucket"].as_str();
 
                 let (root, model) = {
@@ -694,7 +694,7 @@ impl Tool for Memory {
                 Ok(json!({ "results": items }))
             }
             "forget" => {
-                let id = input["id"].as_i64().ok_or_else(|| {
+                let id = super::optional_i64_param(&input, "id").ok_or_else(|| {
                     super::RecoverableError::with_hint(
                         "Missing required parameter 'id'",
                         "Pass the numeric id from a recall result",
