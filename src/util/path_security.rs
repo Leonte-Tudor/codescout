@@ -316,7 +316,18 @@ pub fn list_git_worktrees(project_root: &Path) -> Vec<PathBuf> {
     for entry in entries.flatten() {
         let gitdir_file = entry.path().join("gitdir");
         if let Ok(content) = std::fs::read_to_string(&gitdir_file) {
-            let worktree_git = PathBuf::from(content.trim());
+            let raw = content.trim();
+            // Reject null bytes
+            if raw.contains('\0') {
+                tracing::warn!("worktree gitdir contains null byte, skipping: {:?}", gitdir_file);
+                continue;
+            }
+            let worktree_git = PathBuf::from(raw);
+            // Must be absolute
+            if !worktree_git.is_absolute() {
+                tracing::warn!("worktree gitdir is not absolute, skipping: {:?}", raw);
+                continue;
+            }
             if let Some(worktree_root) = worktree_git.parent() {
                 paths.push(worktree_root.to_path_buf());
             }
@@ -1103,6 +1114,28 @@ mod tests {
         let result = list_git_worktrees(dir.path());
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], wt_root.path());
+    }
+
+    #[test]
+    fn list_git_worktrees_rejects_relative_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let wt_entry = dir.path().join(".git").join("worktrees").join("evil");
+        std::fs::create_dir_all(&wt_entry).unwrap();
+        std::fs::write(wt_entry.join("gitdir"), "...etc/.git\n").unwrap();
+
+        let result = list_git_worktrees(dir.path());
+        assert!(result.is_empty(), "relative path should be rejected");
+    }
+
+    #[test]
+    fn list_git_worktrees_rejects_null_byte() {
+        let dir = tempfile::tempdir().unwrap();
+        let wt_entry = dir.path().join(".git").join("worktrees").join("evil2");
+        std::fs::create_dir_all(&wt_entry).unwrap();
+        std::fs::write(wt_entry.join("gitdir"), "/tmp/evil\0injected/.git\n").unwrap();
+
+        let result = list_git_worktrees(dir.path());
+        assert!(result.is_empty(), "null byte path should be rejected");
     }
 
     // ── Dangerous command detection ──────────────────────────────────────
