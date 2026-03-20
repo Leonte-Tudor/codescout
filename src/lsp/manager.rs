@@ -175,8 +175,9 @@ impl LspManager {
         })?;
 
         // LRU eviction: if at capacity, shut down the least-recently-used client.
-        {
-            let clients = self.clients.lock().await;
+        // Check + find + remove all happen under one lock acquisition to prevent TOCTOU.
+        let evict_info: Option<(LspKey, Option<Arc<LspClient>>)> = {
+            let mut clients = self.clients.lock().await;
             if clients.len() >= self.max_clients {
                 let last_used = self.last_used.lock().await;
                 if let Some(oldest_key) = last_used
@@ -185,28 +186,28 @@ impl LspManager {
                     .map(|(k, _)| k.clone())
                 {
                     drop(last_used);
-                    let evict_client = clients.get(&oldest_key).cloned();
-                    drop(clients);
-                    // Remove and shut down outside the lock.
-                    {
-                        let mut clients = self.clients.lock().await;
-                        self.pending_reason
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .insert(oldest_key.clone(), "lru_evicted".to_string());
-                        // Discard any pending first-response entry — this key's window is over.
-                        self.pending_first_response
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .remove(&oldest_key);
-                        clients.remove(&oldest_key);
-                    }
-                    self.last_used.lock().await.remove(&oldest_key);
-                    if let Some(old) = evict_client {
-                        tracing::info!("LRU evicting LSP client: {}", oldest_key);
-                        let _ = old.shutdown().await;
-                    }
+                    self.pending_reason
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(oldest_key.clone(), "lru_evicted".to_string());
+                    self.pending_first_response
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&oldest_key);
+                    let evict_client = clients.remove(&oldest_key);
+                    Some((oldest_key, evict_client))
+                } else {
+                    None
                 }
+            } else {
+                None
+            }
+        };
+        if let Some((oldest_key, evict_client)) = evict_info {
+            self.last_used.lock().await.remove(&oldest_key);
+            if let Some(old) = evict_client {
+                tracing::info!("LRU evicting LSP client: {}", oldest_key);
+                let _ = old.shutdown().await;
             }
         }
 
