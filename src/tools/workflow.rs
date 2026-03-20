@@ -1755,9 +1755,9 @@ async fn run_command_interactive(
     };
 
     // Spawn with piped stdin/stdout/stderr.
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(command)
+    let (shell, shell_args) = crate::platform::shell_command(command);
+    let mut child = Command::new(shell)
+        .args(&shell_args)
         .current_dir(&work_dir)
         .env("GIT_PAGER", "cat")
         .stdin(std::process::Stdio::piped())
@@ -2032,9 +2032,9 @@ async fn run_command_inner(
         let log_stderr = log_file.try_clone()?;
 
         // Child handle dropped intentionally — process runs detached, adopted by init.
-        tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(resolved_command)
+        let (shell, shell_args) = crate::platform::shell_command(resolved_command);
+        tokio::process::Command::new(shell)
+            .args(&shell_args)
             .current_dir(&work_dir)
             .env("GIT_PAGER", "cat")
             .stdout(std::process::Stdio::from(log_file))

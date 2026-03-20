@@ -398,7 +398,7 @@ async fn auto_register_cargo_deps(
     }
 
     // Find the cargo registry src dir: ~/.cargo/registry/src/index.crates.io-*/
-    let home = match std::env::var("HOME").ok().map(std::path::PathBuf::from) {
+    let home = match crate::platform::home_dir() {
         Some(h) => h,
         None => return vec![],
     };
