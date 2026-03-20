@@ -37,18 +37,6 @@ use regex::Regex;
 use std::path::{Path, PathBuf};
 
 /// Paths that are always denied for read access (expanded from `~`).
-const DEFAULT_DENIED_PREFIXES: &[&str] = &[
-    "~/.ssh",
-    "~/.aws",
-    "~/.gnupg",
-    "~/.config/gcloud",
-    "~/.config/gh",
-    "~/.docker/config.json",
-    "~/.netrc",
-    "~/.npmrc",
-    "~/.kube/config",
-];
-
 #[cfg(target_os = "linux")]
 const DEFAULT_DENIED_EXACT: &[&str] = &["/etc/shadow", "/etc/gshadow"];
 
@@ -121,10 +109,7 @@ impl Default for PathSecurityConfig {
 // ---------------------------------------------------------------------------
 
 fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok()
-        .map(PathBuf::from)
+    crate::platform::home_dir()
 }
 
 /// Expand a leading `~` to `$HOME`.
@@ -141,7 +126,7 @@ fn expand_home(pattern: &str) -> Option<PathBuf> {
 /// Build the full list of denied read paths (defaults + user-configured).
 fn denied_read_paths(_config: &PathSecurityConfig) -> Vec<PathBuf> {
     let mut denied = Vec::new();
-    for p in DEFAULT_DENIED_PREFIXES
+    for p in crate::platform::denied_read_prefixes()
         .iter()
         .chain(DEFAULT_DENIED_EXACT.iter())
     {
@@ -290,7 +275,7 @@ pub fn validate_write_path(
     // System temp directory is always writable — useful for scratch files,
     // intermediate output, and cross-process coordination without polluting
     // the project root.
-    allowed.push(PathBuf::from("/tmp"));
+    allowed.push(crate::platform::temp_dir());
     // CWD at server startup — Claude Code launches MCP servers from the
     // project directory, so this covers the case where an absolute path
     // targets the user's working directory even when --project points

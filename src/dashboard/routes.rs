@@ -1,11 +1,11 @@
 use anyhow::Result;
+use axum::http::HeaderValue;
 use axum::{
     http::header,
     response::Html,
     routing::{delete, get, post},
     Json, Router,
 };
-use axum::http::HeaderValue;
 use std::path::{Path, PathBuf};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
@@ -45,9 +45,8 @@ pub fn build_router(project_root: &Path) -> Result<Router> {
         .layer(
             CorsLayer::new()
                 .allow_origin(AllowOrigin::predicate(|origin: &HeaderValue, _| {
-                    origin.to_str().map_or(false, |s| {
-                        s.starts_with("http://localhost:")
-                            || s.starts_with("http://127.0.0.1:")
+                    origin.to_str().is_ok_and(|s| {
+                        s.starts_with("http://localhost:") || s.starts_with("http://127.0.0.1:")
                     })
                 }))
                 .allow_methods([
@@ -282,7 +281,9 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(response.headers().contains_key("access-control-allow-origin"));
+        assert!(response
+            .headers()
+            .contains_key("access-control-allow-origin"));
     }
 
     #[tokio::test]
@@ -299,6 +300,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(!response.headers().contains_key("access-control-allow-origin"));
+        assert!(!response
+            .headers()
+            .contains_key("access-control-allow-origin"));
     }
 }

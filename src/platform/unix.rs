@@ -13,13 +13,12 @@ pub fn denied_read_prefixes() -> &'static [&'static str] {
         "~/.ssh",
         "~/.aws",
         "~/.gnupg",
+        "~/.config/gcloud",
         "~/.config/gh",
+        "~/.docker/config.json",
         "~/.netrc",
         "~/.npmrc",
-        "~/.pypirc",
-        "~/.docker/config.json",
         "~/.kube/config",
-        "~/.git-credentials",
     ]
 }
 
