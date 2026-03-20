@@ -326,7 +326,15 @@ impl OutputBuffer {
         if inner.background_jobs.len() >= inner.max_pending {
             if let Some(oldest) = inner.background_order.first().cloned() {
                 inner.background_order.remove(0);
-                inner.background_jobs.remove(&oldest);
+                if let Some(log_path) = inner.background_jobs.remove(&oldest) {
+                    if let Err(e) = std::fs::remove_file(&log_path) {
+                        tracing::debug!(
+                            "failed to clean up evicted bg log {}: {}",
+                            log_path.display(),
+                            e
+                        );
+                    }
+                }
             }
         }
 

@@ -25,24 +25,39 @@ use std::sync::Once;
 
 use super::schema::{CodeChunk, SearchResult};
 
-/// Filter for source file types in embedding search.
+/// Typed filter for the `source` column in embedding search.
+///
+/// Replaces raw `Option<&str>` to prevent typos and make the API self-documenting.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SourceFilter {
-    /// Include all files
+pub enum SourceScope {
+    /// No filter — search all sources (project + all libraries).
     All,
-    /// Only source code files
-    SourceOnly,
-    /// Only non-source files (docs, config)
-    NonSourceOnly,
+    /// Only project-owned chunks (`source = 'project'`).
+    Project,
+    /// All library chunks (any `source` that isn't `'project'`).
+    Libraries,
+    /// A specific library by name (`source = '<name>'`).
+    Library(String),
 }
 
-impl SourceFilter {
-    /// Convert to the `Option<&str>` format used by the search functions.
-    pub fn as_sql_filter(&self) -> Option<&'static str> {
+impl SourceScope {
+    /// Parse from the string format used by the tool layer.
+    pub fn from_str_opt(s: Option<&str>) -> Self {
+        match s {
+            None => Self::All,
+            Some("project") => Self::Project,
+            Some("libraries") => Self::Libraries,
+            Some(lib) => Self::Library(lib.to_string()),
+        }
+    }
+
+    /// Convert back to the `Option<&str>` format for SQL queries.
+    pub fn as_sql_param(&self) -> Option<&str> {
         match self {
-            SourceFilter::All => None,
-            SourceFilter::SourceOnly => Some("source"),
-            SourceFilter::NonSourceOnly => Some("non-source"),
+            Self::All => None,
+            Self::Project => Some("project"),
+            Self::Libraries => Some("libraries"),
+            Self::Library(name) => Some(name.as_str()),
         }
     }
 }
@@ -929,7 +944,7 @@ pub fn search(
     query_embedding: &[f32],
     limit: usize,
 ) -> Result<Vec<SearchResult>> {
-    search_scoped(conn, query_embedding, limit, None)
+    search_scoped(conn, query_embedding, limit, &SourceScope::All)
 }
 // Returns true when `chunk_embeddings` is a vec0 virtual table.
 // Checked via sqlite_master DDL — O(1) index lookup.
@@ -969,11 +984,13 @@ pub fn search_scoped(
     conn: &Connection,
     query_embedding: &[f32],
     limit: usize,
-    source_filter: Option<&str>,
+    scope: &SourceScope,
 ) -> Result<Vec<SearchResult>> {
     if is_vec0_active(conn) {
-        return search_scoped_vec0(conn, query_embedding, limit, source_filter);
+        return search_scoped_vec0(conn, query_embedding, limit, scope);
     }
+
+    let source_filter = scope.as_sql_param();
 
     // Encode the query as little-endian f32 bytes — the format vec_f32() expects.
     let query_blob: Vec<u8> = query_embedding
@@ -1036,8 +1053,9 @@ fn search_scoped_vec0(
     conn: &Connection,
     query_embedding: &[f32],
     limit: usize,
-    source_filter: Option<&str>,
+    scope: &SourceScope,
 ) -> Result<Vec<SearchResult>> {
+    let source_filter = scope.as_sql_param();
     let query_blob: Vec<u8> = query_embedding
         .iter()
         .flat_map(|f| f.to_le_bytes())
@@ -2999,21 +3017,27 @@ mod tests {
         .unwrap();
 
         // No filter → all 3
-        let all = search_scoped(&conn, &[1.0, 1.0, 1.0], 10, None).unwrap();
+        let all = search_scoped(&conn, &[1.0, 1.0, 1.0], 10, &SourceScope::All).unwrap();
         assert_eq!(all.len(), 3);
 
         // Project only
-        let proj = search_scoped(&conn, &[1.0, 1.0, 1.0], 10, Some("project")).unwrap();
+        let proj = search_scoped(&conn, &[1.0, 1.0, 1.0], 10, &SourceScope::Project).unwrap();
         assert_eq!(proj.len(), 1);
         assert_eq!(proj[0].source, "project");
 
         // Libraries (all non-project)
-        let libs = search_scoped(&conn, &[1.0, 1.0, 1.0], 10, Some("libraries")).unwrap();
+        let libs = search_scoped(&conn, &[1.0, 1.0, 1.0], 10, &SourceScope::Libraries).unwrap();
         assert_eq!(libs.len(), 2);
         assert!(libs.iter().all(|r| r.source != "project"));
 
         // Specific library
-        let serde_only = search_scoped(&conn, &[1.0, 1.0, 1.0], 10, Some("lib:serde")).unwrap();
+        let serde_only = search_scoped(
+            &conn,
+            &[1.0, 1.0, 1.0],
+            10,
+            &SourceScope::Library("lib:serde".to_string()),
+        )
+        .unwrap();
         assert_eq!(serde_only.len(), 1);
         assert_eq!(serde_only[0].source, "lib:serde");
     }
@@ -3420,22 +3444,28 @@ mod tests {
         }
 
         // No filter — all 12 chunks.
-        let all = search_scoped(&conn, &[1.0_f32, 0.0], 20, None).unwrap();
+        let all = search_scoped(&conn, &[1.0_f32, 0.0], 20, &SourceScope::All).unwrap();
         assert_eq!(all.len(), 12);
 
         // Project-only — must return all 6 project chunks even though the KNN
         // over-fetches from a pool that is 50% library chunks.
-        let proj_only = search_scoped(&conn, &[1.0_f32, 0.0], 6, Some("project")).unwrap();
+        let proj_only = search_scoped(&conn, &[1.0_f32, 0.0], 6, &SourceScope::Project).unwrap();
         assert_eq!(proj_only.len(), 6);
         assert!(proj_only.iter().all(|r| r.source == "project"));
 
         // Libraries — must return all 6 library chunks.
-        let libs_only = search_scoped(&conn, &[1.0_f32, 0.0], 6, Some("libraries")).unwrap();
+        let libs_only = search_scoped(&conn, &[1.0_f32, 0.0], 6, &SourceScope::Libraries).unwrap();
         assert_eq!(libs_only.len(), 6);
         assert!(libs_only.iter().all(|r| r.source == "mylib"));
 
         // Specific lib — must return all 6 matching chunks.
-        let mylib = search_scoped(&conn, &[1.0_f32, 0.0], 6, Some("mylib")).unwrap();
+        let mylib = search_scoped(
+            &conn,
+            &[1.0_f32, 0.0],
+            6,
+            &SourceScope::Library("mylib".to_string()),
+        )
+        .unwrap();
         assert_eq!(mylib.len(), 6);
         assert!(mylib.iter().all(|r| r.source == "mylib"));
     }
