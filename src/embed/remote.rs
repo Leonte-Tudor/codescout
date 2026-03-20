@@ -3,7 +3,7 @@
 //! Works with OpenAI, Ollama, LM Studio, and any other server that
 //! implements the `/v1/embeddings` endpoint.
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
@@ -67,11 +67,19 @@ impl RemoteEmbedder {
 
     pub fn custom(base_url: &str, model: &str) -> Result<Self> {
         let endpoint = format!("{}/v1/embeddings", base_url.trim_end_matches('/'));
+        let api_key = std::env::var("EMBED_API_KEY").ok();
+        if api_key.is_some() && !base_url.starts_with("https://") {
+            bail!(
+                "HTTPS required when EMBED_API_KEY is set — \
+                 refusing to send API key over plaintext HTTP to {}",
+                base_url
+            );
+        }
         Ok(Self {
             client: Self::http_client(),
             endpoint,
             model: model.to_string(),
-            api_key: std::env::var("EMBED_API_KEY").ok(),
+            api_key,
         })
     }
 }
@@ -234,5 +242,29 @@ mod tests {
             result.unwrap_err().to_string().contains("not reachable"),
             "error message should mention 'not reachable'"
         );
+    }
+
+    #[test]
+    fn custom_rejects_http_with_api_key() {
+        unsafe { std::env::set_var("EMBED_API_KEY", "sk-test-key") };
+        let result = RemoteEmbedder::custom("http://example.com", "model");
+        unsafe { std::env::remove_var("EMBED_API_KEY") };
+        let err = result.err().expect("should be Err");
+        assert!(err.to_string().contains("HTTPS"));
+    }
+
+    #[test]
+    fn custom_allows_http_without_api_key() {
+        unsafe { std::env::remove_var("EMBED_API_KEY") };
+        let result = RemoteEmbedder::custom("http://localhost:11434", "model");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn custom_allows_https_with_api_key() {
+        unsafe { std::env::set_var("EMBED_API_KEY", "sk-test-key") };
+        let result = RemoteEmbedder::custom("https://api.example.com", "model");
+        unsafe { std::env::remove_var("EMBED_API_KEY") };
+        assert!(result.is_ok());
     }
 }
