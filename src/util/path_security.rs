@@ -151,9 +151,12 @@ fn is_denied(resolved: &Path, denied: &[PathBuf]) -> bool {
         .any(|d| resolved.starts_with(d) || resolved == d.as_path())
 }
 
-/// Best-effort canonicalization: use `fs::canonicalize` when the path exists,
-/// otherwise return the path as-is (e.g. for `CreateFile` targets that
-/// don't exist yet).
+/// Best-effort canonicalization: use `fs::canonicalize` when the path exists
+/// and is accessible, otherwise return the path as-is.
+///
+/// This deliberately swallows all errors (not just NotFound) because it's used
+/// for write targets that may not exist yet and for paths where the user may
+/// lack read permission on intermediate directories.
 fn best_effort_canonicalize(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
