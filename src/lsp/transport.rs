@@ -32,6 +32,14 @@ pub async fn read_message<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<
     }
 
     let length = content_length.context("missing Content-Length header")?;
+    const MAX_MESSAGE_SIZE: usize = 100 * 1024 * 1024; // 100 MiB
+    if length > MAX_MESSAGE_SIZE {
+        bail!(
+            "Content-Length {} exceeds maximum allowed size of {} bytes",
+            length,
+            MAX_MESSAGE_SIZE,
+        );
+    }
     let mut body = vec![0u8; length];
     reader
         .read_exact(&mut body)
@@ -114,5 +122,24 @@ mod tests {
         let body = serde_json::to_string(&msg).unwrap();
         let expected = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
         assert_eq!(output, expected);
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_content_length() {
+        let oversized = 200 * 1024 * 1024; // 200 MiB
+        let msg = format!("Content-Length: {}\r\n\r\n", oversized);
+        let mut reader = BufReader::new(msg.as_bytes());
+        let result = read_message(&mut reader).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("exceeds"));
+    }
+
+    #[tokio::test]
+    async fn accepts_normal_content_length() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"test"}"#;
+        let msg = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+        let mut reader = BufReader::new(msg.as_bytes());
+        let result = read_message(&mut reader).await;
+        assert!(result.is_ok());
     }
 }
