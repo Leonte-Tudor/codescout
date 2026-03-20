@@ -5,7 +5,9 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
+use axum::http::HeaderValue;
 use std::path::{Path, PathBuf};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use super::api;
 
@@ -40,6 +42,21 @@ pub fn build_router(project_root: &Path) -> Result<Router> {
             delete(api::memories::delete_memory),
         )
         .route("/api/libraries", get(api::libraries::get_libraries))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::predicate(|origin: &HeaderValue, _| {
+                    origin.to_str().map_or(false, |s| {
+                        s.starts_with("http://localhost:")
+                            || s.starts_with("http://127.0.0.1:")
+                    })
+                }))
+                .allow_methods([
+                    axum::http::Method::GET,
+                    axum::http::Method::POST,
+                    axum::http::Method::DELETE,
+                ])
+                .allow_headers([header::CONTENT_TYPE]),
+        )
         .with_state(state);
 
     Ok(router)
@@ -249,5 +266,39 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json["libraries"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cors_allows_localhost_origin() {
+        let root = tempfile::TempDir::new().unwrap();
+        let app = test_router(root.path());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .header("Origin", "http://localhost:3000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(response.headers().contains_key("access-control-allow-origin"));
+    }
+
+    #[tokio::test]
+    async fn cors_rejects_external_origin() {
+        let root = tempfile::TempDir::new().unwrap();
+        let app = test_router(root.path());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .header("Origin", "https://evil.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(!response.headers().contains_key("access-control-allow-origin"));
     }
 }
