@@ -132,7 +132,7 @@ use the right tool. Small shortcuts compound into large context waste.
 
 - `memory(action, ...)` — persistent project knowledge.
   - `action="write"` — requires `topic`, `content`. Pass `private=true` for gitignored store.
-  - `action="read"` — requires `topic`. Pass `private=true` for private store.
+  - `action="read"` — requires `topic`. Pass `private=true` for private store. Pass `sections: ["Rust", "TypeScript"]` to return only the listed `### Heading` blocks (case-insensitive).
   - `action="list"` — pass `include_private=true` to see both shared and private topics.
   - `action="delete"` — requires `topic`. Pass `private=true` for private store.
   - `action="remember"` — store a semantic memory. Requires `content`. Optional `title`.
@@ -232,5 +232,5 @@ The project's security profile is set in `.codescout/project.toml`:
 3. **`run_command` is already in the project root.** Never prefix with `cd /abs/path &&`. Use `cwd` for subdirectories.
 4. **Check `features_md` from `onboarding` before suggesting features.** Don't propose work that's already done.
 5. **Semantic search for "how does X work?"** Then drill into results with symbol tools.
-6. **Read `language-patterns` memory before writing or editing code.** `memory(action="read", topic="language-patterns")` contains per-language anti-patterns and correct patterns. Consult it before code changes or code review.
+6. **Read `language-patterns` memory before writing or editing code.** `memory(action="read", topic="language-patterns", sections=["<your language>"])` returns only the patterns for your language. Consult it before code changes or code review.
 7. **Symbol edits over `edit_file` for code.** `replace_symbol`, `insert_code`, `remove_symbol` for structural changes. `edit_file` for imports, literals, comments.
