@@ -6,6 +6,7 @@
 
 pub mod anchors;
 pub mod classify;
+pub mod filter;
 
 use anyhow::Result;
 use std::path::{Path, PathBuf};
