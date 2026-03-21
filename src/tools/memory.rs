@@ -363,6 +363,56 @@ async fn resolve_memory_dir(
     }
 }
 
+/// Apply `sections` filtering to memory content and produce the JSON response value.
+///
+/// - If `sections` is empty, returns `content` unchanged (no filtering).
+/// - If filtering is active and nothing matched, returns a `RecoverableError`.
+/// - Handles the inline-vs-buffer threshold; uses a `@`-prefixed synthetic path
+///   when buffering filtered content so `store_file` does not stat a missing file
+///   and evict the entry immediately.
+fn apply_sections_filter(
+    content: String,
+    topic: &str,
+    sections: &[String],
+    output_buffer: &std::sync::Arc<crate::tools::output_buffer::OutputBuffer>,
+) -> anyhow::Result<serde_json::Value> {
+    let (content, missing) = if sections.is_empty() {
+        (content, vec![])
+    } else {
+        let section_refs: Vec<&str> = sections.iter().map(String::as_str).collect();
+        let result = crate::memory::filter::filter_sections(&content, &section_refs);
+        if !result.matched {
+            let hint = if result.available.is_empty() {
+                "this memory has no ### sections to filter".to_string()
+            } else {
+                format!("available sections: {}", result.available.join(", "))
+            };
+            return Err(RecoverableError::with_hint("no sections matched", hint).into());
+        }
+        (result.content, result.missing)
+    };
+
+    let value = if crate::tools::exceeds_inline_limit(&content) {
+        let total_lines = content.lines().count();
+        // Use a `@`-prefixed synthetic path: store_file sets source_path=None for
+        // paths starting with '@', preventing get_with_refresh_flag from stat-ing
+        // a non-existent file and immediately evicting the entry.
+        let synthetic_path = format!("@memory:{topic}:filtered");
+        let file_id = output_buffer.store_file(synthetic_path, content);
+        if missing.is_empty() {
+            json!({ "file_id": file_id, "total_lines": total_lines })
+        } else {
+            json!({ "file_id": file_id, "total_lines": total_lines, "missing": missing })
+        }
+    } else if missing.is_empty() {
+        json!({ "content": content })
+    } else {
+        json!({ "content": content, "missing": missing })
+    };
+
+    Ok(value)
+}
+
 #[async_trait::async_trait]
 impl Tool for Memory {
     fn name(&self) -> &str {
@@ -480,24 +530,21 @@ impl Tool for Memory {
             "read" => {
                 let topic = super::require_str_param(&input, "topic")?;
                 let private = parse_bool_param(&input["private"]);
+                let sections: Vec<String> = input["sections"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 if private {
+                    let buf = std::sync::Arc::clone(&ctx.output_buffer);
                     ctx.agent
                         .with_project(|p| {
                             match p.private_memory.read(topic)? {
                                 Some(content) => {
-                                    if crate::tools::exceeds_inline_limit(&content) {
-                                        let total_lines = content.lines().count();
-                                        let file_path = p
-                                            .private_memory
-                                            .topic_path(topic)
-                                            .to_string_lossy()
-                                            .to_string();
-                                        let file_id =
-                                            ctx.output_buffer.store_file(file_path, content);
-                                        Ok(json!({ "file_id": file_id, "total_lines": total_lines }))
-                                    } else {
-                                        Ok(json!({ "content": content }))
-                                    }
+                                    apply_sections_filter(content, topic, &sections, &buf)
                                 }
                                 None => Err(RecoverableError::with_hint(
                                     format!("topic '{}' not found", topic),
@@ -512,21 +559,7 @@ impl Tool for Memory {
                     let store = crate::memory::MemoryStore::from_dir(memories_dir)?;
                     match store.read(topic)? {
                         Some(content) => {
-                            // Proactive buffering: same class as BUG-025. If the
-                            // memory file is large, return a @file_* ref so the
-                            // caller can navigate it by line number. Without this,
-                            // call_content wraps the large {"content":"..."} in a
-                            // 3-line @tool_* envelope, making start_line/end_line
-                            // navigation useless.
-                            if crate::tools::exceeds_inline_limit(&content) {
-                                let total_lines = content.lines().count();
-                                let file_path =
-                                    store.topic_path(topic).to_string_lossy().to_string();
-                                let file_id = ctx.output_buffer.store_file(file_path, content);
-                                Ok(json!({ "file_id": file_id, "total_lines": total_lines }))
-                            } else {
-                                Ok(json!({ "content": content }))
-                            }
+                            apply_sections_filter(content, topic, &sections, &ctx.output_buffer)
                         }
                         None => Err(RecoverableError::with_hint(
                             format!("topic '{}' not found", topic),
@@ -1622,34 +1655,75 @@ mod tests {
         let (_dir, ctx) = test_ctx_with_project().await;
 
         // Write a multi-section memory
-        let content = "# Lang Patterns\n\nIntro.\n\n### Rust\n\nRust stuff.\n\n### TypeScript\n\nTS stuff.\n";
-        Memory.call(json!({ "action": "write", "topic": "language-patterns", "content": content }), &ctx).await.unwrap();
+        let content =
+            "# Lang Patterns\n\nIntro.\n\n### Rust\n\nRust stuff.\n\n### TypeScript\n\nTS stuff.\n";
+        Memory
+            .call(
+                json!({ "action": "write", "topic": "language-patterns", "content": content }),
+                &ctx,
+            )
+            .await
+            .unwrap();
 
         // Filter to Rust only
-        let result = Memory.call(json!({ "action": "read", "topic": "language-patterns", "sections": ["Rust"] }), &ctx).await.unwrap();
+        let result = Memory
+            .call(
+                json!({ "action": "read", "topic": "language-patterns", "sections": ["Rust"] }),
+                &ctx,
+            )
+            .await
+            .unwrap();
         let text = result["content"].as_str().unwrap();
         assert!(text.contains("### Rust"), "should contain Rust section");
         assert!(text.contains("Rust stuff."));
-        assert!(!text.contains("### TypeScript"), "should not contain TypeScript");
+        assert!(
+            !text.contains("### TypeScript"),
+            "should not contain TypeScript"
+        );
         assert!(text.contains("# Lang Patterns"), "should contain preamble");
 
         // Empty sections array → full content (same as omitting the param)
-        let result = Memory.call(json!({ "action": "read", "topic": "language-patterns", "sections": [] }), &ctx).await.unwrap();
+        let result = Memory
+            .call(
+                json!({ "action": "read", "topic": "language-patterns", "sections": [] }),
+                &ctx,
+            )
+            .await
+            .unwrap();
         let text = result["content"].as_str().unwrap();
-        assert!(text.contains("### Rust") && text.contains("### TypeScript"), "empty sections = full content");
+        assert!(
+            text.contains("### Rust") && text.contains("### TypeScript"),
+            "empty sections = full content"
+        );
 
         // Unknown section → RecoverableError; hint lists available sections.
         // Tool::call returns Err(RecoverableError) directly — route_tool_error is
         // only invoked by the MCP server, not in unit tests.
-        let err = Memory.call(json!({ "action": "read", "topic": "language-patterns", "sections": ["Go"] }), &ctx).await.unwrap_err();
-        let rec = err.downcast_ref::<RecoverableError>().expect("should be RecoverableError");
+        let err = Memory
+            .call(
+                json!({ "action": "read", "topic": "language-patterns", "sections": ["Go"] }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        let rec = err
+            .downcast_ref::<RecoverableError>()
+            .expect("should be RecoverableError");
         let hint = rec.hint.as_deref().unwrap_or("");
-        assert!(hint.contains("Rust") && hint.contains("TypeScript"), "hint should list available sections: {hint}");
+        assert!(
+            hint.contains("Rust") && hint.contains("TypeScript"),
+            "hint should list available sections: {hint}"
+        );
 
         // Partial match → content + missing list
         let result = Memory.call(json!({ "action": "read", "topic": "language-patterns", "sections": ["Rust", "Go"] }), &ctx).await.unwrap();
-        assert!(result["content"].as_str().is_some(), "matched sections should be in content");
-        let missing = result["missing"].as_array().expect("missing field should be present");
+        assert!(
+            result["content"].as_str().is_some(),
+            "matched sections should be in content"
+        );
+        let missing = result["missing"]
+            .as_array()
+            .expect("missing field should be present");
         assert_eq!(missing, &[json!("Go")]);
     }
 
@@ -1659,13 +1733,24 @@ mod tests {
 
         // Write a private multi-section memory
         let content = "### Rust\n\nRust stuff.\n\n### Python\n\nPython stuff.\n";
-        Memory.call(json!({ "action": "write", "topic": "lang", "content": content, "private": true }), &ctx).await.unwrap();
+        Memory
+            .call(
+                json!({ "action": "write", "topic": "lang", "content": content, "private": true }),
+                &ctx,
+            )
+            .await
+            .unwrap();
 
         // Filtering applies in the private branch too
-        let result = Memory.call(json!({ "action": "read", "topic": "lang", "sections": ["Rust"], "private": true }), &ctx).await.unwrap();
+        let result = Memory
+            .call(
+                json!({ "action": "read", "topic": "lang", "sections": ["Rust"], "private": true }),
+                &ctx,
+            )
+            .await
+            .unwrap();
         let text = result["content"].as_str().unwrap();
         assert!(text.contains("### Rust"), "should contain Rust");
         assert!(!text.contains("### Python"), "should not contain Python");
     }
-
 }
