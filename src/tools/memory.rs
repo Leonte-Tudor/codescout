@@ -1616,4 +1616,56 @@ mod tests {
             .unwrap();
         assert!(!project_mem_path.exists(), "memory should be deleted");
     }
+
+    #[tokio::test]
+    async fn memory_read_sections_filter_integration() {
+        let (_dir, ctx) = test_ctx_with_project().await;
+
+        // Write a multi-section memory
+        let content = "# Lang Patterns\n\nIntro.\n\n### Rust\n\nRust stuff.\n\n### TypeScript\n\nTS stuff.\n";
+        Memory.call(json!({ "action": "write", "topic": "language-patterns", "content": content }), &ctx).await.unwrap();
+
+        // Filter to Rust only
+        let result = Memory.call(json!({ "action": "read", "topic": "language-patterns", "sections": ["Rust"] }), &ctx).await.unwrap();
+        let text = result["content"].as_str().unwrap();
+        assert!(text.contains("### Rust"), "should contain Rust section");
+        assert!(text.contains("Rust stuff."));
+        assert!(!text.contains("### TypeScript"), "should not contain TypeScript");
+        assert!(text.contains("# Lang Patterns"), "should contain preamble");
+
+        // Empty sections array → full content (same as omitting the param)
+        let result = Memory.call(json!({ "action": "read", "topic": "language-patterns", "sections": [] }), &ctx).await.unwrap();
+        let text = result["content"].as_str().unwrap();
+        assert!(text.contains("### Rust") && text.contains("### TypeScript"), "empty sections = full content");
+
+        // Unknown section → RecoverableError; hint lists available sections.
+        // Tool::call returns Err(RecoverableError) directly — route_tool_error is
+        // only invoked by the MCP server, not in unit tests.
+        let err = Memory.call(json!({ "action": "read", "topic": "language-patterns", "sections": ["Go"] }), &ctx).await.unwrap_err();
+        let rec = err.downcast_ref::<RecoverableError>().expect("should be RecoverableError");
+        let hint = rec.hint.as_deref().unwrap_or("");
+        assert!(hint.contains("Rust") && hint.contains("TypeScript"), "hint should list available sections: {hint}");
+
+        // Partial match → content + missing list
+        let result = Memory.call(json!({ "action": "read", "topic": "language-patterns", "sections": ["Rust", "Go"] }), &ctx).await.unwrap();
+        assert!(result["content"].as_str().is_some(), "matched sections should be in content");
+        let missing = result["missing"].as_array().expect("missing field should be present");
+        assert_eq!(missing, &[json!("Go")]);
+    }
+
+    #[tokio::test]
+    async fn memory_read_sections_filter_private_integration() {
+        let (_dir, ctx) = test_ctx_with_project().await;
+
+        // Write a private multi-section memory
+        let content = "### Rust\n\nRust stuff.\n\n### Python\n\nPython stuff.\n";
+        Memory.call(json!({ "action": "write", "topic": "lang", "content": content, "private": true }), &ctx).await.unwrap();
+
+        // Filtering applies in the private branch too
+        let result = Memory.call(json!({ "action": "read", "topic": "lang", "sections": ["Rust"], "private": true }), &ctx).await.unwrap();
+        let text = result["content"].as_str().unwrap();
+        assert!(text.contains("### Rust"), "should contain Rust");
+        assert!(!text.contains("### Python"), "should not contain Python");
+    }
+
 }
