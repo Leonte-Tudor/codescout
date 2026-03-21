@@ -103,6 +103,7 @@ Python patterns here.
         assert!(r.content.contains("### TypeScript"));
         // missing preserves caller-supplied casing
         assert_eq!(r.missing, vec!["Go"]);
+        assert!(!r.content.contains("### Python"), "unrelated section should be excluded");
     }
 
     #[test]
@@ -112,6 +113,7 @@ Python patterns here.
         assert!(r.matched);
         assert!(r.content.contains("First block."));
         assert!(r.content.contains("Second block."));
+        assert_eq!(r.available, vec!["Rust", "Rust"]);
     }
 
     #[test]
@@ -127,6 +129,7 @@ Python patterns here.
         let content = "###  Rust  \n\nContent.\n";
         let r = filter_sections(content, &["rust"]);
         assert!(r.matched, "should match despite whitespace");
+        assert!(r.content.contains("Content."), "body should be included when matched via whitespace");
         assert_eq!(r.available, vec!["Rust"]);
     }
 
