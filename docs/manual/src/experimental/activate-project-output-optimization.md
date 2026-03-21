@@ -1,0 +1,60 @@
+# activate_project Output Optimization
+
+> ⚠ Experimental — may change without notice.
+
+`activate_project` now returns a slim **orientation card** instead of the full raw config dump.
+
+## New response shape
+
+```json
+{
+  "status": "ok",
+  "project": "my-project",
+  "project_root": "/home/user/my-project",
+  "read_only": false,
+  "languages": ["rust"],
+  "index": { "status": "not_indexed", "hint": "Run index_project() to enable semantic_search." },
+  "memories": ["architecture", "conventions"],
+  "hint": "CWD: /home/user/my-project. Run project_status() for health checks and memory staleness.",
+
+  // RW only:
+  "security_profile": "default",
+  "shell_enabled": true,
+  "github_enabled": false,
+
+  // Multi-project workspaces only:
+  "workspace": [
+    { "id": "root", "root": ".", "languages": ["rust"], "depends_on": [] },
+    { "id": "web", "root": "packages/web", "languages": ["typescript"], "depends_on": ["root"] }
+  ],
+
+  // When dependencies were auto-registered:
+  "auto_registered_libs": { "count": 12, "without_source": 3 }
+}
+```
+
+## What changed
+
+| Before | After |
+|--------|-------|
+| Full `config` object (all TOML fields) | Slim orientation card |
+| Security fields always present | Security fields only in RW mode |
+| No workspace on activation | `workspace` array included when multi-project |
+| No memory list | `memories` array (topic names) |
+| No index status | `index.status` field |
+| Focus-switch returned minimal `{activated: {project_root}}` | Focus-switch returns the same full card |
+| `auto_registered_libs` was an array of objects | Now a summary `{count, without_source}` |
+
+## Hint scenarios
+
+| Scenario | Hint |
+|----------|------|
+| First activation (home project) | `"CWD: …. Run project_status() for health checks…"` |
+| Returning to home | `"Returned to home project. CWD: …. Run project_status()…"` |
+| Switching away (RO) | `"Browsing {name} (read-only). CWD: … — remember to activate_project(…)"` |
+| Switching away (RW) | `"Switched project (read-write). CWD: … — remember to activate_project(…)"` |
+
+## `project_status()` for full details
+
+The orientation card is intentionally compact. For detailed health checks, memory staleness
+scores, and drift detection, call `project_status()` after activation.

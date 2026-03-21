@@ -187,7 +187,12 @@ use the right tool. Small shortcuts compound into large context waste.
 
 ### Project & Libraries
 
-- `activate_project(path, read_only?)` — switch active project root. Required after `EnterWorktree`. Non-home projects default to `read_only: true` (write tools blocked). Pass `read_only: false` to enable writes on a non-home project.
+- `activate_project(path, read_only?)` — switch active project root. Returns an orientation
+  card: project name, languages, available memories, semantic index status, and workspace
+  siblings. RW activations additionally include security profile and shell/github toggles.
+  Non-home projects default to `read_only: true`. Pass `read_only: false` to enable writes.
+  Required after `EnterWorktree`. Use `project_status()` for detailed health checks and
+  memory staleness.
 - `project_status` — project state: config, semantic index health, usage telemetry,
   library summary. Pass `threshold` for drift scores, `window` for usage time range.
   `memory_staleness` section shows which memories have stale path anchors:

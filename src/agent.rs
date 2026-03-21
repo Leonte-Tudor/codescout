@@ -324,6 +324,90 @@ impl Agent {
             .set_focused(project_id)
     }
 
+    /// Promote a Dormant workspace project to Activated in-place.
+    /// Unlike `activate()`, this preserves the workspace topology.
+    pub async fn activate_within_workspace(
+        &self,
+        project_id: &str,
+        read_only: Option<bool>,
+    ) -> Result<()> {
+        let mut inner = self.inner.write().await;
+
+        // Clone home_root before taking a mutable reference into inner.workspace,
+        // since RwLockWriteGuard doesn't support split field borrows.
+        let home_root = inner.home_root.clone();
+
+        let ws = inner
+            .workspace
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("No active workspace"))?;
+
+        // Find the project and resolve its root
+        let relative_root = ws
+            .projects
+            .iter()
+            .find(|p| p.discovered.id == project_id)
+            .map(|p| p.discovered.relative_root.clone())
+            .ok_or_else(|| anyhow::anyhow!("Project '{}' not found in workspace", project_id))?;
+
+        let abs_root = ws.root.join(&relative_root);
+
+        // Determine read_only: explicit > home (always rw) > default (ro)
+        let is_home = home_root.as_ref().map(|h| *h == abs_root).unwrap_or(false);
+        let effective_read_only = match read_only {
+            Some(false) => false,
+            _ if is_home => false,
+            _ => true,
+        };
+
+        // If already activated, just switch focus and optionally update read_only
+        let already_activated = ws
+            .projects
+            .iter()
+            .find(|p| p.discovered.id == project_id)
+            .and_then(|p| p.as_active())
+            .is_some();
+        if already_activated {
+            ws.set_focused(project_id)?;
+            if let Some(ro) = read_only {
+                if let Some(active) = ws.focused_active_mut().and_then(|p| p.as_active_mut()) {
+                    active.read_only = ro;
+                }
+            }
+            return Ok(());
+        }
+
+        // Load config, memory, library registry for the sub-project
+        let config = ProjectConfig::load_or_default(&abs_root)?;
+        let memory = MemoryStore::open(&abs_root)?;
+        let private_memory = MemoryStore::open_private(&abs_root)?;
+        let registry_path = abs_root.join(".codescout").join("libraries.json");
+        let library_registry = LibraryRegistry::load(&registry_path).unwrap_or_default();
+
+        let active = ActiveProject {
+            root: abs_root,
+            config,
+            memory,
+            private_memory,
+            library_registry,
+            dirty_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            read_only: effective_read_only,
+        };
+
+        // Promote in-place
+        let project_mut = ws
+            .projects
+            .iter_mut()
+            .find(|p| p.discovered.id == project_id)
+            .unwrap(); // safe: found above
+        project_mut.state = ProjectState::Activated(Box::new(active));
+
+        // Switch focus
+        ws.focused = Some(project_id.to_string());
+
+        Ok(())
+    }
+
     /// Resolve root: explicit project ID > file hint > focused project.
     pub async fn resolve_root(
         &self,
@@ -374,63 +458,79 @@ impl Agent {
     }
 
     /// Get the current project status for building server instructions.
-    /// Get the current project status for building server instructions.
     pub async fn project_status(&self) -> Option<crate::prompts::ProjectStatus> {
-        let inner = self.inner.read().await;
-        let project = inner.active_project()?;
-        let memories = project.memory.list().unwrap_or_default();
-        let has_index = crate::embed::index::project_db_path(&project.root).exists();
-        let github_enabled = project.config.security.github_enabled;
+        // Phase 1: read project fields under a short-lived lock
+        let (name, path, languages, memories, has_index, github_enabled, system_prompt) = {
+            let inner = self.inner.read().await;
+            let project = inner.active_project()?;
+            let memories = project.memory.list().unwrap_or_default();
+            let has_index = crate::embed::index::project_db_path(&project.root).exists();
+            let github_enabled = project.config.security.github_enabled;
 
-        // Read system prompt: file takes precedence over TOML field
-        let prompt_file = project.root.join(".codescout").join("system-prompt.md");
-        let system_prompt = if prompt_file.exists() {
-            std::fs::read_to_string(&prompt_file).ok()
-        } else {
-            project.config.project.system_prompt.clone()
-        };
+            let prompt_file = project.root.join(".codescout").join("system-prompt.md");
+            let system_prompt = if prompt_file.exists() {
+                std::fs::read_to_string(&prompt_file).ok()
+            } else {
+                project.config.project.system_prompt.clone()
+            };
 
-        // Build workspace summary when there are multiple projects.
-        // Load workspace.toml to get depends_on per project (best-effort — fails silently).
-        let workspace = inner.workspace.as_ref().and_then(|ws| {
-            if ws.projects.len() <= 1 {
-                return None;
-            }
-            let ws_cfg: Option<crate::config::workspace::WorkspaceConfig> =
-                std::fs::read_to_string(crate::config::workspace::workspace_config_path(&ws.root))
-                    .ok()
-                    .and_then(|s| toml::from_str(&s).ok());
+            Some((
+                project.config.project.name.clone(),
+                project.root.display().to_string(),
+                project.config.project.languages.clone(),
+                memories,
+                has_index,
+                github_enabled,
+                system_prompt,
+            ))
+        }?; // lock dropped here
 
-            let summaries = ws
-                .projects
-                .iter()
-                .map(|p| {
-                    let depends_on = ws_cfg
-                        .as_ref()
-                        .and_then(|cfg| cfg.projects.iter().find(|e| e.id == p.discovered.id))
-                        .map(|e| e.depends_on.clone())
-                        .unwrap_or_default();
-                    crate::prompts::WorkspaceProjectSummary {
-                        id: p.discovered.id.clone(),
-                        root: p.discovered.relative_root.display().to_string(),
-                        languages: p.discovered.languages.clone(),
-                        depends_on,
-                    }
-                })
-                .collect();
-            Some(summaries)
-        });
+        // Phase 2: workspace summary (acquires its own read-lock)
+        let workspace = self.workspace_summary().await;
 
         Some(crate::prompts::ProjectStatus {
-            name: project.config.project.name.clone(),
-            path: project.root.display().to_string(),
-            languages: project.config.project.languages.clone(),
+            name,
+            path,
+            languages,
             memories,
             has_index,
             system_prompt,
             github_enabled,
             workspace,
         })
+    }
+
+    /// Build workspace project summaries for multi-project repos.
+    /// Returns None for single-project workspaces.
+    pub async fn workspace_summary(&self) -> Option<Vec<crate::prompts::WorkspaceProjectSummary>> {
+        let inner = self.inner.read().await;
+        let ws = inner.workspace.as_ref()?;
+        if ws.projects.len() <= 1 {
+            return None;
+        }
+        let ws_cfg: Option<crate::config::workspace::WorkspaceConfig> =
+            std::fs::read_to_string(crate::config::workspace::workspace_config_path(&ws.root))
+                .ok()
+                .and_then(|s| toml::from_str(&s).ok());
+
+        let summaries = ws
+            .projects
+            .iter()
+            .map(|p| {
+                let depends_on = ws_cfg
+                    .as_ref()
+                    .and_then(|cfg| cfg.projects.iter().find(|e| e.id == p.discovered.id))
+                    .map(|e| e.depends_on.clone())
+                    .unwrap_or_default();
+                crate::prompts::WorkspaceProjectSummary {
+                    id: p.discovered.id.clone(),
+                    root: p.discovered.relative_root.display().to_string(),
+                    languages: p.discovered.languages.clone(),
+                    depends_on,
+                }
+            })
+            .collect();
+        Some(summaries)
     }
 
     /// Get optional project root (None if no workspace is active).
@@ -1193,4 +1293,91 @@ mod tests {
             "first activated project should be writable (becomes home)"
         );
     }
+
+    #[tokio::test]
+    async fn workspace_summary_returns_projects_with_depends_on() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+
+        // Create two sub-projects
+        let sub_a = root.join("packages").join("api");
+        let sub_b = root.join("packages").join("web");
+        std::fs::create_dir_all(&sub_a).unwrap();
+        std::fs::create_dir_all(&sub_b).unwrap();
+        std::fs::write(sub_a.join("package.json"), r#"{"name":"api","scripts":{"build":"tsc"}}"#).unwrap();
+        std::fs::write(sub_b.join("package.json"), r#"{"name":"web","scripts":{"build":"tsc"}}"#).unwrap();
+
+        let agent = Agent::new(Some(root)).await.unwrap();
+        let summary = agent.workspace_summary().await;
+        assert!(summary.is_some(), "multi-project workspace should have summary");
+        let projects = summary.unwrap();
+        assert!(projects.len() >= 2, "should have at least 2 sub-projects");
+        // Each entry should have depends_on field (even if empty)
+        for p in &projects {
+            let _ = &p.depends_on;
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_summary_returns_none_for_single_project() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        let summary = agent.workspace_summary().await;
+        assert!(summary.is_none(), "single-project workspace should return None");
+    }
+
+    #[tokio::test]
+    async fn activate_within_workspace_promotes_dormant() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+
+        // Create a sub-project
+        let sub = root.join("packages").join("api");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(
+            sub.join("package.json"),
+            r#"{"name":"api","scripts":{"build":"tsc"}}"#,
+        )
+        .unwrap();
+
+        let agent = Agent::new(Some(root.clone())).await.unwrap();
+
+        // Before: sub-project is Dormant — active_project() returns None after switch_focus
+        agent.switch_focus("api").await.unwrap();
+        let is_dormant = {
+            let inner = agent.inner.read().await;
+            inner.active_project().is_none()
+        };
+        assert!(is_dormant, "sub-project should be Dormant before activate_within_workspace");
+
+        // Switch back to home first
+        agent.switch_focus(crate::workspace::ROOT_PROJECT_ID).await.unwrap();
+
+        // Now use activate_within_workspace
+        agent.activate_within_workspace("api", None).await.unwrap();
+
+        // After: with_project works
+        let name = agent
+            .with_project(|p| Ok(p.config.project.name.clone()))
+            .await
+            .unwrap();
+        assert!(!name.is_empty(), "should have loaded config for sub-project");
+
+        // Workspace topology preserved — all original projects still exist
+        let project_count = {
+            let inner = agent.inner.read().await;
+            inner.workspace.as_ref().unwrap().projects.len()
+        };
+        assert!(project_count >= 2, "workspace should still have all projects");
+    }
+
+    #[tokio::test]
+    async fn activate_within_workspace_unknown_id_errors() {
+        let dir = tempdir().unwrap();
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        let result = agent.activate_within_workspace("nonexistent", None).await;
+        assert!(result.is_err());
+    }
+
 }

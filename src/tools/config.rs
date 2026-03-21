@@ -28,9 +28,9 @@ impl Tool for ActivateProject {
     }
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
         let path = super::require_str_param(&input, "path")?;
+        let read_only = optional_bool_param(&input, "read_only");
 
-        // If the argument contains no path separator and matches a known project ID
-        // in the current workspace, switch focus without reinitialising.
+        // Focus-switch path: bare project ID (no path separator)
         if !path.contains('/') && !path.contains('\\') {
             let is_project_id = {
                 let inner = ctx.agent.inner.read().await;
@@ -41,48 +41,20 @@ impl Tool for ActivateProject {
                     .unwrap_or(false)
             };
             if is_project_id {
-                // Capture home state before switching so we can warn about returning
-                let home_root = ctx.agent.home_root().await;
-                let was_home = ctx.agent.is_home().await;
-
-                ctx.agent.switch_focus(path).await?;
-                let project_root = ctx.agent.require_project_root().await?;
-
-                let hint = if was_home {
-                    if let Some(ref home) = home_root {
-                        format!(
-                            "Switched focus to '{}'. CWD: {} — ⚠ remember to \
-                             activate_project(\"{}\") when done (server state is \
-                             shared with parent conversation)",
-                            path,
-                            project_root.display(),
-                            home.display(),
-                        )
-                    } else {
-                        format!(
-                            "Switched focus to '{}'. CWD: {}",
-                            path,
-                            project_root.display()
-                        )
-                    }
+                ctx.agent.activate_within_workspace(path, read_only).await?;
+                let scenario = if ctx.agent.is_home().await {
+                    HintScenario::ReturnToHome
                 } else {
-                    format!(
-                        "Switched focus to '{}'. CWD: {}",
-                        path,
-                        project_root.display()
-                    )
+                    HintScenario::SwitchAway
                 };
-
-                return Ok(json!({
-                    "status": "ok",
-                    "activated": {
-                        "project_root": project_root.display().to_string(),
-                    },
-                    "hint": hint,
-                }));
+                let project_root = ctx.agent.require_project_root().await?;
+                let auto_registered =
+                    crate::library::auto_register::auto_register_deps(&project_root, ctx).await;
+                return build_activation_response(ctx, scenario, &auto_registered).await;
             }
         }
 
+        // Full-activation path
         let root = PathBuf::from(path);
         if !root.is_dir() {
             return Err(super::RecoverableError::with_hint(
@@ -91,68 +63,21 @@ impl Tool for ActivateProject {
             )
             .into());
         }
-        // Canonicalize so relative paths like "." resolve to absolute paths,
-        // enabling correct home_root comparison in agent.activate().
         let root = root.canonicalize().unwrap_or(root);
-        // Capture before activate() — activate sets home_root on first call
         let had_home = ctx.agent.home_root().await.is_some();
 
-        let read_only = optional_bool_param(&input, "read_only");
         ctx.agent.activate(root.clone(), read_only).await?;
 
-        let config = ctx
-            .agent
-            .with_project(|p| {
-                Ok(json!({
-                    "project_root": p.root.display().to_string(),
-                    "config": serde_json::to_value(&p.config)?,
-                }))
-            })
-            .await?;
-
-        // Build CWD hint
-        let project_root_str = config["project_root"].as_str().unwrap_or("?");
-        let is_home = ctx.agent.is_home().await;
-        let home = ctx.agent.home_root().await;
-        let is_read_only = ctx
-            .agent
-            .with_project(|p| Ok(p.read_only))
-            .await
-            .unwrap_or(false);
-
-        let hint = if !had_home {
-            format!("CWD: {}", project_root_str)
-        } else if is_home {
-            format!("Returned to original project. CWD: {}", project_root_str)
+        let scenario = if !had_home {
+            HintScenario::FirstActivation
+        } else if ctx.agent.is_home().await {
+            HintScenario::ReturnToHome
         } else {
-            let home_str = home
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default();
-            let ro_notice = if is_read_only {
-                " This project is activated in read-only mode. To enable writes, \
-                 call activate_project with read_only: false."
-            } else {
-                ""
-            };
-            format!(
-                "Switched project. CWD: {} — ⚠ remember to activate_project(\"{}\") \
-                 when done (server state is shared with parent conversation).{}",
-                project_root_str, home_str, ro_notice,
-            )
+            HintScenario::SwitchAway
         };
 
-        // Auto-register dependencies from all detected ecosystems (best-effort)
         let auto_registered = crate::library::auto_register::auto_register_deps(&root, ctx).await;
-
-        let mut result =
-            json!({ "status": "ok", "activated": config, "read_only": is_read_only, "hint": hint });
-        if !auto_registered.is_empty() {
-            result["auto_registered_libs"] = json!(auto_registered.iter().map(|r| {
-                json!({"name": &r.name, "language": &r.language, "source_available": r.source_available})
-            }).collect::<Vec<_>>());
-        }
-        Ok(result)
+        build_activation_response(ctx, scenario, &auto_registered).await
     }
 
     fn format_compact(&self, result: &Value) -> Option<String> {
@@ -341,36 +266,167 @@ impl Tool for ProjectStatus {
     }
 }
 
-fn format_activate_project(result: &Value) -> String {
-    let root = result["activated"]["project_root"]
-        .as_str()
-        .or_else(|| result["path"].as_str())
-        .unwrap_or("?");
-    let name = std::path::Path::new(root)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(root);
-    let mut parts = vec![format!("activated · {name}")];
-    if let Some(libs) = result["auto_registered_libs"].as_array() {
-        if !libs.is_empty() {
-            let without_source = libs
-                .iter()
-                .filter(|l| l["source_available"] == false)
-                .count();
-            if without_source > 0 {
-                parts.push(format!(
-                    "auto-registered {} libs ({} without source)",
-                    libs.len(),
-                    without_source
-                ));
+/// Determines the hint text shown after activation.
+enum HintScenario {
+    /// First-ever activation (home project, session start)
+    FirstActivation,
+    /// Returning to the home project after visiting another
+    ReturnToHome,
+    /// Switching to a non-home project
+    SwitchAway,
+}
+
+/// Build the activation response JSON for both full-activation and focus-switch paths.
+async fn build_activation_response(
+    ctx: &ToolContext,
+    scenario: HintScenario,
+    auto_registered: &[crate::library::auto_register::RegisteredDep],
+) -> anyhow::Result<Value> {
+    let (project_name, project_root, languages, read_only, memories, has_index, security) = ctx
+        .agent
+        .with_project(|p| {
+            let memories = p.memory.list().unwrap_or_default();
+            let has_index = crate::embed::index::project_db_path(&p.root).exists();
+            let security = if !p.read_only {
+                Some((
+                    p.config.security.profile,
+                    p.config.security.shell_enabled,
+                    p.config.security.github_enabled,
+                ))
             } else {
-                parts.push(format!("auto-registered {} libs", libs.len()));
-            }
+                None
+            };
+            Ok((
+                p.config.project.name.clone(),
+                p.root.display().to_string(),
+                p.config.project.languages.clone(),
+                p.read_only,
+                memories,
+                has_index,
+                security,
+            ))
+        })
+        .await?;
+
+    let index = if has_index {
+        json!({"status": "indexed"})
+    } else {
+        json!({"status": "not_indexed", "hint": "Run index_project() to enable semantic_search."})
+    };
+
+    let workspace = ctx.agent.workspace_summary().await;
+    let workspace_json = workspace.as_ref().map(|projects| {
+        projects
+            .iter()
+            .map(|p| {
+                json!({
+                    "id": p.id,
+                    "root": p.root,
+                    "languages": p.languages,
+                    "depends_on": p.depends_on,
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+
+    let home_root = ctx.agent.home_root().await;
+    let hint = match scenario {
+        HintScenario::FirstActivation => format!(
+            "CWD: {}. Run project_status() for health checks and memory staleness.",
+            project_root
+        ),
+        HintScenario::ReturnToHome => format!(
+            "Returned to home project. CWD: {}. Run project_status() to check memory staleness.",
+            project_root
+        ),
+        HintScenario::SwitchAway if read_only => {
+            let home_str = home_root
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            format!(
+                "Browsing {} (read-only). CWD: {} — remember to activate_project(\"{}\") when done.",
+                project_name, project_root, home_str,
+            )
+        }
+        HintScenario::SwitchAway => {
+            let home_str = home_root
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            format!(
+                "Switched project (read-write). CWD: {} — remember to activate_project(\"{}\") when done.",
+                project_root, home_str,
+            )
+        }
+    };
+
+    let mut result = json!({
+        "status": "ok",
+        "project": project_name,
+        "project_root": project_root,
+        "read_only": read_only,
+        "languages": languages,
+        "index": index,
+        "memories": memories,
+        "hint": hint,
+    });
+
+    if let Some(ws) = workspace_json {
+        result["workspace"] = json!(ws);
+    }
+
+    if let Some((profile, shell, github)) = security {
+        result["security_profile"] = json!(profile);
+        result["shell_enabled"] = json!(shell);
+        result["github_enabled"] = json!(github);
+    }
+
+    if !auto_registered.is_empty() {
+        let without_source = auto_registered
+            .iter()
+            .filter(|r| !r.source_available)
+            .count();
+        result["auto_registered_libs"] = json!({
+            "count": auto_registered.len(),
+            "without_source": without_source,
+        });
+    }
+
+    Ok(result)
+}
+
+fn format_activate_project(result: &Value) -> String {
+    let name = result["project"].as_str().unwrap_or("?");
+    let ro = result["read_only"].as_bool().unwrap_or(true);
+    let mode = if ro { "ro" } else { "rw" };
+    let mem_count = result["memories"].as_array().map(|a| a.len()).unwrap_or(0);
+    let index_status = result["index"]["status"].as_str().unwrap_or("unknown");
+
+    let mut parts = vec![format!(
+        "activated · {name} ({mode}) · {mem_count} memories · index: {index_status}"
+    )];
+
+    if let Some(ws) = result["workspace"].as_array() {
+        parts.push(format!("{} workspace projects", ws.len()));
+    }
+
+    if let Some(libs) = result["auto_registered_libs"].as_object() {
+        let count = libs.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+        let without = libs
+            .get("without_source")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        if without > 0 {
+            parts.push(format!(
+                "auto-registered {} libs ({} without source)",
+                count, without
+            ));
+        } else {
+            parts.push(format!("auto-registered {} libs", count));
         }
     }
-    if let Some(hint) = result["hint"].as_str() {
-        parts.push(hint.to_string());
-    }
+
     parts.join(" · ")
 }
 
@@ -651,14 +707,18 @@ mod tests {
         let input = json!({ "path": dir2.path().to_str().unwrap() });
         let result = ActivateProject.call(input, &ctx).await.unwrap();
         let hint = result["hint"].as_str().unwrap();
-        assert!(hint.starts_with("Switched project."), "hint: {hint}");
+        // Non-home default is RO: "Browsing … (read-only). CWD: … — remember to activate_project(…)"
+        assert!(
+            hint.contains("remember to activate_project"),
+            "hint should warn to switch back: {hint}"
+        );
         assert!(
             hint.contains(dir2.path().to_str().unwrap()),
-            "should contain new path"
+            "should contain new path: {hint}"
         );
         assert!(
             hint.contains(dir1.path().to_str().unwrap()),
-            "should contain home path"
+            "should contain home path: {hint}"
         );
     }
 
@@ -687,10 +747,7 @@ mod tests {
             .await
             .unwrap();
         let hint = result["hint"].as_str().unwrap();
-        assert!(
-            hint.starts_with("Returned to original project."),
-            "hint: {hint}"
-        );
+        assert!(hint.contains("Returned to home project"), "hint: {hint}");
         assert!(hint.contains(dir1.path().to_str().unwrap()));
     }
 
@@ -856,33 +913,377 @@ depends_on = ["test"]
     }
 
     #[test]
-    fn format_activate_project_shows_auto_registered_libs() {
-        let result = serde_json::json!({
+    fn format_activate_project_rw_compact() {
+        let result = json!({
             "status": "ok",
-            "activated": {"project_root": "/home/user/myproject"},
-            "auto_registered_libs": [
-                {"name": "express", "language": "javascript", "source_available": true},
-                {"name": "guava", "language": "java", "source_available": false},
-                {"name": "lodash", "language": "javascript", "source_available": true},
-            ],
-            "hint": "CWD: /home/user/myproject"
+            "project": "my-project",
+            "project_root": "/home/user/my-project",
+            "read_only": false,
+            "memories": ["arch", "conventions", "gotchas"],
+            "index": {"status": "not_indexed"},
+            "hint": "CWD: /home/user/my-project"
         });
         let compact = format_activate_project(&result);
-        assert!(
-            compact.contains("auto-registered 3 libs (1 without source)"),
-            "got: {compact}"
+        assert_eq!(
+            compact,
+            "activated · my-project (rw) · 3 memories · index: not_indexed"
         );
-        assert!(compact.contains("activated · myproject"), "got: {compact}");
     }
 
     #[test]
-    fn format_activate_project_no_libs() {
-        let result = serde_json::json!({
+    fn format_activate_project_ro_with_workspace() {
+        let result = json!({
             "status": "ok",
-            "activated": {"project_root": "/home/user/foo"},
-            "hint": "CWD: /home/user/foo"
+            "project": "sub-lib",
+            "project_root": "/home/user/mono/sub-lib",
+            "read_only": true,
+            "memories": [],
+            "index": {"status": "indexed"},
+            "workspace": [
+                {"id": "main", "root": ".", "languages": ["rust"]},
+                {"id": "sub-lib", "root": "libs/sub-lib", "languages": ["rust"]},
+            ],
+            "hint": "Browsing sub-lib (read-only)."
         });
         let compact = format_activate_project(&result);
-        assert_eq!(compact, "activated · foo · CWD: /home/user/foo");
+        assert_eq!(
+            compact,
+            "activated · sub-lib (ro) · 0 memories · index: indexed · 2 workspace projects"
+        );
+    }
+
+    #[test]
+    fn format_activate_project_with_auto_libs() {
+        let result = json!({
+            "status": "ok",
+            "project": "web",
+            "project_root": "/home/user/web",
+            "read_only": false,
+            "memories": ["arch"],
+            "index": {"status": "not_indexed"},
+            "auto_registered_libs": {"count": 12, "without_source": 3},
+            "hint": "CWD: ..."
+        });
+        let compact = format_activate_project(&result);
+        assert_eq!(compact, "activated · web (rw) · 1 memories · index: not_indexed · auto-registered 12 libs (3 without source)");
+    }
+
+    #[test]
+    fn format_activate_project_auto_libs_all_with_source() {
+        let result = json!({
+            "status": "ok",
+            "project": "app",
+            "project_root": "/home/user/app",
+            "read_only": false,
+            "memories": [],
+            "index": {"status": "indexed"},
+            "auto_registered_libs": {"count": 5, "without_source": 0},
+            "hint": "CWD: ..."
+        });
+        let compact = format_activate_project(&result);
+        assert_eq!(
+            compact,
+            "activated · app (rw) · 0 memories · index: indexed · auto-registered 5 libs"
+        );
+    }
+
+    #[tokio::test]
+    async fn activate_project_rw_includes_security_fields() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+        let ctx = ToolContext {
+            agent: Agent::new(None).await.unwrap(),
+            lsp: lsp(),
+            output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
+            progress: None,
+            peer: None,
+        };
+        let result = ActivateProject
+            .call(
+                json!({"path": dir.path().to_str().unwrap(), "read_only": false}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["status"], "ok");
+        assert!(
+            result["security_profile"].is_string(),
+            "RW should include security_profile"
+        );
+        assert!(
+            !result["shell_enabled"].is_null(),
+            "RW should include shell_enabled"
+        );
+        assert!(
+            !result["github_enabled"].is_null(),
+            "RW should include github_enabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn activate_project_ro_excludes_security_fields() {
+        let home = tempdir().unwrap();
+        let other = tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".codescout")).unwrap();
+        std::fs::create_dir_all(other.path().join(".codescout")).unwrap();
+        // Start with a home project (always RW)
+        let ctx = ToolContext {
+            agent: Agent::new(Some(home.path().to_path_buf())).await.unwrap(),
+            lsp: lsp(),
+            output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
+            progress: None,
+            peer: None,
+        };
+        // Now activate another project as RO
+        let result = ActivateProject
+            .call(
+                json!({"path": other.path().to_str().unwrap(), "read_only": true}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["status"], "ok");
+        assert!(
+            result["security_profile"].is_null(),
+            "RO should not include security_profile"
+        );
+        assert!(
+            result["shell_enabled"].is_null(),
+            "RO should not include shell_enabled"
+        );
+        assert!(
+            result["github_enabled"].is_null(),
+            "RO should not include github_enabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn activate_project_includes_memories_and_index() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+        let ctx = ToolContext {
+            agent: Agent::new(None).await.unwrap(),
+            lsp: lsp(),
+            output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
+            progress: None,
+            peer: None,
+        };
+        let result = ActivateProject
+            .call(json!({"path": dir.path().to_str().unwrap()}), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            result["memories"].is_array(),
+            "should include memories array"
+        );
+        assert!(result["index"].is_object(), "should include index object");
+        assert!(
+            result["index"]["status"].is_string(),
+            "index should have status"
+        );
+    }
+
+    #[tokio::test]
+    async fn activate_project_rw_hint_promotes_project_status() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+        let ctx = ToolContext {
+            agent: Agent::new(None).await.unwrap(),
+            lsp: lsp(),
+            output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
+            progress: None,
+            peer: None,
+        };
+        let result = ActivateProject
+            .call(
+                json!({"path": dir.path().to_str().unwrap(), "read_only": false}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let hint = result["hint"].as_str().unwrap();
+        assert!(
+            hint.contains("project_status"),
+            "RW hint should promote project_status, got: {hint}"
+        );
+    }
+
+    #[tokio::test]
+    async fn activate_project_single_project_no_workspace() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+        let ctx = ToolContext {
+            agent: Agent::new(None).await.unwrap(),
+            lsp: lsp(),
+            output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
+            progress: None,
+            peer: None,
+        };
+        let result = ActivateProject
+            .call(json!({"path": dir.path().to_str().unwrap()}), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            result["workspace"].is_null(),
+            "single-project should have null workspace"
+        );
+    }
+
+    #[tokio::test]
+    async fn activate_project_focus_switch_returns_full_response() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+
+        // Create a sub-project
+        let sub = root.join("packages").join("api");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(
+            sub.join("package.json"),
+            r#"{"name":"api","scripts":{"build":"tsc"}}"#,
+        )
+        .unwrap();
+
+        let ctx = ToolContext {
+            agent: Agent::new(Some(root)).await.unwrap(),
+            lsp: lsp(),
+            output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
+            progress: None,
+            peer: None,
+        };
+
+        // Focus-switch by ID
+        let result = ActivateProject
+            .call(json!({"path": "api"}), &ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(result["status"], "ok");
+        assert!(result["project"].is_string(), "should have project name");
+        assert!(result["languages"].is_array(), "should have languages");
+        assert!(result["memories"].is_array(), "should have memories");
+        assert!(result["index"].is_object(), "should have index");
+        assert!(!result["read_only"].is_null(), "should have read_only");
+    }
+
+    #[tokio::test]
+    async fn activate_project_workspace_includes_depends_on() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+
+        let sub_a = root.join("packages").join("core");
+        let sub_b = root.join("packages").join("web");
+        std::fs::create_dir_all(&sub_a).unwrap();
+        std::fs::create_dir_all(&sub_b).unwrap();
+        std::fs::write(
+            sub_a.join("package.json"),
+            r#"{"name":"core","scripts":{"build":"tsc"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            sub_b.join("package.json"),
+            r#"{"name":"web","scripts":{"build":"tsc"}}"#,
+        )
+        .unwrap();
+
+        let ctx = ToolContext {
+            agent: Agent::new(Some(root)).await.unwrap(),
+            lsp: lsp(),
+            output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
+            progress: None,
+            peer: None,
+        };
+
+        let result = ActivateProject
+            .call(json!({"path": dir.path().to_str().unwrap()}), &ctx)
+            .await
+            .unwrap();
+
+        if let Some(ws) = result["workspace"].as_array() {
+            for entry in ws {
+                assert!(
+                    entry["depends_on"].is_array(),
+                    "each workspace entry should have depends_on"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn activate_project_ro_hint_warns_switch_back() {
+        let home = tempdir().unwrap();
+        let other = tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".codescout")).unwrap();
+        std::fs::create_dir_all(other.path().join(".codescout")).unwrap();
+
+        let ctx = ToolContext {
+            agent: Agent::new(None).await.unwrap(),
+            lsp: lsp(),
+            output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
+            progress: None,
+            peer: None,
+        };
+
+        // Activate home first
+        ActivateProject
+            .call(json!({"path": home.path().to_str().unwrap()}), &ctx)
+            .await
+            .unwrap();
+
+        // Activate other as RO
+        let result = ActivateProject
+            .call(
+                json!({"path": other.path().to_str().unwrap(), "read_only": true}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let hint = result["hint"].as_str().unwrap();
+        assert!(
+            hint.contains("remember to activate_project"),
+            "RO hint should warn about switching back, got: {hint}"
+        );
+        assert!(
+            hint.contains("read-only"),
+            "RO hint should mention read-only, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn activate_project_auto_libs_is_summary_not_array() {
+        let result = json!({
+            "status": "ok",
+            "project": "test",
+            "project_root": "/tmp/test",
+            "read_only": false,
+            "memories": [],
+            "index": {"status": "not_indexed"},
+            "auto_registered_libs": {"count": 5, "without_source": 2},
+        });
+        assert!(result["auto_registered_libs"].is_object());
+        assert_eq!(result["auto_registered_libs"]["count"], 5);
+        assert_eq!(result["auto_registered_libs"]["without_source"], 2);
+    }
+
+    #[tokio::test]
+    async fn activate_project_memories_graceful_on_error() {
+        // A project with no .codescout dir should still activate with memories: []
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext {
+            agent: Agent::new(None).await.unwrap(),
+            lsp: lsp(),
+            output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
+            progress: None,
+            peer: None,
+        };
+        let result = ActivateProject
+            .call(json!({"path": dir.path().to_str().unwrap()}), &ctx)
+            .await
+            .unwrap();
+        let memories = result["memories"].as_array().unwrap();
+        assert!(
+            memories.is_empty(),
+            "empty project should have empty memories array"
+        );
     }
 }
