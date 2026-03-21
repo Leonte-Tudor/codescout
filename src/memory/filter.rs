@@ -24,7 +24,55 @@ pub struct FilterResult {
 /// decide whether to return content or a `RecoverableError`.
 pub fn filter_sections(content: &str, sections: &[&str]) -> FilterResult {
     debug_assert!(!sections.is_empty(), "precondition: sections must be non-empty");
-    todo!()
+
+    // --- Parse content into preamble + blocks ---
+    // Each block: (normalized_heading, Vec of raw lines including the ### line)
+    let mut preamble_lines: Vec<&str> = Vec::new();
+    let mut blocks: Vec<(String, Vec<&str>)> = Vec::new();
+    let mut in_preamble = true;
+
+    for line in content.lines() {
+        if line.starts_with("### ") {
+            // Normalize: strip "### " prefix, trim leading+trailing whitespace.
+            // The raw line is preserved in the block's line vec for output.
+            let normalized = line["### ".len()..].trim().to_string();
+            blocks.push((normalized, vec![line]));
+            in_preamble = false;
+        } else if in_preamble {
+            preamble_lines.push(line);
+        } else if let Some(block) = blocks.last_mut() {
+            block.1.push(line);
+        }
+    }
+
+    // available: normalized heading text of every block, in file order
+    let available: Vec<String> = blocks.iter().map(|(h, _)| h.clone()).collect();
+
+    // missing: requested sections with no match, in request order, caller casing
+    let missing: Vec<String> = sections
+        .iter()
+        .filter(|&&s| !blocks.iter().any(|(h, _)| h.eq_ignore_ascii_case(s)))
+        .map(|&s| s.to_string())
+        .collect();
+
+    // matched_lines: all lines from matching blocks, in file order
+    let matched_lines: Vec<&str> = blocks
+        .iter()
+        .filter(|(h, _)| sections.iter().any(|s| s.eq_ignore_ascii_case(h)))
+        .flat_map(|(_, lines)| lines.iter().copied())
+        .collect();
+
+    let matched = !matched_lines.is_empty();
+
+    // Reconstruct output: preamble + matched section lines, joined by "\n".
+    // Append "\n" if the original content ended with a newline (lines() strips it).
+    let output: Vec<&str> = preamble_lines.iter().copied().chain(matched_lines).collect();
+    let mut result_content = output.join("\n");
+    if content.ends_with('\n') {
+        result_content.push('\n');
+    }
+
+    FilterResult { content: result_content, matched, missing, available }
 }
 
 #[cfg(test)]
