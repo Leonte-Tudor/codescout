@@ -387,6 +387,11 @@ impl Tool for Memory {
                     "type": "string",
                     "description": "For read/write/delete/refresh_anchors. Path-like key, e.g. 'architecture'."
                 },
+                "sections": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "For read. Return only the listed ### headings (case-insensitive). E.g. [\"Rust\", \"TypeScript\"]. Omit to return full content."
+                },
                 "content": { "type": "string", "description": "For write or remember." },
                 "private": { "type": "boolean", "default": false, "description": "Use gitignored private store." },
                 "include_private": { "type": "boolean", "default": false, "description": "For list: include private topics." },
