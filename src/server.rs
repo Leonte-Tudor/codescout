@@ -358,6 +358,44 @@ pub(crate) async fn shutdown_signal() -> &'static str {
     }
 }
 
+/// Wraps `tokio::io::Stdin` to absorb transient `WouldBlock`/`EAGAIN` errors.
+///
+/// rmcp's `AsyncRwTransport::receive()` converts *any* IO error into `None`
+/// (stream closed), causing the service loop to exit with `QuitReason::Closed`.
+/// A transient `EAGAIN` (os error 11) on stdin — observed when Claude Code's
+/// Node.js runtime temporarily sets the pipe to non-blocking mode — kills the
+/// entire MCP server.
+///
+/// This wrapper intercepts `WouldBlock` at the `AsyncRead` level and converts
+/// it to `Poll::Pending`, which is the correct async semantic: "not ready yet,
+/// wake me when data arrives." This prevents rmcp from ever seeing the error.
+struct ResilientStdin {
+    inner: tokio::io::Stdin,
+}
+
+impl ResilientStdin {
+    fn new(stdin: tokio::io::Stdin) -> Self {
+        Self { inner: stdin }
+    }
+}
+
+impl tokio::io::AsyncRead for ResilientStdin {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match std::pin::Pin::new(&mut self.inner).poll_read(cx, buf) {
+            std::task::Poll::Ready(Err(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                tracing::warn!("stdin EAGAIN intercepted — converting to Pending");
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+            other => other,
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     project: Option<PathBuf>,
@@ -437,8 +475,9 @@ pub async fn run(
             }
             tracing::info!("codescout MCP server ready (stdio)");
             let server = CodeScoutServer::from_parts(agent, lsp.clone()).await;
+            let (stdin, stdout) = rmcp::transport::stdio();
             let service = server
-                .serve(rmcp::transport::stdio())
+                .serve((ResilientStdin::new(stdin), stdout))
                 .await
                 .map_err(|e| anyhow::anyhow!("MCP server error: {}", e))?;
 
@@ -904,4 +943,71 @@ mod tests {
             .find_map(|c| c.as_text().map(|t| t.text.clone()))
             .unwrap_or_default()
     }
+}
+
+// ── ResilientStdin ────────────────────────────────────────────────────
+
+/// A mock reader that returns WouldBlock on the first poll, then data.
+#[allow(dead_code)]
+struct WouldBlockThenData {
+    returned_eagain: bool,
+}
+
+impl tokio::io::AsyncRead for WouldBlockThenData {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if !self.returned_eagain {
+            self.returned_eagain = true;
+            std::task::Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "EAGAIN",
+            )))
+        } else {
+            buf.put_slice(b"hello");
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+}
+
+/// Verifies that WouldBlock from the inner reader is converted to Pending,
+/// not surfaced as an error that would kill the rmcp service loop.
+#[tokio::test]
+async fn resilient_stdin_absorbs_would_block() {
+    use tokio::io::AsyncReadExt;
+
+    // We can't wrap WouldBlockThenData in ResilientStdin directly since
+    // ResilientStdin is hard-coded to tokio::io::Stdin.  Instead, test
+    // the same logic inline with a generic version.
+    struct ResilientReader<R> {
+        inner: R,
+    }
+    impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for ResilientReader<R> {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            match std::pin::Pin::new(&mut self.inner).poll_read(cx, buf) {
+                std::task::Poll::Ready(Err(ref e))
+                    if e.kind() == std::io::ErrorKind::WouldBlock =>
+                {
+                    cx.waker().wake_by_ref();
+                    std::task::Poll::Pending
+                }
+                other => other,
+            }
+        }
+    }
+
+    let mock = WouldBlockThenData {
+        returned_eagain: false,
+    };
+    let mut reader = ResilientReader { inner: mock };
+    let mut buf = [0u8; 16];
+    // This would fail with WouldBlock if the wrapper didn't absorb it.
+    let n = reader.read(&mut buf).await.expect("should not error");
+    assert_eq!(&buf[..n], b"hello");
 }

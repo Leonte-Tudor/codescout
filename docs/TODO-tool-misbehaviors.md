@@ -120,6 +120,41 @@ N}` — a small JSON that `call_content()` won't re-buffer as `@tool_*`. Regress
 
 ---
 
+### BUG-033 — MCP server killed by transient `EAGAIN` on stdin
+
+**Date:** 2026-03-21
+**Severity:** High
+**Status:** Fixed (workaround)
+
+**What happened:**
+During a session on the `deployment` project, two back-to-back `run_command` calls
+(`vercel logs | head`, `vercel inspect`) timed out (30s, 15s). After the second
+timeout+killpg cycle, the codescout MCP server exited cleanly with
+`QuitReason::Closed`. The diagnostic log showed:
+
+```
+ERROR rmcp::transport::async_rw: Error reading from stream: io error Resource temporarily unavailable (os error 11)
+INFO  rmcp::service: input stream terminated
+```
+
+**Root cause:**
+rmcp's `AsyncRwTransport::receive()` converts *any* IO error (including transient
+`EAGAIN`/`WouldBlock`) to `None`, which the service loop interprets as "input stream
+closed" → server exits. `EAGAIN` appeared on stdin likely because Claude Code's
+Node.js runtime temporarily set the pipe to non-blocking mode under I/O pressure.
+
+**Fix applied:**
+`ResilientStdin` wrapper in `src/server.rs` intercepts `WouldBlock` at the
+`AsyncRead` layer and converts it to `Poll::Pending` (correct async semantic).
+Test: `resilient_stdin_absorbs_would_block`.
+
+**Upstream:** Consider filing an issue with rmcp — `receive()` should distinguish
+transient errors (`WouldBlock`, `Interrupted`) from fatal ones (`BrokenPipe`, EOF).
+
+**Reproduction hint:**
+Run two long-running commands via `run_command` that both time out in quick
+succession. The killpg + I/O pressure can trigger `EAGAIN` on stdin.
+
 ## Template for new entries
 
 ```
