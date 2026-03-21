@@ -74,20 +74,53 @@ async fn resolve_write_path(ctx: &ToolContext, relative_path: &str) -> anyhow::R
 
 /// Resolve which library directories to search for a given scope.
 /// Returns `(library_name, absolute_root_path)` pairs.
+/// For `Scope::Library(name)`, returns a `RecoverableError` if the library
+/// lacks local source code. Other scopes silently skip source-unavailable entries.
 async fn resolve_library_roots(
     scope: &crate::library::scope::Scope,
     agent: &crate::agent::Agent,
-) -> Vec<(String, PathBuf)> {
+) -> anyhow::Result<Vec<(String, PathBuf)>> {
     let registry = match agent.library_registry().await {
         Some(r) => r,
-        None => return vec![],
+        None => return Ok(vec![]),
     };
-    registry
+
+    let matched: Vec<&crate::library::registry::LibraryEntry> = registry
         .all()
         .iter()
         .filter(|entry| scope.includes_library(&entry.name))
+        .collect();
+
+    // Only check source_available for explicit single-library scope.
+    // Scope::All and Scope::Libraries are used for classification (find_references)
+    // and must silently skip source-unavailable entries rather than erroring.
+    if let crate::library::scope::Scope::Library(_) = scope {
+        let unavailable: Vec<&str> = matched
+            .iter()
+            .filter(|e| !e.source_available)
+            .map(|e| e.name.as_str())
+            .collect();
+        if !unavailable.is_empty() {
+            let names = unavailable.join(", ");
+            return Err(super::RecoverableError::with_hint(
+                format!(
+                    "Library source code is not available locally for: {}",
+                    names,
+                ),
+                "To browse library source, download it using the project's build tool \
+                 (e.g. ./gradlew dependencies, mvn dependency:sources), then call \
+                 register_library(name, \"/path/to/source\", language) and retry.",
+            )
+            .into());
+        }
+    }
+
+    // Filter out source-unavailable entries for non-error scopes
+    Ok(matched
+        .iter()
+        .filter(|entry| entry.source_available)
         .map(|entry| (entry.name.clone(), entry.path.clone()))
-        .collect()
+        .collect())
 }
 
 /// Format a file path relative to a library root for display.
@@ -674,7 +707,7 @@ impl Tool for ListSymbols {
             }
 
             // Walk library directories when scope includes libraries
-            let lib_roots = resolve_library_roots(&scope, &ctx.agent).await;
+            let lib_roots = resolve_library_roots(&scope, &ctx.agent).await?;
             for (lib_name, lib_root) in &lib_roots {
                 // Library directories are external — don't apply the project's
                 // .gitignore (e.g. .venv/ would hide pip-installed packages).
@@ -1065,7 +1098,7 @@ impl Tool for FindSymbol {
             }
 
             // Search library directories when scope includes them
-            let lib_roots = resolve_library_roots(&scope, &ctx.agent).await;
+            let lib_roots = resolve_library_roots(&scope, &ctx.agent).await?;
             for (lib_name, lib_root) in &lib_roots {
                 if !lib_root.exists() {
                     continue;
@@ -1240,7 +1273,8 @@ impl Tool for FindReferences {
             .await?;
 
         // Resolve all library roots for classification (Scope::All to get every lib).
-        let lib_roots = resolve_library_roots(&crate::library::scope::Scope::All, &ctx.agent).await;
+        let lib_roots =
+            resolve_library_roots(&crate::library::scope::Scope::All, &ctx.agent).await?;
 
         // Filter out references inside build-artifact directories. LSP servers often
         // index generated files (target/, node_modules/, dist/, …) and including them
@@ -2984,6 +3018,7 @@ async fn tag_external_path(
                 discovered.path,
                 discovered.language,
                 crate::library::registry::DiscoveryMethod::LspFollowThrough,
+                true,
             );
             // Best-effort save — don't fail the tool call if this fails
             let registry_path = project.root.join(".codescout").join("libraries.json");
@@ -7044,7 +7079,9 @@ fn foo() {
     async fn resolve_library_roots_empty_when_no_libraries() {
         let dir = tempdir().unwrap();
         let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
-        let roots = resolve_library_roots(&crate::library::scope::Scope::Libraries, &agent).await;
+        let roots = resolve_library_roots(&crate::library::scope::Scope::Libraries, &agent)
+            .await
+            .unwrap();
         assert!(roots.is_empty());
     }
 
@@ -7061,9 +7098,12 @@ fn foo() {
                 lib_dir.path().to_path_buf(),
                 "rust".to_string(),
                 crate::library::registry::DiscoveryMethod::Manual,
+                true,
             );
         }
-        let roots = resolve_library_roots(&crate::library::scope::Scope::Libraries, &agent).await;
+        let roots = resolve_library_roots(&crate::library::scope::Scope::Libraries, &agent)
+            .await
+            .unwrap();
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].0, "mylib");
         assert_eq!(roots[0].1, lib_dir.path().to_path_buf());
@@ -7083,19 +7123,22 @@ fn foo() {
                 lib1.path().to_path_buf(),
                 "rust".to_string(),
                 crate::library::registry::DiscoveryMethod::Manual,
+                true,
             );
             project.library_registry.register(
                 "beta".to_string(),
                 lib2.path().to_path_buf(),
                 "rust".to_string(),
                 crate::library::registry::DiscoveryMethod::Manual,
+                true,
             );
         }
         let roots = resolve_library_roots(
             &crate::library::scope::Scope::Library("alpha".to_string()),
             &agent,
         )
-        .await;
+        .await
+        .unwrap();
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].0, "alpha");
     }
@@ -7113,9 +7156,12 @@ fn foo() {
                 lib_dir.path().to_path_buf(),
                 "rust".to_string(),
                 crate::library::registry::DiscoveryMethod::Manual,
+                true,
             );
         }
-        let roots = resolve_library_roots(&crate::library::scope::Scope::Project, &agent).await;
+        let roots = resolve_library_roots(&crate::library::scope::Scope::Project, &agent)
+            .await
+            .unwrap();
         assert!(roots.is_empty());
     }
 
@@ -7133,16 +7179,68 @@ fn foo() {
                 lib1.path().to_path_buf(),
                 "rust".to_string(),
                 crate::library::registry::DiscoveryMethod::Manual,
+                true,
             );
             project.library_registry.register(
                 "beta".to_string(),
                 lib2.path().to_path_buf(),
                 "python".to_string(),
                 crate::library::registry::DiscoveryMethod::Manual,
+                true,
             );
         }
-        let roots = resolve_library_roots(&crate::library::scope::Scope::All, &agent).await;
+        let roots = resolve_library_roots(&crate::library::scope::Scope::All, &agent)
+            .await
+            .unwrap();
         assert_eq!(roots.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn resolve_library_roots_excludes_source_unavailable() {
+        let dir = tempdir().unwrap();
+        let lib_dir = tempdir().unwrap();
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        {
+            let mut inner = agent.inner.write().await;
+            let project = inner.active_project_mut().unwrap();
+            project.library_registry.register(
+                "available".to_string(),
+                lib_dir.path().to_path_buf(),
+                "rust".to_string(),
+                crate::library::registry::DiscoveryMethod::Manual,
+                true,
+            );
+            project.library_registry.register(
+                "unavailable".to_string(),
+                PathBuf::new(),
+                "java".to_string(),
+                crate::library::registry::DiscoveryMethod::ManifestScan,
+                false,
+            );
+        }
+        // Explicit library scope for unavailable lib should error
+        let result = resolve_library_roots(
+            &crate::library::scope::Scope::Library("unavailable".to_string()),
+            &agent,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "should return error for source-unavailable library"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("source code is not available"), "error: {err}");
+
+        // All scope should silently skip unavailable
+        let roots = resolve_library_roots(&crate::library::scope::Scope::All, &agent)
+            .await
+            .unwrap();
+        assert_eq!(
+            roots.len(),
+            1,
+            "All scope should only return available libs"
+        );
+        assert_eq!(roots[0].0, "available");
     }
 
     // ── format_library_path ──────────────────────────────────────────────────
@@ -7225,6 +7323,7 @@ fn foo() {
                 lib_dir.path().to_path_buf(),
                 "rust".to_string(),
                 crate::library::registry::DiscoveryMethod::Manual,
+                true,
             );
         }
 
@@ -7265,6 +7364,7 @@ fn foo() {
                 lib_dir.path().to_path_buf(),
                 "rust".to_string(),
                 crate::library::registry::DiscoveryMethod::Manual,
+                true,
             );
         }
 
@@ -7307,6 +7407,7 @@ fn foo() {
                 lib_dir.path().to_path_buf(),
                 "rust".to_string(),
                 crate::library::registry::DiscoveryMethod::Manual,
+                true,
             );
         }
 
@@ -7353,6 +7454,7 @@ fn foo() {
                 lib_dir.path().to_path_buf(),
                 "rust".to_string(),
                 crate::library::registry::DiscoveryMethod::Manual,
+                true,
             );
         }
 
@@ -7401,6 +7503,7 @@ fn foo() {
                 lib_dir.path().to_path_buf(),
                 "rust".to_string(),
                 crate::library::registry::DiscoveryMethod::Manual,
+                true,
             );
         }
 

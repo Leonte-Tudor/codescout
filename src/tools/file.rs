@@ -3783,6 +3783,7 @@ mod tests {
             lib_dir.path().to_path_buf(),
             "rust".to_string(),
             DiscoveryMethod::Manual,
+            true,
         );
         let registry_path = proj_dir.path().join(".codescout/libraries.json");
         registry.save(&registry_path).unwrap();

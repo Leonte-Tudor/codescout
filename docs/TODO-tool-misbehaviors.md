@@ -22,7 +22,7 @@ capture: what you did, what you expected, what actually happened, and a reproduc
 
 **Date:** 2026-03-03
 **Severity:** High — leaves files in inconsistent partial state; server exit requires `/mcp` restart
-**Status:** 🔍 ROOT CAUSE IDENTIFIED (2026-03-03) — two independent issues, one fixable
+**Status:** ✅ Crash fixed (rmcp 1.2.0); ⚠ partial-state remains by design
 
 **What happened:**
 Dispatched two `edit_file` calls in the same parallel response (targeting two different source
@@ -69,11 +69,13 @@ unexpected response for an already-cancelled request ID, which may cause it to c
 connection (a Claude Code MCP client bug, not ours).
 
 **Fix:**
-- **Operational** (immediate): never dispatch parallel write tool calls. Always finish one
-  `edit_file` / `replace_symbol` / `insert_code` / `create_file` before starting the next.
-- **rmcp limitation**: rmcp 0.1.5 does not suppress responses for cancelled requests.
-  This cannot be fixed in our code without forking rmcp. Upgrading rmcp if a newer version
-  respects cancellation tokens in the task-spawn path would help.
+- **Issue B — RESOLVED (rmcp 1.2.0):** rmcp 1.2.0 architecturally fixed the cancellation
+  race. Spawned tasks now write to an internal `mpsc` channel, not directly to stdout. The
+  main event loop gates all transport writes, preventing cancelled responses from reaching
+  Claude Code. The server no longer crashes on denied parallel calls.
+- **Issue A — Partial state remains by design:** Two independent parallel writes still have
+  no transaction semantics. If one is denied, files end up half-applied. The operational
+  guidance still applies: never dispatch parallel write tool calls.
 - **Defence-in-depth** (applied): `[profile.release] panic = "abort"` in Cargo.toml ensures
   any future panic kills the process cleanly rather than leaving a zombie server.
 
@@ -552,7 +554,7 @@ the re-index to complete before returning line numbers for the second operation.
 
 **Date:** 2026-03-16
 **Severity:** Low — wasteful tokens, no data corruption
-**Status:** 🔍 ROOT CAUSE IDENTIFIED
+**Status:** ✅ Fixed — multi-ecosystem auto-registration implemented
 
 **What happened:**
 When exploring rmcp's elicitation API, the agent used raw `run_command("grep ...")` on

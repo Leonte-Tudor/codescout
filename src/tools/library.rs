@@ -52,6 +52,7 @@ impl Tool for ListLibraries {
                     "language": entry.language,
                     "discovered_via": entry.discovered_via,
                     "indexed": entry.indexed,
+                    "source_available": entry.source_available,
                 })
             })
             .collect();
@@ -154,6 +155,7 @@ impl Tool for RegisterLibrary {
                 lib_path.clone(),
                 language.clone(),
                 crate::library::registry::DiscoveryMethod::Manual,
+                true,
             );
             let registry_path = project.root.join(".codescout").join("libraries.json");
             project.library_registry.save(&registry_path)?;
@@ -262,6 +264,7 @@ mod tests {
                 PathBuf::from("/tmp/serde"),
                 "rust".into(),
                 crate::library::registry::DiscoveryMethod::Manual,
+                true,
             );
         }
         let tool = ListLibraries;

@@ -142,13 +142,15 @@ impl Tool for ActivateProject {
             )
         };
 
-        // Auto-register Cargo dependencies (best-effort, never fails activation)
-        let auto_registered = auto_register_cargo_deps(&root, ctx).await;
+        // Auto-register dependencies from all detected ecosystems (best-effort)
+        let auto_registered = crate::library::auto_register::auto_register_deps(&root, ctx).await;
 
         let mut result =
             json!({ "status": "ok", "activated": config, "read_only": is_read_only, "hint": hint });
         if !auto_registered.is_empty() {
-            result["auto_registered_libs"] = json!(auto_registered);
+            result["auto_registered_libs"] = json!(auto_registered.iter().map(|r| {
+                json!({"name": &r.name, "language": &r.language, "source_available": r.source_available})
+            }).collect::<Vec<_>>());
         }
         Ok(result)
     }
@@ -348,11 +350,28 @@ fn format_activate_project(result: &Value) -> String {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(root);
-    if let Some(hint) = result["hint"].as_str() {
-        format!("activated · {name} · {hint}")
-    } else {
-        format!("activated · {name}")
+    let mut parts = vec![format!("activated · {name}")];
+    if let Some(libs) = result["auto_registered_libs"].as_array() {
+        if !libs.is_empty() {
+            let without_source = libs
+                .iter()
+                .filter(|l| l["source_available"] == false)
+                .count();
+            if without_source > 0 {
+                parts.push(format!(
+                    "auto-registered {} libs ({} without source)",
+                    libs.len(),
+                    without_source
+                ));
+            } else {
+                parts.push(format!("auto-registered {} libs", libs.len()));
+            }
+        }
     }
+    if let Some(hint) = result["hint"].as_str() {
+        parts.push(hint.to_string());
+    }
+    parts.join(" · ")
 }
 
 fn format_project_status(result: &Value) -> String {
@@ -376,177 +395,6 @@ fn format_project_status(result: &Value) -> String {
         _ => "index:none".to_string(),
     };
     format!("status · {name} · {index_str}")
-}
-
-/// Auto-register direct Cargo dependencies found in `~/.cargo/registry`.
-/// Returns names of crates that were newly registered.
-/// Never propagates errors — this is best-effort and must not block activation.
-async fn auto_register_cargo_deps(
-    project_root: &std::path::Path,
-    ctx: &ToolContext,
-) -> Vec<String> {
-    let cargo_toml = project_root.join("Cargo.toml");
-    if !cargo_toml.exists() {
-        return vec![];
-    }
-
-    let content = match std::fs::read_to_string(&cargo_toml) {
-        Ok(s) => s,
-        Err(_) => return vec![],
-    };
-
-    let dep_names = parse_cargo_dep_names(&content);
-    if dep_names.is_empty() {
-        return vec![];
-    }
-
-    // Find the cargo registry src dir: ~/.cargo/registry/src/index.crates.io-*/
-    let home = match crate::platform::home_dir() {
-        Some(h) => h,
-        None => return vec![],
-    };
-    let registry_src = home.join(".cargo").join("registry").join("src");
-    if !registry_src.exists() {
-        return vec![];
-    }
-
-    // Collect index dirs (e.g. index.crates.io-6f17d22bba15001f)
-    let index_dirs: Vec<_> = match std::fs::read_dir(&registry_src) {
-        Ok(rd) => rd
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-            .collect(),
-        Err(_) => return vec![],
-    };
-
-    let mut newly_registered = vec![];
-
-    for dep_name in &dep_names {
-        // Skip if already registered
-        let already = ctx
-            .agent
-            .with_project(|p| Ok(p.library_registry.lookup(dep_name).is_some()))
-            .await
-            .unwrap_or(true);
-        if already {
-            continue;
-        }
-
-        // Find highest-version dir matching DEPNAME-VERSION in any index dir
-        // Crate dirs are named like "serde-1.0.197" — match by prefix "serde-"
-        let crate_dir = find_cargo_crate_dir(&index_dirs, dep_name);
-        let crate_path = match crate_dir {
-            Some(p) => p,
-            None => continue,
-        };
-
-        // Register it — use write lock so we can mutate the registry
-        let registered: anyhow::Result<bool> = async {
-            let mut inner = ctx.agent.inner.write().await;
-            let project = inner
-                .active_project_mut()
-                .ok_or_else(|| anyhow::anyhow!("no active project"))?;
-            project.library_registry.register(
-                dep_name.clone(),
-                crate_path.clone(),
-                "rust".to_string(),
-                crate::library::registry::DiscoveryMethod::Manual,
-            );
-            let registry_path = project.root.join(".codescout").join("libraries.json");
-            project.library_registry.save(&registry_path)?;
-            Ok(true)
-        }
-        .await;
-
-        if registered.unwrap_or(false) {
-            newly_registered.push(dep_name.clone());
-        }
-    }
-
-    newly_registered
-}
-
-/// Parse direct dependency names from Cargo.toml content.
-/// Handles both `name = "version"` and `name = { version = "..." }` forms.
-/// Skips `[dev-dependencies]` and `[build-dependencies]`.
-fn parse_cargo_dep_names(toml: &str) -> Vec<String> {
-    let mut names = vec![];
-    let mut in_deps = false;
-
-    for line in toml.lines() {
-        let trimmed = line.trim();
-
-        // Section header
-        if trimmed.starts_with('[') {
-            // [dependencies] or [dependencies.foo] but NOT [dev-dependencies] etc.
-            in_deps = trimmed == "[dependencies]"
-                || trimmed.starts_with("[dependencies.")
-                || trimmed.starts_with("[workspace.dependencies");
-            continue;
-        }
-
-        if !in_deps {
-            continue;
-        }
-
-        // Skip comments and empty lines
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        // Extract the key (dep name) from lines like:
-        //   serde = "1.0"
-        //   serde = { version = "1.0", features = [...] }
-        //   serde.workspace = true
-        if let Some(eq_pos) = trimmed.find('=') {
-            let key = trimmed[..eq_pos].trim();
-            // Strip any dotted suffix (e.g. "serde.workspace" → "serde")
-            let base_name = key.split('.').next().unwrap_or(key);
-            // Normalize hyphens/underscores — Cargo treats them as equivalent
-            let normalized = base_name.replace('-', "_");
-            if !normalized.is_empty() && !names.contains(&normalized) {
-                names.push(normalized);
-            }
-        }
-    }
-
-    names
-}
-
-/// Find the source directory for a crate in the cargo registry index dirs.
-/// Prefers the highest version when multiple versions exist.
-fn find_cargo_crate_dir(
-    index_dirs: &[std::path::PathBuf],
-    crate_name: &str,
-) -> Option<std::path::PathBuf> {
-    // Cargo normalizes `-` to `_` in dir names too — search for both
-    let prefix_hyphen = format!("{}-", crate_name.replace('_', "-"));
-    let prefix_under = format!("{}-", crate_name.replace('-', "_"));
-
-    let mut candidates: Vec<std::path::PathBuf> = vec![];
-
-    for idx_dir in index_dirs {
-        if let Ok(rd) = std::fs::read_dir(idx_dir) {
-            for entry in rd.filter_map(|e| e.ok()) {
-                let fname = entry.file_name();
-                let name = fname.to_string_lossy();
-                if (name.starts_with(&prefix_hyphen) || name.starts_with(&prefix_under))
-                    && entry.path().is_dir()
-                {
-                    candidates.push(entry.path());
-                }
-            }
-        }
-    }
-
-    if candidates.is_empty() {
-        return None;
-    }
-
-    // Pick the lexicographically largest (roughly highest version)
-    candidates.sort();
-    candidates.into_iter().next_back()
 }
 
 #[cfg(test)]
@@ -1008,92 +856,33 @@ depends_on = ["test"]
     }
 
     #[test]
-    fn parse_cargo_dep_names_basic() {
-        let toml = r#"
-[package]
-name = "foo"
-
-[dependencies]
-serde = "1.0"
-tokio = { version = "1", features = ["full"] }
-anyhow = "1"
-
-[dev-dependencies]
-tempfile = "3"
-
-[build-dependencies]
-build_script = "0.1"
-"#;
-        let names = parse_cargo_dep_names(toml);
-        // Direct deps present
-        assert!(names.contains(&"serde".to_string()));
-        assert!(names.contains(&"tokio".to_string()));
-        assert!(names.contains(&"anyhow".to_string()));
-        // dev-deps and build-deps must NOT be included
-        assert!(!names.contains(&"tempfile".to_string()));
-        assert!(!names.contains(&"build_script".to_string()));
+    fn format_activate_project_shows_auto_registered_libs() {
+        let result = serde_json::json!({
+            "status": "ok",
+            "activated": {"project_root": "/home/user/myproject"},
+            "auto_registered_libs": [
+                {"name": "express", "language": "javascript", "source_available": true},
+                {"name": "guava", "language": "java", "source_available": false},
+                {"name": "lodash", "language": "javascript", "source_available": true},
+            ],
+            "hint": "CWD: /home/user/myproject"
+        });
+        let compact = format_activate_project(&result);
+        assert!(
+            compact.contains("auto-registered 3 libs (1 without source)"),
+            "got: {compact}"
+        );
+        assert!(compact.contains("activated · myproject"), "got: {compact}");
     }
 
     #[test]
-    fn parse_cargo_dep_names_normalises_hyphens() {
-        let toml = r#"
-[dependencies]
-my-crate = "1.0"
-"#;
-        let names = parse_cargo_dep_names(toml);
-        assert!(
-            names.contains(&"my_crate".to_string()),
-            "hyphens should be normalised to underscores"
-        );
-    }
-
-    #[tokio::test]
-    async fn activate_project_auto_registers_cargo_dependencies() {
-        let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
-
-        // Write a minimal Cargo.toml with one dep that lives in a fake registry
-        let fake_registry_src = dir.path().join("fake_registry");
-        let fake_crate_dir = fake_registry_src.join("mylib-1.2.3");
-        std::fs::create_dir_all(&fake_crate_dir).unwrap();
-
-        // Patch HOME so auto_register_cargo_deps uses our fake registry
-        // We use a custom Cargo.toml that points to a path dep to avoid needing
-        // the real ~/.cargo/registry for this test. Instead we test the internal
-        // helpers directly and exercise the activation path via find_cargo_crate_dir.
-        let cargo_toml =
-            format!("[package]\nname = \"test\"\n\n[dependencies]\nmylib = \"1.2.3\"\n");
-        std::fs::write(dir.path().join("Cargo.toml"), &cargo_toml).unwrap();
-
-        // Verify parse_cargo_dep_names picks up the dep
-        let names = parse_cargo_dep_names(&cargo_toml);
-        assert!(
-            names.contains(&"mylib".to_string()),
-            "mylib should be parsed"
-        );
-
-        // Verify find_cargo_crate_dir finds it given our fake index
-        let index_dirs = vec![fake_registry_src];
-        let found = find_cargo_crate_dir(&index_dirs, "mylib");
-        assert_eq!(
-            found.as_deref(),
-            Some(fake_crate_dir.as_path()),
-            "should find fake crate dir"
-        );
-
-        // Full activation: with no real ~/.cargo/registry, no libs get registered,
-        // but activation must still succeed (best-effort — never blocks activation).
-        let ctx = ToolContext {
-            agent: Agent::new(None).await.unwrap(),
-            lsp: lsp(),
-            output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
-            progress: None,
-            peer: None,
-        };
-        let result = ActivateProject
-            .call(json!({ "path": dir.path().to_str().unwrap() }), &ctx)
-            .await
-            .unwrap();
-        assert_eq!(result["status"], "ok", "activation must succeed");
+    fn format_activate_project_no_libs() {
+        let result = serde_json::json!({
+            "status": "ok",
+            "activated": {"project_root": "/home/user/foo"},
+            "hint": "CWD: /home/user/foo"
+        });
+        let compact = format_activate_project(&result);
+        assert_eq!(compact, "activated · foo · CWD: /home/user/foo");
     }
 }

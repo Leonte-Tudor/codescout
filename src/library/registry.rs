@@ -4,6 +4,10 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+fn default_true() -> bool {
+    true
+}
+
 /// A registered external library that codescout can search into.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LibraryEntry {
@@ -19,14 +23,16 @@ pub struct LibraryEntry {
     pub language: String,
     pub discovered_via: DiscoveryMethod,
     pub indexed: bool,
+    #[serde(default = "default_true")]
+    pub source_available: bool,
 }
 
-/// How the library was discovered and registered.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum DiscoveryMethod {
     LspFollowThrough,
     Manual,
+    ManifestScan,
 }
 
 /// Persistent registry of known external libraries.
@@ -66,18 +72,27 @@ impl LibraryRegistry {
     /// Register a library. If a library with the same name exists, update its
     /// path/language/discovered_via. The `indexed` flag is preserved when the
     /// path has not changed; otherwise it resets to `false`.
+    /// ManifestScan must not overwrite Manual or LspFollowThrough registrations.
     pub fn register(
         &mut self,
         name: String,
         path: PathBuf,
         language: String,
         discovered_via: DiscoveryMethod,
+        source_available: bool,
     ) {
         if let Some(existing) = self.entries.iter_mut().find(|e| e.name == name) {
+            // ManifestScan must not overwrite Manual registrations
+            if existing.discovered_via == DiscoveryMethod::Manual
+                && discovered_via == DiscoveryMethod::ManifestScan
+            {
+                return;
+            }
             let path_changed = existing.path != path;
             existing.path = path;
             existing.language = language;
             existing.discovered_via = discovered_via;
+            existing.source_available = source_available;
             if path_changed {
                 existing.indexed = false;
             }
@@ -92,6 +107,7 @@ impl LibraryRegistry {
                 language,
                 indexed: false,
                 discovered_via,
+                source_available,
             });
         }
     }
@@ -170,6 +186,7 @@ mod tests {
             language: "rust".into(),
             discovered_via: DiscoveryMethod::LspFollowThrough,
             indexed: true,
+            source_available: true,
         };
         let json = serde_json::to_string(&entry).unwrap();
         let restored: LibraryEntry = serde_json::from_str(&json).unwrap();
@@ -193,6 +210,7 @@ mod tests {
             PathBuf::from("/libs/tokio"),
             "rust".into(),
             DiscoveryMethod::Manual,
+            true,
         );
 
         let entry = reg.lookup("tokio").unwrap();
@@ -213,6 +231,7 @@ mod tests {
             PathBuf::from("/libs/serde-1.0"),
             "rust".into(),
             DiscoveryMethod::Manual,
+            true,
         );
 
         // Mark as indexed
@@ -224,6 +243,7 @@ mod tests {
             PathBuf::from("/libs/serde-1.0"),
             "rust".into(),
             DiscoveryMethod::LspFollowThrough,
+            true,
         );
         let entry = reg.lookup("serde").unwrap();
         assert!(
@@ -238,6 +258,7 @@ mod tests {
             PathBuf::from("/libs/serde-2.0"),
             "rust".into(),
             DiscoveryMethod::Manual,
+            true,
         );
         let entry = reg.lookup("serde").unwrap();
         assert!(!entry.indexed, "indexed should reset when path changes");
@@ -252,12 +273,14 @@ mod tests {
             PathBuf::from("/libs/tokio"),
             "rust".into(),
             DiscoveryMethod::Manual,
+            true,
         );
         reg.register(
             "serde".into(),
             PathBuf::from("/libs/serde"),
             "rust".into(),
             DiscoveryMethod::Manual,
+            true,
         );
 
         // Path inside tokio
@@ -280,6 +303,7 @@ mod tests {
             PathBuf::from("/libs/tokio"),
             "rust".into(),
             DiscoveryMethod::Manual,
+            true,
         );
 
         let resolved = reg.resolve_path("tokio", "src/runtime.rs").unwrap();
@@ -305,12 +329,14 @@ mod tests {
             PathBuf::from("/libs/tokio"),
             "rust".into(),
             DiscoveryMethod::LspFollowThrough,
+            true,
         );
         reg.register(
             "serde".into(),
             PathBuf::from("/libs/serde"),
             "rust".into(),
             DiscoveryMethod::Manual,
+            true,
         );
         reg.lookup_mut("serde").unwrap().indexed = true;
         reg.lookup_mut("serde").unwrap().version = Some("1.0.200".into());
@@ -344,12 +370,14 @@ mod tests {
             PathBuf::from("/a"),
             "rust".into(),
             DiscoveryMethod::Manual,
+            true,
         );
         reg.register(
             "b".into(),
             PathBuf::from("/b"),
             "python".into(),
             DiscoveryMethod::LspFollowThrough,
+            true,
         );
         assert_eq!(reg.all().len(), 2);
     }
@@ -366,6 +394,7 @@ mod tests {
             language: "rust".to_string(),
             indexed: true,
             discovered_via: DiscoveryMethod::LspFollowThrough,
+            source_available: true,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("version_indexed"));
@@ -391,6 +420,7 @@ mod tests {
             PathBuf::from("/tmp"),
             "rust".into(),
             DiscoveryMethod::LspFollowThrough,
+            true,
         );
         let entry = registry.lookup_mut("tokio").unwrap();
         entry.version = Some("1.38.0".to_string());
@@ -410,6 +440,7 @@ mod tests {
             PathBuf::from("/tmp"),
             "rust".into(),
             DiscoveryMethod::LspFollowThrough,
+            true,
         );
         let entry = registry.lookup_mut("tokio").unwrap();
         entry.version = Some("1.37.0".to_string());
@@ -419,5 +450,83 @@ mod tests {
         let entry = registry.lookup("tokio").unwrap();
         assert!(!entry.nudge_dismissed);
         assert_eq!(entry.version.as_deref(), Some("1.38.0"));
+    }
+
+    #[test]
+    fn source_available_defaults_to_true_on_deserialize() {
+        let json = r#"{"name":"foo","path":"/tmp/foo","language":"rust",
+                       "discovered_via":"manual","indexed":false,"nudge_dismissed":false}"#;
+        let entry: LibraryEntry = serde_json::from_str(json).unwrap();
+        assert!(
+            entry.source_available,
+            "missing field should default to true"
+        );
+    }
+
+    #[test]
+    fn register_with_source_available_false() {
+        let mut reg = LibraryRegistry::new();
+        reg.register(
+            "jackson".into(),
+            PathBuf::new(),
+            "java".into(),
+            DiscoveryMethod::ManifestScan,
+            false,
+        );
+        let entry = reg.lookup("jackson").unwrap();
+        assert!(!entry.source_available);
+        assert!(entry.path.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn manifest_scan_does_not_overwrite_manual() {
+        let mut reg = LibraryRegistry::new();
+        reg.register(
+            "foo".into(),
+            PathBuf::from("/manual/path"),
+            "rust".into(),
+            DiscoveryMethod::Manual,
+            true,
+        );
+        reg.register(
+            "foo".into(),
+            PathBuf::from("/scan/path"),
+            "rust".into(),
+            DiscoveryMethod::ManifestScan,
+            true,
+        );
+        let entry = reg.lookup("foo").unwrap();
+        assert_eq!(
+            entry.path,
+            PathBuf::from("/manual/path"),
+            "ManifestScan must not overwrite Manual"
+        );
+    }
+
+    #[test]
+    fn manifest_scan_updates_existing_manifest_scan() {
+        let mut reg = LibraryRegistry::new();
+        reg.register(
+            "foo".into(),
+            PathBuf::from("/old"),
+            "rust".into(),
+            DiscoveryMethod::ManifestScan,
+            true,
+        );
+        reg.register(
+            "foo".into(),
+            PathBuf::from("/new"),
+            "rust".into(),
+            DiscoveryMethod::ManifestScan,
+            true,
+        );
+        let entry = reg.lookup("foo").unwrap();
+        assert_eq!(entry.path, PathBuf::from("/new"));
+    }
+
+    #[test]
+    fn discovery_method_manifest_scan_serializes() {
+        let json = serde_json::to_string(&DiscoveryMethod::ManifestScan).unwrap();
+        assert_eq!(json, "\"manifest_scan\"");
     }
 }

@@ -61,6 +61,25 @@ impl Tool for SemanticSearch {
 
         let scope = crate::library::scope::Scope::parse(input["scope"].as_str());
 
+        // Gate: check source_available for explicit library scope
+        if let crate::library::scope::Scope::Library(ref lib_name) = scope {
+            if let Some(entry) = library_registry.lookup(lib_name) {
+                if !entry.source_available {
+                    return Err(super::RecoverableError::with_hint(
+                        format!(
+                            "Library '{}' source code is not available locally — cannot search.",
+                            lib_name
+                        ),
+                        format!(
+                            "Download sources, then index_project(scope='lib:{}') before searching.",
+                            lib_name
+                        ),
+                    )
+                    .into());
+                }
+            }
+        }
+
         // Async: cached embedder + HTTP embed
         let embedder = ctx.agent.get_or_create_embedder(&model).await?;
         let query_embedding = crate::embed::embed_one(embedder.as_ref(), query).await?;
@@ -281,6 +300,17 @@ impl Tool for IndexProject {
                         "Use list_libraries to see registered libraries.",
                     )
                 })?;
+                if !entry.source_available {
+                    return Err(crate::tools::RecoverableError::with_hint(
+                        format!(
+                            "Library '{}' source code is not available locally.",
+                            lib_name
+                        ),
+                        "Download sources using the project's build tool, then call \
+                         register_library(name, \"/path/to/source\", language) and retry.",
+                    )
+                    .into());
+                }
                 (project.root.clone(), entry.path.clone())
             };
 
