@@ -27,10 +27,8 @@ These are non-negotiable. Violating the letter IS violating the spirit.
 
 4. **ALWAYS RESTORE THE ACTIVE PROJECT.** After `activate_project` to a different project,
    you MUST `activate_project` back to the original before finishing your task. The MCP server
-   is shared state — forgetting to return silently breaks all subsequent tool calls for the
-   parent conversation. Subagents are especially dangerous: they share the server with their
-   parent. For quick cross-project lookups (1–3 calls), pass `project: "<id>"` instead of
-   switching.
+   is shared state — forgetting to return silently breaks all subsequent tool calls.
+   Subagents share the server with their parent — they MUST restore too.
 
 5. **ACTIVATE THE HOME PROJECT WITH WRITE ACCESS AT SESSION START.** At the start of every
    session, call `activate_project(".", read_only: false)`. This ensures write tools work on
@@ -89,16 +87,10 @@ use the right tool. Small shortcuts compound into large context waste.
 
 - `find_symbol(pattern)` — locate by name substring. Accepts `name_path` (e.g.
   `MyStruct/my_method`). Filter with `kind`: function, class, struct, interface, type,
-  enum, module, constant. Pass `include_body=true` to read the implementation. **Note:** When `path` is
-  explicitly specified, the `scope` parameter is ignored — the explicit path takes precedence. Scope only
-  affects searches when no path is given (or path is `"."`). Pass `scope="lib:<name>"` to search in a
-  registered library.
+  enum, module, constant. Pass `include_body=true` to read the implementation.
 - `list_symbols(path)` — symbol tree for file/dir/glob. Pass `include_docs=true` for
   docstrings. Signatures always included. Single-file mode caps at 100 top-level symbols.
-  Pass `scope="lib:<name>"` to list symbols in a registered library.
-- `find_references(name_path, path)` — find all usages of a symbol. Pass `scope="lib:<name>"`
-  to search library code. **Note:** Scope filtering is limited to references the project's
-  LSP server already knows about.
+- `find_references(name_path, path)` — find all usages of a symbol.
 - `goto_definition(path, line)` — jump to definition via LSP. Auto-discovers libraries.
 - `hover(path, line)` — type info and documentation for a symbol at a position.
 
@@ -159,25 +151,18 @@ use the right tool. Small shortcuts compound into large context waste.
   Required after `EnterWorktree`. Use `project_status()` for detailed health checks and
   memory staleness.
 - `project_status` — project state: config, semantic index health, usage telemetry,
-  library summary. Pass `threshold` for drift scores, `window` for usage time range.
-  `memory_staleness` section shows which memories have stale path anchors:
-  - `stale` — memories where anchored source files changed since last write
-  - `fresh` — memories with all anchors matching current files
-  - `untracked` — memories without anchor sidecars
-  When memories are stale, review them and either update the memory content (re-writes anchors) or use `memory(action="refresh_anchors", topic="...")` to acknowledge "still accurate."
+  library summary, memory staleness. Pass `threshold` for drift scores, `window` for
+  usage time range.
 - `list_libraries` — registered libraries and index status. Shows version, indexed state,
   and whether the indexed version differs from the current lockfile version (staleness).
   Use `scope="lib:<name>"` in `semantic_search`, `find_symbol`, or `index_project` to target a library.
 - `register_library(path, name?, language?)` — manually register an external library.
-  Auto-detects name and language from manifest files (Cargo.toml, package.json, pyproject.toml, go.mod).
-  After registering, use `scope="lib:<name>"` in symbol/search tools, and `index_project(scope="lib:<name>")`
-  for semantic search.
+  Auto-detects name and language from manifest files.
 
-**Library rules:**
-- Auto-discovered when `goto_definition`/`hover` resolves outside project root.
-- All read-only tools work on registered libraries. Write tools are project-only.
-- `scope="lib:<name>"` in `semantic_search`/`find_symbol`/`index_project` to target a library.
-- Staleness hints appear when lockfile version ≠ indexed version — re-run `index_project`.
+**Library rules:** Pass `scope="lib:<name>"` on `find_symbol`, `list_symbols`,
+`find_references`, `semantic_search`, or `index_project` to target a registered library.
+Libraries are auto-discovered when `goto_definition`/`hover` resolves outside the project
+root. All read-only tools work on libraries; write tools are project-only.
 
 
 ## Output System
@@ -215,22 +200,12 @@ The full content costs nothing to hold — query it on demand.
 - `next: string` — the exact `read_file(...)` call to get the next chunk (only present when `complete: false`)
 - `shown_lines: [start, end]` — the original file line numbers of the content shown (present in auto-chunked responses)
 
-**Key distinction:** `@file_*` and `@cmd_*` contain plain text — grep/sed are the natural
-tools. `@tool_*` contains a JSON object (pretty-printed, multi-line) — use `json_path` to
-extract a specific field, or `start_line`/`end_line` to browse sections.
+**Key distinction:** `@file_*`, `@cmd_*`, `@bg_*` are plain text — grep/sed work directly.
+`@tool_*` is JSON — use `json_path` (e.g. `$.symbols[0].body`) or `start_line`/`end_line`.
+Don't grep `@tool_*` for code — bodies are JSON strings, not raw text.
 
-**`@tool_*` json_path examples:**
-- `find_symbol` result → `json_path="$.symbols[0].body"` extracts the function body as plain text
-- `list_symbols` result → `json_path="$.files[0].symbols"` extracts the symbol list
-- Any result → browse with `start_line=1, end_line=50` to see the structure first
-
-**Buffer queries via `run_command`** return ≤ 100 lines inline. Truncation hints show the
-exact `sed` command to continue. Do NOT pipe buffer queries — run targeted commands directly.
-
-**Never grep a `@tool_*` ref for code content** — function bodies are JSON string values
-(`"body": "fn foo() {\n..."`); grep on code inside them will not work. Use
-`json_path="$.symbols[N].body"` instead, or read the source file directly using
-`start_line`/`end_line` from the symbol metadata.
+**Buffer queries** return ≤ 100 lines inline. Truncation hints show the exact `sed` command
+to continue.
 
 ## Project Management
 
@@ -249,14 +224,6 @@ The project's security profile is set in `.codescout/project.toml`:
 - `profile = "root"` — unrestricted: no read deny-list, writes allowed anywhere,
   dangerous commands execute without speed bump. For system-administration projects
   that need full filesystem access.
-
-Source-file shell access guidance (use `read_file`/`find_symbol` instead of `cat`) is
-active in both profiles — it improves tool output quality, not security.
-
-### Project Customization
-
-If `.codescout/system-prompt.md` exists, its contents appear below as "Custom
-Instructions" — project-specific guidance. Edit the file to customize AI behavior.
 
 ## Rules
 
