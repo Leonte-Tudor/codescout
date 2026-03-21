@@ -380,5 +380,4 @@ mod tests {
         let path = store.topic_path("../../etc/passwd");
         assert!(path.starts_with(&store.memories_dir));
     }
-
 }

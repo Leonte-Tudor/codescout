@@ -369,8 +369,14 @@ pub async fn run(
     diagnostic: bool,
     instance_id: Option<String>,
 ) -> Result<()> {
-    // If no --project given, auto-detect from CWD (Claude Code launches servers from the project dir)
-    let project = project.or_else(|| std::env::current_dir().ok());
+    // If no --project given, auto-detect from CWD (Claude Code launches servers from the project dir).
+    // Canonicalize early so every downstream consumer (Agent, LspManager) sees the same
+    // absolute path.  Without this, a relative `--project .` would store `home_root = "."`
+    // while `activate_project(".")` later canonicalizes to `/abs/path`, making `is_home()`
+    // return false and causing path-form drift across the system.
+    let project = project
+        .or_else(|| std::env::current_dir().ok())
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p));
     let lsp = match project.clone() {
         Some(root) => LspManager::new_arc_with_root(root),
         None => LspManager::new_arc(),

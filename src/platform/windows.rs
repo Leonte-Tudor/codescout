@@ -88,8 +88,11 @@ pub fn rename_overwrite(from: &std::path::Path, to: &std::path::Path) -> std::io
 
 pub fn lsp_binary_name(base: &str) -> String {
     match base {
-        "typescript-language-server" | "vscode-json-language-server"
-        | "yaml-language-server" | "bash-language-server" | "pyright-langserver" => {
+        "typescript-language-server"
+        | "vscode-json-language-server"
+        | "yaml-language-server"
+        | "bash-language-server"
+        | "pyright-langserver" => {
             format!("{}.cmd", base)
         }
         _ => format!("{}.exe", base),

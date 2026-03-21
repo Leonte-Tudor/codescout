@@ -114,7 +114,11 @@ fn load_discover_settings(root: &std::path::Path) -> (usize, Vec<String>) {
 
 impl Agent {
     pub async fn new(project: Option<PathBuf>) -> Result<Self> {
-        let (workspace, home_root) = if let Some(root) = project {
+        let (workspace, home_root) = if let Some(raw) = project {
+            // Canonicalize so home_root is always an absolute path.  This prevents
+            // path-form drift when activate_project(".") later canonicalizes its
+            // argument and compares against home_root.
+            let root = std::fs::canonicalize(&raw).unwrap_or(raw);
             let config = ProjectConfig::load_or_default(&root)?;
             let memory = MemoryStore::open(&root)?;
             let private_memory = MemoryStore::open_private(&root)?;
@@ -992,6 +996,42 @@ mod tests {
             .await
             .unwrap();
         assert!(agent.is_home().await);
+    }
+
+    #[tokio::test]
+    async fn new_with_relative_path_canonicalizes_home_root() {
+        let dir = tempdir().unwrap();
+        let canonical = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+
+        // Simulate --project with a relative path by constructing one that
+        // points to the same directory.  We use the tempdir's last component
+        // as a relative path from its parent.
+        let parent = canonical.parent().unwrap();
+        let rel = canonical.file_name().unwrap();
+
+        // Save and restore CWD so the test doesn't affect others.
+        let orig_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(parent).unwrap();
+        let agent = Agent::new(Some(PathBuf::from(rel))).await.unwrap();
+        std::env::set_current_dir(&orig_cwd).unwrap();
+
+        // home_root must be the canonical absolute path, not the relative input.
+        let home = agent.home_root().await.unwrap();
+        assert!(
+            home.is_absolute(),
+            "home_root should be absolute, got: {}",
+            home.display()
+        );
+        assert_eq!(home, canonical);
+
+        // is_home should be true when re-activating the same directory
+        // (simulates activate_project(".") which canonicalizes).
+        agent.activate(canonical.clone(), None).await.unwrap();
+        assert!(
+            agent.is_home().await,
+            "is_home must be true after re-activating the same directory"
+        );
     }
 
     #[tokio::test]

@@ -11,6 +11,8 @@
 /.codescout/usage.db-wal
 /.codescout/usage.db-shm
 /.codescout/debug.log*
+/.codescout/diagnostic-*.log
+/.codescout/libraries.json
 # memories/ and system-prompt.md are intentionally tracked
 /docs/observations.md
 /docs/superpowers/

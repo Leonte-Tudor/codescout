@@ -351,6 +351,54 @@ fn validate_symbol_range(sym: &SymbolInfo) -> anyhow::Result<()> {
     }
     Ok(())
 }
+/// Validate that the LSP symbol position matches the actual file content.
+///
+/// After a mutation (remove_symbol, replace_symbol), the LSP may return stale
+/// positions for subsequent calls on the same file (BUG-032). This function
+/// checks that the symbol's name appears somewhere within its reported range.
+/// If not, the LSP data is stale and the caller should retry.
+fn validate_symbol_position(sym: &SymbolInfo, lines: &[&str]) -> anyhow::Result<()> {
+    let sl = sym.start_line as usize;
+    if sl >= lines.len() {
+        return Err(RecoverableError::with_hint(
+            format!(
+                "symbol '{}' at line {} is beyond file end ({} lines)",
+                sym.name,
+                sl + 1,
+                lines.len(),
+            ),
+            "The LSP may have stale data after a prior edit. \
+             Call list_symbols(path) to refresh, then retry.",
+        )
+        .into());
+    }
+    // Check the symbol's full range (with some slack) for the name.
+    // range_start_line may be before start_line (attributes/docs).
+    let range_start = sym
+        .range_start_line
+        .map(|r| r as usize)
+        .unwrap_or(sl)
+        .min(sl);
+    let range_end = (sym.end_line as usize + 1).min(lines.len());
+    let name_found = lines[range_start..range_end]
+        .iter()
+        .any(|line| line.contains(&*sym.name));
+    if !name_found {
+        return Err(RecoverableError::with_hint(
+            format!(
+                "symbol '{}' expected in lines {}-{} but not found in file content — \
+                 LSP positions are likely stale after a prior edit",
+                sym.name,
+                range_start + 1,
+                range_end,
+            ),
+            "The file was recently modified and the LSP hasn't re-indexed yet. \
+             Call list_symbols(path) to refresh, then retry the operation.",
+        )
+        .into());
+    }
+    Ok(())
+}
 
 /// Recursively search `symbols` for a symbol with the given name whose
 /// `start_line` is within 1 of `lsp_start`. Returns its `end_line`.
@@ -1567,6 +1615,12 @@ impl Tool for Hover {
 /// than the `/**` opener. When detected (line starts with `*` but not `/**` or `/*`),
 /// we run `find_insert_before_line` from that point to walk back to the true opener.
 ///
+/// Special case (BUG-031): some LSP servers (e.g. rust-analyzer in certain configs)
+/// report `range.start` at the function signature line, skipping `///` doc comments
+/// and attributes above. When `range_start_line` points to a non-decorator line
+/// (the actual keyword like `fn`, `pub fn`, `struct`, etc.) AND the line above is a
+/// doc comment or attribute, we walk back to include them.
+///
 /// The walk-back result is **validated**: we check that we actually landed on a `/**`
 /// or `/*` opener. If not (e.g. the `*` was a dereference or multiplication, not a
 /// doc-comment continuation), we discard the walk-back and trust the LSP's original
@@ -1576,16 +1630,12 @@ impl Tool for Hover {
 fn editing_start_line(sym: &crate::lsp::SymbolInfo, lines: &[&str]) -> usize {
     if let Some(r) = sym.range_start_line {
         let r = r as usize;
-        // Detect mid-block-comment position: continuation lines inside /** */ start
-        // with `*` but not `/**` or `/*`. This is language-agnostic and covers all
-        // C-style block comment languages (Kotlin, Java, JS, TS, Rust, etc.).
         if r < lines.len() {
             let t = lines[r].trim_start();
+
+            // BUG-027: Detect mid-block-comment position (continuation lines inside /** */).
             if t.starts_with('*') && !t.starts_with("/**") && !t.starts_with("/*") {
                 let walked = find_insert_before_line(lines, r);
-                // Validate: confirm we landed on a block comment opener.
-                // If not, the `*` was something else (dereference, multiplication) —
-                // discard the walk-back and trust the LSP's original range.
                 if walked < lines.len() {
                     let landed = lines[walked].trim_start();
                     if landed.starts_with("/**") || landed.starts_with("/*") {
@@ -1594,6 +1644,30 @@ fn editing_start_line(sym: &crate::lsp::SymbolInfo, lines: &[&str]) -> usize {
                 }
                 return r;
             }
+
+            // BUG-031: LSP range.start may point to the function keyword line, skipping
+            // `///` doc comments or attributes above. Only walk back if range_start_line
+            // itself is NOT already a doc comment/attribute/decorator — that would mean
+            // the LSP intentionally started there.
+            let line_is_decorator = t.starts_with("///")
+                || t.starts_with("//!")
+                || t.starts_with("#[")
+                || t.starts_with("/**")
+                || t.starts_with("/*")
+                || t.starts_with('@')
+                || t.starts_with("*/");
+
+            if !line_is_decorator && r > 0 {
+                let above = lines[r - 1].trim_start();
+                let above_is_doc_or_attr = above.starts_with("//")  // covers ///, //!, // (Go)
+                    || above.starts_with("#[")
+                    || above.starts_with("*/")
+                    || above.starts_with("/**")
+                    || above.starts_with('@');
+                if above_is_doc_or_attr {
+                    return find_insert_before_line(lines, r);
+                }
+            }
         }
         return r;
     }
@@ -1601,21 +1675,19 @@ fn editing_start_line(sym: &crate::lsp::SymbolInfo, lines: &[&str]) -> usize {
 }
 /// Get the true end line for write operations (insert_code after, replace_symbol).
 ///
-/// Uses AST to cap `sym.end_line` when the LSP over-extends the symbol range
-/// into the next symbol's opening line — a common rust-analyzer pattern where
-/// `range.end.line` points to `fn following() {` instead of the current `}`.
+/// Uses AST as the authoritative source for the symbol's end line when available.
+/// Tree-sitter always terminates at the real closing brace/delimiter, while LSP
+/// servers may over-extend (rust-analyzer including the next symbol's opening line)
+/// or under-extend (reporting the last statement line instead of `}`).
 ///
-/// When AST finds the symbol and reports `ast_end < sym.end_line`, we trust the
-/// AST (it always terminates at the real `}`). Otherwise we trust the LSP.
-/// This is the symmetric counterpart to `editing_start_line`.
+/// When AST finds the symbol, we trust it unconditionally. When AST can't find it
+/// (different language, name mismatch), we fall back to the LSP end line.
 fn editing_end_line(sym: &crate::lsp::SymbolInfo) -> u32 {
     let Ok(ast_syms) = crate::ast::extract_symbols(&sym.file) else {
         return sym.end_line;
     };
     if let Some(ast_end) = find_ast_end_line_in(&ast_syms, &sym.name, sym.start_line) {
-        if ast_end < sym.end_line {
-            return ast_end; // LSP over-extends; trust AST
-        }
+        return ast_end; // AST is authoritative when available
     }
     sym.end_line
 }
@@ -1630,7 +1702,7 @@ fn editing_end_line(sym: &crate::lsp::SymbolInfo) -> u32 {
 /// - Single-line attributes: `#[test]`, `#[derive(Debug)]`
 /// - Multi-line attributes: `#[cfg(\n    ...\n)]` (tracks bracket nesting)
 /// - Python/Java decorators: `@decorator`, `@app.route("/path")`
-/// - Doc comments: `///`, `//!`, `/** ... */`
+/// - Doc comments: `///`, `//!`, `//` (Go-style), `/** ... */`
 /// - Block comments: `/* ... */` (multi-line), including bare `*` continuation lines
 fn find_insert_before_line(lines: &[&str], symbol_start: usize) -> usize {
     let mut cursor = symbol_start;
@@ -1661,8 +1733,7 @@ fn find_insert_before_line(lines: &[&str], symbol_start: usize) -> usize {
 
         let is_attr_or_doc = trimmed.starts_with("#[")
             || trimmed.starts_with('@')
-            || trimmed.starts_with("///")
-            || trimmed.starts_with("//!")
+            || trimmed.starts_with("//")  // covers ///, //!, and // (Go doc comments)
             || trimmed.starts_with("/**")
             || trimmed.starts_with("* ")
             || trimmed == "*"   // bare asterisk: blank continuation line in /** */ blocks
@@ -1738,6 +1809,7 @@ impl Tool for ReplaceSymbol {
 
         let content = std::fs::read_to_string(&full_path)?;
         let lines: Vec<&str> = content.lines().collect();
+        validate_symbol_position(sym, &lines)?;
 
         let start = editing_start_line(sym, &lines);
         let end = (editing_end_line(sym) as usize + 1).min(lines.len());
@@ -1811,6 +1883,7 @@ impl Tool for RemoveSymbol {
 
         let content = std::fs::read_to_string(&full_path)?;
         let lines: Vec<&str> = content.lines().collect();
+        validate_symbol_position(sym, &lines)?;
 
         let start = editing_start_line(sym, &lines);
         let end = (editing_end_line(sym) as usize + 1).min(lines.len());
@@ -1892,6 +1965,7 @@ impl Tool for InsertCode {
         validate_symbol_range(sym)?;
         let content = std::fs::read_to_string(&full_path)?;
         let lines: Vec<&str> = content.lines().collect();
+        validate_symbol_position(sym, &lines)?;
         let code_lines: Vec<&str> = code.lines().collect();
         let insert_at = match position {
             "before" => editing_start_line(sym, &lines),
@@ -5422,6 +5496,376 @@ fn main() {
         ];
         // Must return 5 unchanged — not walk back further into the doc comments
         assert_eq!(editing_start_line(&sym, &lines), 5);
+    }
+    /// BUG-031 reproduction: rust-analyzer sets range_start_line to the `pub fn`
+    /// line, skipping `///` doc comments above. editing_start_line must detect
+    /// this and walk back to include the doc comments — otherwise replace_symbol
+    /// leaves the old doc comments orphaned and duplicates them.
+    #[test]
+    fn editing_start_line_walks_back_past_doc_comments_when_range_misses_them() {
+        let sym = crate::lsp::SymbolInfo {
+            name: "is_source_path".to_string(),
+            name_path: "is_source_path".to_string(),
+            kind: crate::lsp::SymbolKind::Function,
+            file: std::path::PathBuf::from("test.rs"),
+            start_line: 5, // `pub fn is_source_path(...)` — selectionRange
+            end_line: 9,
+            start_col: 0,
+            children: vec![],
+            range_start_line: Some(5), // LSP range.start = fn line, missed doc comments
+            detail: None,
+        };
+        let lines = vec![
+            "use regex::Regex;",                                          // 0
+            "",                                                           // 1
+            "/// Returns true if the path refers to a source code file.", // 2
+            "/// Used to gate `edit_file` multi-line source edits.",      // 3
+            "#[inline]",                                                  // 4
+            "pub fn is_source_path(path: &str) -> bool {",                // 5 ← range_start_line
+            "    Regex::new(SOURCE_EXTENSIONS)",                          // 6
+            "        .map(|re| re.is_match(path))",                       // 7
+            "        .unwrap_or(false)",                                  // 8
+            "}",                                                          // 9
+        ];
+        // Must return 2 (first `///` doc comment), not 5 (range_start_line)
+        assert_eq!(editing_start_line(&sym, &lines), 2);
+    }
+
+    /// BUG-031 variant: range_start_line correctly includes doc comments (points
+    /// to first `///` line). editing_start_line should trust it and NOT walk back
+    /// further past a blank line into unrelated code.
+    #[test]
+    fn editing_start_line_trusts_range_when_it_already_covers_docs() {
+        let sym = crate::lsp::SymbolInfo {
+            name: "foo".to_string(),
+            name_path: "foo".to_string(),
+            kind: crate::lsp::SymbolKind::Function,
+            file: std::path::PathBuf::from("test.rs"),
+            start_line: 5,
+            end_line: 7,
+            start_col: 0,
+            children: vec![],
+            range_start_line: Some(3), // Points to first `///` — correct!
+            detail: None,
+        };
+        let lines = vec![
+            "fn unrelated() {}", // 0
+            "// random comment", // 1
+            "",                  // 2 — blank line separates
+            "/// Doc for foo",   // 3 ← range_start_line (correct)
+            "#[test]",           // 4
+            "fn foo() {",        // 5
+            "    body",          // 6
+            "}",                 // 7
+        ];
+        // Should stay at 3, not walk back past blank line to 1
+        assert_eq!(editing_start_line(&sym, &lines), 3);
+    }
+    /// BUG-029 reproduction: editing_end_line uses AST to cap LSP end_line.
+    /// For async nested functions inside `mod tests`, AST may return a different
+    /// end_line, causing insert_code "after" to misplace code.
+    #[test]
+    fn editing_end_line_nested_fn_returns_closing_brace_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.rs");
+        // Reproduce the actual BUG-029 scenario: async fn inside mod tests
+        let source = "\
+use serde_json::json;
+
+pub async fn write_message(writer: &mut Vec<u8>, msg: &str) -> Result<(), std::io::Error> {
+    writer.extend_from_slice(msg.as_bytes());
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn write_produces_valid_framing() {
+        let msg = json!({\"test\": true});
+        let mut buf = Vec::new();
+        write_message(&mut buf, &msg.to_string()).await.unwrap();
+        assert!(!buf.is_empty());
+    }
+
+    #[tokio::test]
+    async fn another_test() {
+        let x = 42;
+        assert_eq!(x, 42);
+    }
+}
+";
+        std::fs::write(&file, source).unwrap();
+
+        // Simulate what LSP returns for `write_produces_valid_framing`
+        let sym = crate::lsp::SymbolInfo {
+            name: "write_produces_valid_framing".to_string(),
+            name_path: "tests/write_produces_valid_framing".to_string(),
+            kind: crate::lsp::SymbolKind::Function,
+            file: file.clone(),
+            start_line: 12, // `async fn write_produces_valid_framing` (0-indexed)
+            end_line: 17,   // closing `}` of write_produces_valid_framing
+            start_col: 4,
+            children: vec![],
+            range_start_line: Some(11), // `#[tokio::test]`
+            detail: None,
+        };
+
+        let end = editing_end_line(&sym);
+        // Must return 17 (the `}` line), NOT something smaller
+        assert_eq!(
+            end, 17,
+            "editing_end_line should return closing brace line (17), got {end}"
+        );
+
+        // Verify the insertion point is correct
+        let lines: Vec<&str> = source.lines().collect();
+        let insert_at = (end as usize + 1).min(lines.len());
+        assert!(
+            insert_at <= lines.len(),
+            "insert point should be within file bounds"
+        );
+        // Line after closing brace should be empty or start of next function
+        if insert_at < lines.len() {
+            let next_line = lines[insert_at].trim();
+            assert!(
+                next_line.is_empty()
+                    || next_line.starts_with('#')
+                    || next_line.starts_with("async")
+                    || next_line.starts_with("fn"),
+                "line after insert should be blank or next function start, got: '{next_line}'"
+            );
+        }
+    }
+    /// BUG-029 scenario: LSP reports end_line inside the function body (at last
+    /// statement, not closing `}`). AST should correct this upward.
+    #[test]
+    fn editing_end_line_corrects_lsp_short_end_line_via_ast() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.rs");
+        let source = "\
+fn foo() {
+    let x = 1;
+    let y = 2;
+    println!(\"{}\", x + y);
+}
+";
+        std::fs::write(&file, source).unwrap();
+
+        // Simulate LSP returning end_line at the last statement (line 3) instead of `}` (line 4)
+        let sym = crate::lsp::SymbolInfo {
+            name: "foo".to_string(),
+            name_path: "foo".to_string(),
+            kind: crate::lsp::SymbolKind::Function,
+            file: file.clone(),
+            start_line: 0,
+            end_line: 3, // WRONG — points to last statement, not `}`
+            start_col: 0,
+            children: vec![],
+            range_start_line: Some(0),
+            detail: None,
+        };
+
+        let end = editing_end_line(&sym);
+        // AST should find end_line=4 (the `}`) which is > 3, so it won't cap.
+        // Current code only caps when ast_end < sym.end_line.
+        // This means a short LSP end_line is NOT corrected upward — this IS the bug.
+        // We need editing_end_line to also correct UPWARD when AST shows more.
+        assert_eq!(
+            end, 4,
+            "editing_end_line should correct short LSP end to AST end (4), got {end}"
+        );
+    }
+    /// BUG-030 reproduction: replace_symbol on `mod tests` eats the preceding
+    /// function. editing_start_line with range_start_line pointing to `#[cfg(test)]`
+    /// should NOT walk back past the blank line into `write_message`'s closing `}`.
+    #[test]
+    fn editing_start_line_mod_tests_does_not_eat_preceding_function() {
+        let sym = crate::lsp::SymbolInfo {
+            name: "tests".to_string(),
+            name_path: "tests".to_string(),
+            kind: crate::lsp::SymbolKind::Module,
+            file: std::path::PathBuf::from("test.rs"),
+            start_line: 7, // `mod tests {`
+            end_line: 15,
+            start_col: 0,
+            children: vec![],
+            range_start_line: Some(6), // `#[cfg(test)]`
+            detail: None,
+        };
+        let lines = vec![
+            "pub async fn write_message() -> Result<()> {", // 0
+            "    let body = serde_json::to_string(msg)?;",  // 1
+            "    let header = format!(\"Content-Length: {}\\r\\n\\r\\n\", body.len());", // 2
+            "    writer.write_all(header.as_bytes()).await?;", // 3
+            "}",                                            // 4
+            "",                                             // 5 — blank line
+            "#[cfg(test)]",                                 // 6 ← range_start_line
+            "mod tests {",                                  // 7 ← start_line
+            "    use super::*;",                            // 8
+            "    #[test]",                                  // 9
+            "    fn test_foo() {}",                         // 10
+            "}",                                            // 11
+        ];
+        // Must return 6 (#[cfg(test)]), NOT walk back past blank line to 4 or earlier
+        let result = editing_start_line(&sym, &lines);
+        assert_eq!(
+            result, 6,
+            "editing_start_line should stop at #[cfg(test)] (6), got {result}"
+        );
+    }
+    /// BUG-030 variant: range_start_line is None (workspace/symbol or tree-sitter).
+    /// find_insert_before_line must stop at the blank line and not consume
+    /// the preceding function's closing `}`.
+    #[test]
+    fn editing_start_line_mod_tests_no_range_stops_at_blank_line() {
+        let sym = crate::lsp::SymbolInfo {
+            name: "tests".to_string(),
+            name_path: "tests".to_string(),
+            kind: crate::lsp::SymbolKind::Module,
+            file: std::path::PathBuf::from("test.rs"),
+            start_line: 5, // `mod tests {` (0-indexed)
+            end_line: 8,
+            start_col: 0,
+            children: vec![],
+            range_start_line: None, // No range info
+            detail: None,
+        };
+        let lines = vec![
+            "pub async fn write_message() -> Result<()> {", // 0
+            "    let body = \"hello\";",                    // 1
+            "}",                                            // 2
+            "",                                             // 3 — blank line
+            "#[cfg(test)]",                                 // 4
+            "mod tests {",                                  // 5 ← start_line
+            "    #[test]",                                  // 6
+            "    fn test_foo() {}",                         // 7
+            "}",                                            // 8
+        ];
+        // Heuristic walks back from line 5 past #[cfg(test)] to line 4,
+        // stops at blank line 3. Must return 4, NOT 2 or earlier.
+        let result = editing_start_line(&sym, &lines);
+        assert_eq!(result, 4, "should stop at #[cfg(test)] (4), got {result}");
+    }
+
+    /// BUG-030 variant: NO blank line between preceding function and #[cfg(test)].
+    /// This is the dangerous case — find_insert_before_line might walk into the
+    /// preceding function's closing `}`.
+    #[test]
+    fn editing_start_line_mod_tests_no_blank_line_between_functions() {
+        let sym = crate::lsp::SymbolInfo {
+            name: "tests".to_string(),
+            name_path: "tests".to_string(),
+            kind: crate::lsp::SymbolKind::Module,
+            file: std::path::PathBuf::from("test.rs"),
+            start_line: 4, // `mod tests {`
+            end_line: 8,
+            start_col: 0,
+            children: vec![],
+            range_start_line: None,
+            detail: None,
+        };
+        let lines = vec![
+            "pub fn write_message() -> Result<()> {", // 0
+            "    let body = \"hello\";",              // 1
+            "}",                                      // 2
+            "#[cfg(test)]",                           // 3 — NO blank line before this
+            "mod tests {",                            // 4 ← start_line
+            "    #[test]",                            // 5
+            "    fn test_foo() {}",                   // 6
+            "}",                                      // 7
+        ];
+        // Walk back from 4 past #[cfg(test)] to 3. Line 2 is `}` — code, must stop.
+        let result = editing_start_line(&sym, &lines);
+        assert_eq!(
+            result, 3,
+            "should stop at #[cfg(test)] (3), not eat into write_message; got {result}"
+        );
+    }
+    /// BUG-032: validate_symbol_position detects stale LSP positions.
+    /// After removing lines from a file, LSP may return positions from the
+    /// pre-removal state. The validation catches this mismatch.
+    #[test]
+    fn validate_symbol_position_detects_stale_positions() {
+        // Original file: enum SourceFilter at lines 0-4, impl SourceFilter at lines 6-11
+        let original_lines = vec![
+            "pub enum SourceFilter {",                                   // 0
+            "    All,",                                                  // 1
+            "    SourceOnly,",                                           // 2
+            "    NonSourceOnly,",                                        // 3
+            "}",                                                         // 4
+            "",                                                          // 5
+            "impl SourceFilter {",                                       // 6
+            "    pub fn as_sql_filter(&self) -> Option<&'static str> {", // 7
+            "        None",                                              // 8
+            "    }",                                                     // 9
+            "}",                                                         // 10
+            "",                                                          // 11
+            "pub fn project_db_path() {}",                               // 12
+        ];
+
+        // Symbol for impl SourceFilter — correct in original file
+        let sym_impl = crate::lsp::SymbolInfo {
+            name: "SourceFilter".to_string(),
+            name_path: "impl SourceFilter".to_string(),
+            kind: crate::lsp::SymbolKind::Struct,
+            file: std::path::PathBuf::from("test.rs"),
+            start_line: 6, // `impl SourceFilter {` in ORIGINAL file
+            end_line: 10,
+            start_col: 0,
+            children: vec![],
+            range_start_line: Some(6),
+            detail: None,
+        };
+
+        // Validates fine against original file
+        assert!(
+            validate_symbol_position(&sym_impl, &original_lines).is_ok(),
+            "should be valid against original file"
+        );
+
+        // Now simulate removing enum (lines 0-5): file shifts up by 6 lines
+        let after_removal = vec![
+            "impl SourceFilter {",                                       // 0 (was 6)
+            "    pub fn as_sql_filter(&self) -> Option<&'static str> {", // 1
+            "        None",                                              // 2
+            "    }",                                                     // 3
+            "}",                                                         // 4
+            "",                                                          // 5
+            "pub fn project_db_path() {}",                               // 6 (was 12)
+        ];
+
+        // LSP still reports start_line=6 (stale) — but line 6 is now project_db_path
+        let result = validate_symbol_position(&sym_impl, &after_removal);
+        assert!(
+            result.is_err(),
+            "should detect stale position: 'SourceFilter' not at line 6 in modified file"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("stale"),
+            "error should mention stale; got: {msg}"
+        );
+    }
+
+    /// validate_symbol_position accepts valid positions within ±2 line window.
+    #[test]
+    fn validate_symbol_position_accepts_valid_position() {
+        let lines = vec!["/// doc comment", "pub fn my_function() {", "    body", "}"];
+        let sym = crate::lsp::SymbolInfo {
+            name: "my_function".to_string(),
+            name_path: "my_function".to_string(),
+            kind: crate::lsp::SymbolKind::Function,
+            file: std::path::PathBuf::from("test.rs"),
+            start_line: 1,
+            end_line: 3,
+            start_col: 0,
+            children: vec![],
+            range_start_line: Some(0),
+            detail: None,
+        };
+        assert!(validate_symbol_position(&sym, &lines).is_ok());
     }
 
     #[test]

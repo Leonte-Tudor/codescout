@@ -253,7 +253,7 @@ the `notify_file_changed` call.
 
 **Date:** 2026-03-20
 **Severity:** High — silently corrupts source files by splitting function bodies
-**Status:** Open
+**Status:** ✅ Fixed (2026-03-20)
 
 **What happened:**
 Called `insert_code("tests/write_produces_valid_framing", "src/lsp/transport.rs", code, "after")`
@@ -300,13 +300,21 @@ insertion logic may be using `selection_range.end` (which points to the name) in
 2. After computing the insertion line, verify the line after it is outside the symbol's range
 3. Add a test: `insert_code_after_places_code_after_closing_brace` with a multi-function mod block
 
+**Fix (2026-03-20):**
+- `editing_end_line` now trusts AST unconditionally when available (was: only capped downward).
+  When LSP reports `end_line` too short (inside body, not at `}`), AST corrects it upward.
+- Added `validate_symbol_position` guard to all mutation tools — detects when LSP returns
+  stale positions that don't match file content.
+- Tests: `editing_end_line_corrects_lsp_short_end_line_via_ast`,
+  `editing_end_line_nested_fn_returns_closing_brace_line`
+
 ---
 
 ### BUG-030 — `replace_symbol`: replacing `mod tests` eats adjacent function body
 
 **Date:** 2026-03-20
 **Severity:** High — silently destroys neighboring function, producing compile errors
-**Status:** Open
+**Status:** ⚠ Mitigated (2026-03-20) — editing_start_line logic is correct; validate_symbol_position guard added
 
 **What happened:**
 After BUG-029 corrupted `src/lsp/transport.rs` (insert_code placed code inside
@@ -378,7 +386,7 @@ sometimes includes leading whitespace/blank lines in the symbol range.
 
 **Date:** 2026-03-20
 **Severity:** High — produces unparseable source (unclosed delimiter)
-**Status:** Open
+**Status:** ✅ Fixed (2026-03-20)
 
 **What happened:**
 Called `replace_symbol("is_source_path", "src/util/path_security.rs", <new body>)` to
@@ -445,13 +453,21 @@ inserted starting at line 573, creating the duplication.
 3. Regression test: function with `/// doc\npub fn foo() { old }` → `replace_symbol` with
    body starting with `/// doc\npub fn foo() { new }` → verify no duplication
 
+**Fix (2026-03-20):**
+- `editing_start_line` now walks back past `///` doc comments when `range_start_line` points
+  to a non-decorator line (function keyword) and the line above is a doc comment/attribute.
+  Only triggers when the LSP missed doc comments — trusts LSP when it already points to a
+  decorator/attribute.
+- Tests: `editing_start_line_walks_back_past_doc_comments_when_range_misses_them`,
+  `editing_start_line_trusts_range_when_it_already_covers_docs`
+
 ---
 
 ### BUG-032 — `remove_symbol`: leaves orphaned `impl` block code after enum removal
 
 **Date:** 2026-03-20
 **Severity:** High — produces unparseable source
-**Status:** Open
+**Status:** ⚠ Mitigated (2026-03-20) — validate_symbol_position guard detects stale LSP positions
 
 **What happened:**
 Called `remove_symbol("SourceFilter", "src/embed/index.rs")` to remove an enum, followed by

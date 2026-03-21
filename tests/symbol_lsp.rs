@@ -1194,7 +1194,9 @@ async fn remove_symbol_heuristic_fallback_includes_doc_comment() {
     );
 }
 
-/// When `range_start_line` explicitly excludes the doc comment, trust it.
+/// When `range_start_line` explicitly excludes the doc comment, but doc comments
+/// exist directly above, editing_start_line walks back to include them (BUG-031 fix).
+/// Orphaned doc comments after symbol removal are worse than removing them.
 #[tokio::test]
 async fn remove_symbol_range_start_line_excludes_doc_comment() {
     let src = "fn preceding() {\n    // body\n}\nuse std::fmt;\n\n/// A constant.\nconst TARGET: bool = false;\nfn following() {}\n";
@@ -1223,9 +1225,12 @@ async fn remove_symbol_range_start_line_excludes_doc_comment() {
         !result.contains("TARGET"),
         "const must be removed; got:\n{result}"
     );
+    // BUG-031 fix: editing_start_line now walks back past `///` doc comments
+    // even when range_start_line points to the keyword line. This prevents
+    // orphaned doc comments and fixes replace_symbol duplication.
     assert!(
-        result.contains("A constant"),
-        "doc comment outside explicit range_start_line — survives; got:\n{result}"
+        !result.contains("A constant"),
+        "doc comment should also be removed (BUG-031 fix); got:\n{result}"
     );
 }
 

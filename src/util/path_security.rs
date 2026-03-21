@@ -319,7 +319,10 @@ pub fn list_git_worktrees(project_root: &Path) -> Vec<PathBuf> {
             let raw = content.trim();
             // Reject null bytes
             if raw.contains('\0') {
-                tracing::warn!("worktree gitdir contains null byte, skipping: {:?}", gitdir_file);
+                tracing::warn!(
+                    "worktree gitdir contains null byte, skipping: {:?}",
+                    gitdir_file
+                );
                 continue;
             }
             let worktree_git = PathBuf::from(raw);
