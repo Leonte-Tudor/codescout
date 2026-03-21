@@ -32,10 +32,10 @@ pub fn filter_sections(content: &str, sections: &[&str]) -> FilterResult {
     let mut in_preamble = true;
 
     for line in content.lines() {
-        if line.starts_with("### ") {
+        if let Some(rest) = line.strip_prefix("### ") {
             // Normalize: strip "### " prefix, trim leading+trailing whitespace.
             // The raw line is preserved in the block's line vec for output.
-            let normalized = line["### ".len()..].trim().to_string();
+            let normalized = rest.trim().to_string();
             blocks.push((normalized, vec![line]));
             in_preamble = false;
         } else if in_preamble {
