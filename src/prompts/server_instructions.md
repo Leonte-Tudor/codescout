@@ -48,52 +48,19 @@ These are non-negotiable. Violating the letter IS violating the spirit.
 | **Nothing** (new codebase) | `list_dir(path)` → `list_symbols(file)` | `semantic_search("what does this do")` |
 | **A text pattern** (regex, error message) | `search_pattern(pattern)` | `find_symbol` on matched files |
 | **A filename** (glob pattern) | `find_file(pattern)` | `read_file` or `list_symbols` on result |
-| **A GitHub repo** | `github_repo` | drill with specific `method` parameter |
-
-### By task
-
-| Task | Tool | NOT this |
-|---|---|---|
-| Read a function body | `find_symbol(name, include_body=true)` | ~~`read_file("src/foo.rs")`~~ |
-| See file structure | `list_symbols(path)` | ~~`read_file` entire file~~ |
-| Get docstrings | `list_symbols(path, include_docs=true)` | — |
-| Get function signatures | `list_symbols(path)` | — |
-| Find all usages | `find_references(name_path, path)` | ~~`search_pattern`~~ |
-| Jump to definition | `goto_definition(path, line)` | — |
-| Type info / docs | `hover(path, line)` | — |
-| Replace a function body | `replace_symbol(name_path, path, new_body)` | ~~`edit_file` with old_string~~ |
-| Insert code near a symbol | `insert_code(name_path, path, code, position)` | ~~`edit_file`~~ |
-| Delete a symbol | `remove_symbol(name_path, path)` | ~~`edit_file` with empty string~~ |
-| Rename across codebase | `rename_symbol(name_path, path, new_name)` | ~~manual find/replace~~ |
-| Change an import/literal/comment | `edit_file(path, old_string, new_string)` | — (correct tool) |
-| Read config/markdown/data | `read_file(path)` | — (correct tool) |
-| Run a shell command | `run_command(command)` | ~~piped commands~~ |
-| Index a library | `index_project(scope="lib:name")` | — |
-| Project health check | `project_status` | — |
-| Persistent notes | `memory(action="read\|write\|list\|delete")` | — |
-| Search memories by meaning | `memory(action="recall", query="...")` | — |
-| Store knowledge for later | `memory(action="remember", content="...")` | — |
-| Local git (blame, log, diff) | `run_command("git blame/log/diff ...")` | ~~`github_repo(list_commits)`~~ — local git is faster, has full history |
-| GitHub repo / branches / releases | `github_repo(method, ...)` | — |
 
 ## Anti-Patterns — STOP if you catch yourself doing these
 
 | ❌ Never do this | ✅ Do this instead | Why |
 |---|---|---|
-| `read_file("src/main.rs")` to read source | `list_symbols("src/main.rs")` then `find_symbol(name, include_body=true)` | Symbol tools are structured + token-efficient |
-| `read_file` then scan for a function | `find_symbol("function_name")` directly | Skip the file, go straight to the symbol |
 | `run_command("jq '.key' @file_ref")` to query JSON | `read_file(path, json_path="$.key")` | Navigation params > shell buffer queries |
 | `edit_file` with multi-line old_string on `.rs`/`.py`/`.ts` | `replace_symbol(name_path, path, new_body)` | Structural edits > fragile string matching |
 | `edit_file` to delete a function | `remove_symbol(name_path, path)` | LSP knows the exact range |
 | `edit_file` to add code after a function | `insert_code(name_path, path, code, "after")` | Position-aware, no string matching |
 | Native Edit/Write on source files | `replace_symbol`, `insert_code`, `edit_file` | codescout tools are LSP-aware; native tools bypass all safety gates |
-| `run_command("cargo test 2>&1 \| grep FAIL")` | `run_command("cargo test")` then `grep FAIL @cmd_id` | Buffer saves context; pipes waste it |
 | `run_command("cd /abs/path && cmd")` | `run_command("cmd")` — already in project root | Use `cwd` param for subdirectories |
-| `run_command("cat src/lib.rs")` | `list_symbols("src/lib.rs")` or `read_file` with line range | Shell reads on source are blocked |
 | Repeat a broad `find_symbol` after overflow | Narrow with `path=`, `kind=`, or more specific pattern | Follow the overflow hint |
 | Ignore `by_file` in overflow response | Use top file from `by_file` as `path=` filter | The hint tells you exactly where to look |
-| `github_repo(list_commits)` for local file history | `run_command("git log src/foo.rs")` | Local git has full history; GitHub API is paginated and rate-limited |
-| `activate_project("other")` without returning | `activate_project("other")` → work → `activate_project` back to original | Shared server state — forgetting breaks parent conversation |
 | `activate_project` for a single lookup | Pass `project: "<id>"` on the tool call | No state mutation, no risk of forgetting to return |
 
 **If you catch yourself rationalizing** ("I'll just quickly read the file", "this edit is
@@ -104,17 +71,11 @@ use the right tool. Small shortcuts compound into large context waste.
 
 ### File I/O
 
-- `read_file(path)` — read a file. Short files return content directly; large files
-  (~2500+ tokens) return a structural summary + `@file_*` ref with line ranges.
-  Navigate into large files by format instead of querying buffers:
-  - **Markdown:** summary shows heading tree → `read_file(path, heading="## Section")`
-  - **JSON:** summary shows key schema → `read_file(path, json_path="$.key")`
-  - **TOML/YAML:** summary shows table structure → `read_file(path, toml_key="section")`
-  - Source code summaries include top-level symbols. Use `start_line`/`end_line` for excerpts.
-  Prefer `list_symbols` / `find_symbol` over `read_file` for source code navigation.
-  Large content is auto-chunked: the response includes as much content as fits inline, plus
-  `complete: false` and a `next` field with the exact continuation command to get more.
-  No need to guess chunk sizes — just follow the `next` command to continue reading.
+- `read_file(path)` — read a file. Large files return a summary + `@file_*` ref.
+  Navigate large files by format: `heading=` (Markdown), `json_path=` (JSON),
+  `toml_key=` (TOML/YAML), or `start_line`/`end_line` for excerpts.
+  Auto-chunked: follow the `next` field to continue reading.
+  Prefer `list_symbols`/`find_symbol` over `read_file` for source code.
 - `list_dir(path)` — list files and directories. Pass `recursive=true` for a full tree.
 - `search_pattern(pattern)` — regex search across files. Pass `context_lines` for
   merged context blocks. Scope with `path=`, limit with `max_results` (default 50).
@@ -134,9 +95,10 @@ use the right tool. Small shortcuts compound into large context waste.
   registered library.
 - `list_symbols(path)` — symbol tree for file/dir/glob. Pass `include_docs=true` for
   docstrings. Signatures always included. Single-file mode caps at 100 top-level symbols.
-- `find_references(name_path, path)` — find all usages of a symbol. **Note:** Scope filtering is limited to
-  references the project's LSP server already knows about. It cannot proactively discover references in
-  unrelated library directories.
+  Pass `scope="lib:<name>"` to list symbols in a registered library.
+- `find_references(name_path, path)` — find all usages of a symbol. Pass `scope="lib:<name>"`
+  to search library code. **Note:** Scope filtering is limited to references the project's
+  LSP server already knows about.
 - `goto_definition(path, line)` — jump to definition via LSP. Auto-discovers libraries.
 - `hover(path, line)` — type info and documentation for a symbol at a position.
 
@@ -165,6 +127,12 @@ use the right tool. Small shortcuts compound into large context waste.
   - `cwd` — run from a subdirectory (relative to project root)
   - `acknowledge_risk` — bypass safety check for destructive commands
   - `timeout_secs` — max execution time (default 30)
+  - `run_in_background` — detach and return immediately with a `@bg_*` handle. The
+    process runs independently; stdout+stderr go to a log file. A 5-second warm window
+    captures startup output. Query later with `run_command("tail -50 @bg_xxx")`. Use
+    for dev servers, watchers, or any command that would outlive the timeout.
+  - `interactive` — drive an interactive process (REPL, setup wizard) via elicitation
+    prompts. Fill in forms with your choice, or leave blank and press enter to cancel.
 - `onboarding` — project discovery: detect languages, read key files, generate system
   prompt draft. Use `force=true` to re-scan.
 
@@ -175,11 +143,8 @@ use the right tool. Small shortcuts compound into large context waste.
   - `action="read"` — requires `topic`. Pass `private=true` for private store.
   - `action="list"` — pass `include_private=true` to see both shared and private topics.
   - `action="delete"` — requires `topic`. Pass `private=true` for private store.
-  - `action="remember"` — store a semantic memory. Requires `content`. Optional `title`. Always specify `bucket`:
-    - `code` — functions, patterns, APIs, naming conventions, type/trait/module knowledge
-    - `system` — build/deploy/config, CI, infra, environment, credentials, migrations
-    - `preferences` — style preferences, habits, things to always/never do
-    - `unstructured` — decisions, context, notes (default if omitted)
+  - `action="remember"` — store a semantic memory. Requires `content`. Optional `title`.
+    Specify `bucket`: `code` | `system` | `preferences` | `unstructured` (default).
   - `action="recall"` — search memories by meaning. Requires `query`. Optional `bucket` filter, `limit`.
   - `action="forget"` — delete a semantic memory. Requires `id` (from recall results).
   - `action="refresh_anchors"` — re-hash anchored files without changing memory content. Use after reviewing a stale memory and confirming it's still accurate. Requires `topic`.
@@ -189,7 +154,7 @@ use the right tool. Small shortcuts compound into large context waste.
 
 - `activate_project(path, read_only?)` — switch active project root. Returns an orientation
   card: project name, languages, available memories, semantic index status, and workspace
-  siblings. RW activations additionally include security profile and shell/github toggles.
+  siblings. RW activations additionally include security profile and shell toggles.
   Non-home projects default to `read_only: true`. Pass `read_only: false` to enable writes.
   Required after `EnterWorktree`. Use `project_status()` for detailed health checks and
   memory staleness.
@@ -208,54 +173,12 @@ use the right tool. Small shortcuts compound into large context waste.
   After registering, use `scope="lib:<name>"` in symbol/search tools, and `index_project(scope="lib:<name>")`
   for semantic search.
 
-**Library navigation rules:**
-- Once registered, library source code is navigable with all **read-only** tools:
-  `list_symbols`, `find_symbol`, `read_file`, `search_pattern`, `hover`, `goto_definition`.
-- Libraries are **auto-discovered** when `goto_definition` or `hover` resolves to a path
-  outside the project root — the library is registered automatically.
-- Use `scope="lib:<name>"` in `semantic_search` to search library code (requires indexing).
-- Staleness hints appear in `semantic_search` responses when a library's lockfile version
-  differs from the version that was indexed — re-run `index_project(scope="lib:<name>")` to refresh.
-- Use `index_status()` to check indexing progress for all registered libraries.
-- **Write tools** (`edit_file`, `replace_symbol`, `insert_code`, etc.) are **project-only**
-  and will be rejected for library paths.
+**Library rules:**
+- Auto-discovered when `goto_definition`/`hover` resolves outside project root.
+- All read-only tools work on registered libraries. Write tools are project-only.
+- `scope="lib:<name>"` in `semantic_search`/`find_symbol`/`index_project` to target a library.
+- Staleness hints appear when lockfile version ≠ indexed version — re-run `index_project`.
 
-**Cross-project navigation (workspaces):**
-- **Quick lookups** (1–3 calls): pass `project: "<id>"` to scope the call — no state change.
-- **Sustained exploration** (reading memories, semantic search, many tool calls):
-  use `activate_project("<id>")`, but **always `activate_project` back to your original
-  project when done.** Forgetting to return leaves all subsequent tool calls operating
-  against the wrong project.
-- **Subagents:** the MCP server state is shared with the parent conversation. You **MUST**
-  `activate_project` back to the original project before completing your task.
-
-### GitHub
-
-`github_repo` is for operations that require the GitHub API — code search across repos,
-listing releases/tags, creating branches remotely, forking. For local history (blame, log,
-diff), prefer `run_command("git ...")` — it's faster and has full history.
-
-- `github_repo(method, ...)` — repository, branch, commit, release, and code search.
-  - Repo: `search` | `create` | `fork`
-  - Branches: `list_branches` | `create_branch`
-  - Commits: `list_commits` | `get_commit` (returns `@buffer` handle)
-  - Releases: `list_releases` | `get_latest_release` | `get_release_by_tag`
-  - Tags: `list_tags` | `get_tag`
-  - Code: `search_code` (returns `@buffer` handle) — **scope with `repo:owner/repo` in the query**, not the `owner`/`repo` params (e.g. `query="fn main repo:rust-lang/rust-analyzer"`)
-
-Additional GitHub tools (`github_identity`, `github_issue`, `github_pr`, `github_file`)
-are available when `security.github_enabled = true` in `.codescout/project.toml`.
-Restart the server after changing this setting.
-
-## Elicitation — Interactive Questions from Tools
-
-Some tools may pause mid-execution to ask you questions via elicitation dialogs:
-
-- **`run_command(interactive: true)`** — Drives an interactive process (REPL, setup wizard)
-  via a loop of input prompts.
-
-**If you see a form or dialog,** fill it in with your choice/confirmation, or leave it blank
-and press enter to cancel. Cancelled operations are safe — no mutations occur.
 
 ## Output System
 
@@ -278,21 +201,14 @@ Large content is stored in an `OutputBuffer`. When a result is buffered you rece
 `output_id` field (or `file_id` for large file reads) containing a `@ref` handle.
 The full content costs nothing to hold — query it on demand.
 
-#### How to recognise which ref type you have
+#### Buffer ref types and access
 
-| Signal in tool result | Ref type | Content |
-|---|---|---|
-| `"output_id": "@cmd_abc"` in `run_command` result | `@cmd_*` | **plain text** — raw command stdout |
-| `"file_id": "@file_abc"` in `read_file` result | `@file_*` | **plain text** — raw file content |
-| `"output_id": "@tool_abc"` in any other tool result | `@tool_*` | **structured JSON** — pretty-printed tool result |
-
-#### Access patterns by ref type
-
-| Ref | Content type | Primary access | Secondary access |
+| Signal | Ref | Content | Access |
 |---|---|---|---|
-| `@file_*` | plain text | `run_command("grep pattern @file_abc")` | `read_file("@file_abc", start_line=N, end_line=M)` |
-| `@cmd_*` | plain text | `run_command("grep pattern @cmd_abc")` | `read_file("@cmd_abc", start_line=N, end_line=M)` |
-| `@tool_*` | JSON object | `read_file("@tool_abc", json_path="$.field")` | `read_file("@tool_abc", start_line=N, end_line=M)` |
+| `"output_id": "@cmd_abc"` from `run_command` | `@cmd_*` | plain text | `grep pattern @cmd_abc` or `read_file("@cmd_abc", start_line=N)` |
+| `"file_id": "@file_abc"` from `read_file` | `@file_*` | plain text | `grep pattern @file_abc` or `read_file("@file_abc", start_line=N)` |
+| `"output_id": "@tool_abc"` from other tools | `@tool_*` | JSON | `read_file("@tool_abc", json_path="$.field")` or `start_line`/`end_line` |
+| `"output_id": "@bg_abc"` from `run_in_background` | `@bg_*` | plain text | `tail -50 @bg_abc` or `grep pattern @bg_abc` |
 
 **Response fields for `read_file`:**
 - `complete: bool` — true if all requested content was returned inline; false if more is available via `next`
@@ -344,16 +260,10 @@ Instructions" — project-specific guidance. Edit the file to customize AI behav
 
 ## Rules
 
-1. **Symbol tools over `read_file` for source code.** `list_symbols` + `find_symbol(include_body=true)` beats reading entire files.
-2. **Symbol edits over `edit_file` for code.** `replace_symbol`, `insert_code`, `remove_symbol` for structural changes. `edit_file` for imports, literals, comments.
-3. **Run commands bare, query buffers after.** `cargo test` → `grep FAILED @cmd_id`. Never pipe.
-4. **Exploring mode first.** Only `detail_level: "full"` after you know what you need.
-5. **Follow overflow hints.** Narrow with `path=`, `kind=`, or a more specific pattern — don't repeat broad queries.
-6. **`run_command` is already in the project root.** Never prefix with `cd /abs/path &&`. Use `cwd` for subdirectories.
-7. **Buffer queries: run targeted, don't pipe.** `grep pattern @cmd_id` — never `grep @ref | head`.
-8. **Check `features_md` from `onboarding` before suggesting features.** Don't propose work that's already done.
-9. **Semantic search for "how does X work?"** Then drill into results with symbol tools.
-10. **Read `language-patterns` memory before writing or editing code.** `memory(action="read", topic="language-patterns")` contains per-language anti-patterns and correct patterns. Consult it before code changes or code review.
-11. **Prefer local git over GitHub API for local history.** `run_command("git blame/log/diff ...")` is faster and has full history. Use `github_repo` only for remote-only operations: releases, remote branches, cross-repo code search, forking.
-12. **Always restore the active project after cross-project navigation.** `activate_project` back to your original project when done. For quick lookups, use `project: "<id>"` instead of switching.
-13. **Call `activate_project(".", read_only: false)` at the start of every session.** Ensures write access on the CWD regardless of prior server state.
+1. **Exploring mode first.** Only `detail_level: "full"` after you know what you need.
+2. **Follow overflow hints.** Narrow with `path=`, `kind=`, or a more specific pattern — don't repeat broad queries.
+3. **`run_command` is already in the project root.** Never prefix with `cd /abs/path &&`. Use `cwd` for subdirectories.
+4. **Check `features_md` from `onboarding` before suggesting features.** Don't propose work that's already done.
+5. **Semantic search for "how does X work?"** Then drill into results with symbol tools.
+6. **Read `language-patterns` memory before writing or editing code.** `memory(action="read", topic="language-patterns")` contains per-language anti-patterns and correct patterns. Consult it before code changes or code review.
+7. **Symbol edits over `edit_file` for code.** `replace_symbol`, `insert_code`, `remove_symbol` for structural changes. `edit_file` for imports, literals, comments.

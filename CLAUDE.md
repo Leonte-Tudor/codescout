@@ -244,6 +244,29 @@ The project has **three prompt surfaces** that reference tool names:
 closer to the change get updated; distant ones accumulate stale refs ("distance
 from change" problem). Always grep all three surfaces when modifying tool names.
 
+## Server Instructions Design Rules
+
+`src/prompts/server_instructions.md` is injected on **every MCP request**. Every
+token costs on every call. Follow these rules when modifying it:
+
+1. **Cap hard rules at 5–8.** Beyond 8 behavioral constraints, compliance on all
+   drops. Consolidate, don't accumulate.
+2. **No triple-layer repetition.** A rule in Iron Laws should NOT be restated in
+   Anti-Patterns AND Rules. Max 2 appearances: once as a law, optionally once as
+   a closing reminder (for the 1–2 most-violated rules only).
+3. **Tables > prose** for decision-matrix content. Claude scans tables faster.
+4. **End of prompt = highest compliance.** Put the most-violated rule(s) in the
+   closing `## Rules` section — that's closest to generation.
+5. **Don't document every param.** Pagination (`offset`, `limit`, `detail_level`)
+   and aliases (`file_path`, `limit`) are discoverable from the tool schema. Only
+   document params that change behavior in non-obvious ways.
+6. **Prompt caching matters.** Keep section order stable between releases so the
+   static prefix benefits from automatic caching. Don't reorganize for cosmetic reasons.
+
+**Research:** See `docs/research/2026-03-21-claude-prompt-engineering.md` and
+`docs/research/2026-03-21-superpowers-prompt-patterns.md` for the evidence behind
+these rules.
+
 ## Companion Plugin: code-explorer-routing
 
 This project has a companion Claude Code plugin at **`../claude-plugins/code-explorer-routing/`** that is **always active** when working on codescout. You must be aware of it.
