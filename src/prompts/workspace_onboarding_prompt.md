@@ -28,7 +28,7 @@ Before deep-diving any single project, get a high-level understanding of ALL pro
 
 ## Phase 1B — Subagent Deep Dives
 
-Dispatch one Agent subagent per project using the template below. Set `run_in_background: true` for all subagents so they run in parallel.
+Dispatch one Agent subagent per project using the template below. **Dispatch all subagents in a single parallel batch** — call all Agent tools in one response turn so they execute concurrently. Do NOT dispatch them sequentially.
 
 **Subagent prompt template** (fill in placeholders for each project):
 
@@ -75,11 +75,25 @@ Use: `memory(action: "write", project: "{project_id}", topic: "...", content: ".
 
 **Failure handling**: If a subagent fails or times out, note the failure, proceed with remaining projects, and inform the user which projects need re-onboarding.
 
+<HARD-GATE>
+Do NOT begin Phase 2 until ALL of the following are true:
+
+1. Every Agent subagent call has **returned** (not just been dispatched)
+2. You have verified each project's memories were written — for each project run:
+   `memory(action: "read", project: "{id}", topic: "project-overview")`
+   If a project's memory is missing, re-dispatch that subagent before continuing.
+3. You have a complete list of which projects succeeded and which (if any) failed.
+
+If any project failed and cannot be recovered, inform the user before proceeding.
+The workspace synthesis in Phase 2 is only as good as the per-project data it reads.
+Writing workspace memories from incomplete per-project data produces wrong memories.
+</HARD-GATE>
+
 ---
 
 ## Phase 2 — Workspace Memory Synthesis
 
-After all subagent deep dives complete, read back per-project memories and write 5 workspace-level memories.
+After all subagent deep dives complete and the Phase 1B gate is verified, read back per-project memories and write 5 workspace-level memories.
 
 **Read per-project memories first:**
 - `memory(action: "read", project: "{id}", topic: "architecture")` for each project
