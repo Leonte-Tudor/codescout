@@ -23,7 +23,10 @@ pub struct FilterResult {
 /// Always returns a `FilterResult`. The caller checks `result.matched` to
 /// decide whether to return content or a `RecoverableError`.
 pub fn filter_sections(content: &str, sections: &[&str]) -> FilterResult {
-    debug_assert!(!sections.is_empty(), "precondition: sections must be non-empty");
+    debug_assert!(
+        !sections.is_empty(),
+        "precondition: sections must be non-empty"
+    );
 
     // --- Parse content into preamble + blocks ---
     // Each block: (normalized_heading, Vec of raw lines including the ### line)
@@ -66,13 +69,22 @@ pub fn filter_sections(content: &str, sections: &[&str]) -> FilterResult {
 
     // Reconstruct output: preamble + matched section lines, joined by "\n".
     // Append "\n" if the original content ended with a newline (lines() strips it).
-    let output: Vec<&str> = preamble_lines.iter().copied().chain(matched_lines).collect();
+    let output: Vec<&str> = preamble_lines
+        .iter()
+        .copied()
+        .chain(matched_lines)
+        .collect();
     let mut result_content = output.join("\n");
     if content.ends_with('\n') {
         result_content.push('\n');
     }
 
-    FilterResult { content: result_content, matched, missing, available }
+    FilterResult {
+        content: result_content,
+        matched,
+        missing,
+        available,
+    }
 }
 
 #[cfg(test)]
@@ -106,9 +118,18 @@ Python patterns here.
         let r = filter_sections(SAMPLE, &["Rust"]);
         assert!(r.matched);
         assert!(r.content.contains("### Rust"), "should include heading");
-        assert!(r.content.contains("Rust anti-patterns here."), "should include body");
-        assert!(r.content.contains("# Language Patterns"), "should include preamble");
-        assert!(!r.content.contains("### TypeScript"), "should exclude TypeScript");
+        assert!(
+            r.content.contains("Rust anti-patterns here."),
+            "should include body"
+        );
+        assert!(
+            r.content.contains("# Language Patterns"),
+            "should include preamble"
+        );
+        assert!(
+            !r.content.contains("### TypeScript"),
+            "should exclude TypeScript"
+        );
     }
 
     #[test]
@@ -151,7 +172,10 @@ Python patterns here.
         assert!(r.content.contains("### TypeScript"));
         // missing preserves caller-supplied casing
         assert_eq!(r.missing, vec!["Go"]);
-        assert!(!r.content.contains("### Python"), "unrelated section should be excluded");
+        assert!(
+            !r.content.contains("### Python"),
+            "unrelated section should be excluded"
+        );
     }
 
     #[test]
@@ -167,7 +191,10 @@ Python patterns here.
     #[test]
     fn filter_sections_nested_h4_included_in_body() {
         let r = filter_sections(SAMPLE, &["Rust"]);
-        assert!(r.content.contains("#### Sub-heading"), "h4 should be part of section body");
+        assert!(
+            r.content.contains("#### Sub-heading"),
+            "h4 should be part of section body"
+        );
         assert!(r.content.contains("More Rust content."));
     }
 
@@ -177,7 +204,10 @@ Python patterns here.
         let content = "###  Rust  \n\nContent.\n";
         let r = filter_sections(content, &["rust"]);
         assert!(r.matched, "should match despite whitespace");
-        assert!(r.content.contains("Content."), "body should be included when matched via whitespace");
+        assert!(
+            r.content.contains("Content."),
+            "body should be included when matched via whitespace"
+        );
         assert_eq!(r.available, vec!["Rust"]);
     }
 

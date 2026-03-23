@@ -1304,12 +1304,23 @@ mod tests {
         let sub_b = root.join("packages").join("web");
         std::fs::create_dir_all(&sub_a).unwrap();
         std::fs::create_dir_all(&sub_b).unwrap();
-        std::fs::write(sub_a.join("package.json"), r#"{"name":"api","scripts":{"build":"tsc"}}"#).unwrap();
-        std::fs::write(sub_b.join("package.json"), r#"{"name":"web","scripts":{"build":"tsc"}}"#).unwrap();
+        std::fs::write(
+            sub_a.join("package.json"),
+            r#"{"name":"api","scripts":{"build":"tsc"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            sub_b.join("package.json"),
+            r#"{"name":"web","scripts":{"build":"tsc"}}"#,
+        )
+        .unwrap();
 
         let agent = Agent::new(Some(root)).await.unwrap();
         let summary = agent.workspace_summary().await;
-        assert!(summary.is_some(), "multi-project workspace should have summary");
+        assert!(
+            summary.is_some(),
+            "multi-project workspace should have summary"
+        );
         let projects = summary.unwrap();
         assert!(projects.len() >= 2, "should have at least 2 sub-projects");
         // Each entry should have depends_on field (even if empty)
@@ -1324,7 +1335,10 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
         let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
         let summary = agent.workspace_summary().await;
-        assert!(summary.is_none(), "single-project workspace should return None");
+        assert!(
+            summary.is_none(),
+            "single-project workspace should return None"
+        );
     }
 
     #[tokio::test]
@@ -1349,10 +1363,16 @@ mod tests {
             let inner = agent.inner.read().await;
             inner.active_project().is_none()
         };
-        assert!(is_dormant, "sub-project should be Dormant before activate_within_workspace");
+        assert!(
+            is_dormant,
+            "sub-project should be Dormant before activate_within_workspace"
+        );
 
         // Switch back to home first
-        agent.switch_focus(crate::workspace::ROOT_PROJECT_ID).await.unwrap();
+        agent
+            .switch_focus(crate::workspace::ROOT_PROJECT_ID)
+            .await
+            .unwrap();
 
         // Now use activate_within_workspace
         agent.activate_within_workspace("api", None).await.unwrap();
@@ -1362,14 +1382,20 @@ mod tests {
             .with_project(|p| Ok(p.config.project.name.clone()))
             .await
             .unwrap();
-        assert!(!name.is_empty(), "should have loaded config for sub-project");
+        assert!(
+            !name.is_empty(),
+            "should have loaded config for sub-project"
+        );
 
         // Workspace topology preserved — all original projects still exist
         let project_count = {
             let inner = agent.inner.read().await;
             inner.workspace.as_ref().unwrap().projects.len()
         };
-        assert!(project_count >= 2, "workspace should still have all projects");
+        assert!(
+            project_count >= 2,
+            "workspace should still have all projects"
+        );
     }
 
     #[tokio::test]
@@ -1379,5 +1405,4 @@ mod tests {
         let result = agent.activate_within_workspace("nonexistent", None).await;
         assert!(result.is_err());
     }
-
 }
