@@ -881,6 +881,9 @@ mod tests {
                 )),
                 progress: None,
                 peer: None,
+                section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::tools::section_coverage::SectionCoverage::new(),
+                )),
             },
         )
     }
@@ -907,6 +910,9 @@ mod tests {
                 )),
                 progress: None,
                 peer: None,
+                section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::tools::section_coverage::SectionCoverage::new(),
+                )),
             },
         )
     }
@@ -991,6 +997,9 @@ mod tests {
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         assert!(SemanticSearch
             .call(json!({ "query": "test" }), &ctx)
@@ -1204,6 +1213,9 @@ mod tests {
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         let result = IndexStatus
             .call(json!({"threshold": 0.1}), &ctx)

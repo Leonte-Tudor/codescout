@@ -2510,6 +2510,9 @@ mod tests {
                 )),
                 progress: None,
                 peer: None,
+                section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::tools::section_coverage::SectionCoverage::new(),
+                )),
             },
         )
     }
@@ -2526,6 +2529,9 @@ mod tests {
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         }
     }
 
@@ -2612,6 +2618,9 @@ mod tests {
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         assert!(Onboarding.call(json!({}), &ctx).await.is_err());
     }
@@ -2920,6 +2929,9 @@ mod tests {
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         let result = Onboarding.call(json!({}), &ctx).await.unwrap();
 
@@ -2947,6 +2959,9 @@ mod tests {
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         let result = Onboarding.call(json!({}), &ctx).await.unwrap();
 
@@ -4099,6 +4114,9 @@ mod tests {
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         let result = Onboarding
@@ -4871,6 +4889,9 @@ mod tests {
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         Onboarding
@@ -4910,6 +4931,9 @@ mod tests {
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         Onboarding

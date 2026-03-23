@@ -125,6 +125,9 @@ mod tests {
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         }
     }
 
@@ -148,6 +151,9 @@ mod tests {
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         let tool = GetUsageStats;
         let result = tool.call(serde_json::json!({}), &ctx).await;

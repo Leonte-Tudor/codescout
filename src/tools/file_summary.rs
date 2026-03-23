@@ -78,41 +78,19 @@ pub fn summarize_source(path: &str, content: &str) -> Value {
 
 pub fn summarize_markdown(content: &str) -> Value {
     let line_count = content.lines().count();
-    let mut in_code_block = false;
-
-    // First pass: collect heading positions
-    let mut raw_headings: Vec<(String, usize, usize)> = Vec::new(); // (text, level, line_1indexed)
-    for (idx, line) in content.lines().enumerate() {
-        if line.starts_with("```") {
-            in_code_block = !in_code_block;
-            continue;
-        }
-        if in_code_block {
-            continue;
-        }
-        if let Some(level) = heading_level(line) {
-            raw_headings.push((line.to_string(), level, idx + 1));
-        }
-    }
-
-    // Second pass: compute end_line for each heading
-    let mut headings: Vec<Value> = Vec::new();
-    for (i, (text, level, line)) in raw_headings.iter().enumerate() {
-        let end_line = raw_headings[i + 1..]
-            .iter()
-            .find(|(_, l, _)| *l <= *level)
-            .map(|(_, _, next_line)| next_line - 1)
-            .unwrap_or(line_count);
-        headings.push(serde_json::json!({
-            "heading": text,
-            "level": level,
-            "line": line,
-            "end_line": end_line,
-        }));
-    }
-
+    let all_headings = parse_all_headings(content);
+    let mut headings: Vec<Value> = all_headings
+        .iter()
+        .map(|h| {
+            serde_json::json!({
+                "heading": h.text,
+                "level": h.level,
+                "line": h.line,
+                "end_line": h.end_line,
+            })
+        })
+        .collect();
     headings.truncate(30);
-
     serde_json::json!({
         "type": "markdown",
         "line_count": line_count,
@@ -120,7 +98,7 @@ pub fn summarize_markdown(content: &str) -> Value {
     })
 }
 
-fn heading_level(line: &str) -> Option<usize> {
+pub fn heading_level(line: &str) -> Option<usize> {
     if !line.starts_with('#') {
         return None;
     }
@@ -132,14 +110,105 @@ fn heading_level(line: &str) -> Option<usize> {
     }
 }
 
-pub fn extract_markdown_section(
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeadingInfo {
+    pub text: String,    // e.g. "## Setup"
+    pub level: usize,    // 1-6
+    pub line: usize,     // 1-indexed
+    pub end_line: usize, // 1-indexed, inclusive
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SectionRange {
+    pub heading_line: usize,    // 1-indexed
+    pub body_start_line: usize, // heading_line + 1
+    pub end_line: usize,        // inclusive, last line of section
+    pub heading_text: String,   // raw heading text (with formatting)
+    pub level: usize,           // 1-6
+}
+
+/// Parse all markdown headings with their line ranges. No truncation.
+/// Skips headings inside fenced code blocks.
+pub fn parse_all_headings(content: &str) -> Vec<HeadingInfo> {
+    let line_count = content.lines().count();
+    let mut in_code_block = false;
+    let mut raw: Vec<(String, usize, usize)> = Vec::new();
+    for (idx, line) in content.lines().enumerate() {
+        if line.starts_with("```") {
+            in_code_block = !in_code_block;
+            continue;
+        }
+        if in_code_block {
+            continue;
+        }
+        if let Some(level) = heading_level(line) {
+            raw.push((line.to_string(), level, idx + 1));
+        }
+    }
+    raw.iter()
+        .enumerate()
+        .map(|(i, (text, level, line))| {
+            let end_line = raw[i + 1..]
+                .iter()
+                .find(|(_, l, _)| *l <= *level)
+                .map(|(_, _, next_line)| next_line - 1)
+                .unwrap_or(line_count);
+            HeadingInfo {
+                text: text.clone(),
+                level: *level,
+                line: *line,
+                end_line,
+            }
+        })
+        .collect()
+}
+
+/// Strip inline markdown formatting from a heading string.
+/// Removes backtick spans, bold/italic markers, collapses spaces, trims.
+pub fn strip_inline_formatting(s: &str) -> String {
+    let mut result = s.to_string();
+    // Remove backtick spans: `code` → code
+    while let Some(start) = result.find('`') {
+        let Some(end) = result[start + 1..].find('`') else {
+            break;
+        };
+        let inner = result[start + 1..start + 1 + end].to_string();
+        result = format!(
+            "{}{}{}",
+            &result[..start],
+            inner,
+            &result[start + 1 + end + 1..]
+        );
+    }
+    // Remove bold/italic: **text** → text, __text__ → text, *text* → text, _text_ → text
+    // Order matters: ** before *, __ before _
+    for marker in &["**", "__", "*", "_"] {
+        while let Some(start) = result.find(marker) {
+            if let Some(end) = result[start + marker.len()..].find(marker) {
+                let inner = result[start + marker.len()..start + marker.len() + end].to_string();
+                result = format!(
+                    "{}{}{}",
+                    &result[..start],
+                    inner,
+                    &result[start + marker.len() + end + marker.len()..]
+                );
+            } else {
+                break;
+            }
+        }
+    }
+    // Collapse multiple spaces to single, trim
+    result.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Resolve a heading query to a precise line range in a markdown document.
+/// Uses a 4-tier matching cascade: exact raw → exact stripped → prefix stripped → substring stripped.
+/// Errors on duplicate exact matches (ambiguity) or no match.
+pub fn resolve_section_range(
     content: &str,
     heading_query: &str,
-) -> Result<SectionResult, RecoverableError> {
-    let summary = summarize_markdown(content);
-    let headings = summary["headings"]
-        .as_array()
-        .ok_or_else(|| RecoverableError::new("no headings found in file"))?;
+) -> Result<SectionRange, RecoverableError> {
+    let headings = parse_all_headings(content);
 
     if headings.is_empty() {
         return Err(RecoverableError::with_hint(
@@ -148,78 +217,128 @@ pub fn extract_markdown_section(
         ));
     }
 
-    // Find matching heading: exact first, then prefix, then substring
-    let query_lower = heading_query.to_lowercase();
-    let matched_idx = headings
-        .iter()
-        .position(|h| h["heading"].as_str().unwrap_or("") == heading_query)
-        .or_else(|| {
-            headings.iter().position(|h| {
-                h["heading"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_lowercase()
-                    .starts_with(&query_lower)
-            })
-        })
-        .or_else(|| {
-            headings.iter().position(|h| {
-                h["heading"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_lowercase()
-                    .contains(&query_lower)
-            })
-        });
+    let query_stripped = strip_inline_formatting(heading_query);
+    let query_stripped_lower = query_stripped.to_lowercase();
 
-    let idx = matched_idx.ok_or_else(|| {
-        let available: Vec<&str> = headings
+    // Helper to build SectionRange from HeadingInfo
+    let make_range = |h: &HeadingInfo| -> SectionRange {
+        SectionRange {
+            heading_line: h.line,
+            body_start_line: h.line + 1,
+            end_line: h.end_line,
+            heading_text: h.text.clone(),
+            level: h.level,
+        }
+    };
+
+    // Helper to build duplicate error
+    let dup_error = |indices: &[usize]| -> RecoverableError {
+        let lines: Vec<String> = indices
             .iter()
-            .filter_map(|h| h["heading"].as_str())
-            .take(15)
+            .map(|&i| headings[i].line.to_string())
             .collect();
         RecoverableError::with_hint(
-            format!("heading '{}' not found", heading_query),
-            format!("Available headings: {}", available.join(", ")),
+            format!(
+                "heading '{}' found {} times (lines {})",
+                heading_query,
+                indices.len(),
+                lines.join(", ")
+            ),
+            "Provide a more specific heading or use edit_file with start_line/end_line to target a specific occurrence.",
         )
-    })?;
+    };
 
-    let matched = &headings[idx];
-    let line = matched["line"].as_u64().unwrap_or(1) as usize;
-    let end_line = matched["end_line"].as_u64().unwrap_or(1) as usize;
-    let level = matched["level"].as_u64().unwrap_or(1) as usize;
+    // Tier 1: Exact match (raw)
+    let exact_raw: Vec<usize> = headings
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| h.text == heading_query)
+        .map(|(i, _)| i)
+        .collect();
+    if exact_raw.len() == 1 {
+        return Ok(make_range(&headings[exact_raw[0]]));
+    }
+    if exact_raw.len() > 1 {
+        return Err(dup_error(&exact_raw));
+    }
+
+    // Tier 2: Exact match (stripped)
+    let exact_stripped: Vec<usize> = headings
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| strip_inline_formatting(&h.text) == query_stripped)
+        .map(|(i, _)| i)
+        .collect();
+    if exact_stripped.len() == 1 {
+        return Ok(make_range(&headings[exact_stripped[0]]));
+    }
+    if exact_stripped.len() > 1 {
+        return Err(dup_error(&exact_stripped));
+    }
+
+    // Tier 3: Prefix match (stripped, case-insensitive)
+    if let Some(idx) = headings.iter().position(|h| {
+        strip_inline_formatting(&h.text)
+            .to_lowercase()
+            .starts_with(&query_stripped_lower)
+    }) {
+        return Ok(make_range(&headings[idx]));
+    }
+
+    // Tier 4: Substring match (stripped, case-insensitive)
+    if let Some(idx) = headings.iter().position(|h| {
+        strip_inline_formatting(&h.text)
+            .to_lowercase()
+            .contains(&query_stripped_lower)
+    }) {
+        return Ok(make_range(&headings[idx]));
+    }
+
+    // No match
+    let available: Vec<&str> = headings.iter().map(|h| h.text.as_str()).take(15).collect();
+    Err(RecoverableError::with_hint(
+        format!("heading '{}' not found", heading_query),
+        format!("Available headings: {}", available.join(", ")),
+    ))
+}
+
+pub fn extract_markdown_section(
+    content: &str,
+    heading_query: &str,
+) -> Result<SectionResult, RecoverableError> {
+    let range = resolve_section_range(content, heading_query)?;
+    let all_headings = parse_all_headings(content);
 
     // Extract content
     let lines: Vec<&str> = content.lines().collect();
-    let start = (line - 1).min(lines.len());
-    let end = end_line.min(lines.len());
+    let start = (range.heading_line - 1).min(lines.len());
+    let end = range.end_line.min(lines.len());
     let section_content = lines[start..end].join("\n");
 
     // Build breadcrumb: walk backwards collecting parents (lower level numbers)
     let mut breadcrumb = Vec::new();
-    let mut current_level = level;
-    for i in (0..=idx).rev() {
-        let h_level = headings[i]["level"].as_u64().unwrap_or(1) as usize;
-        if h_level < current_level || i == idx {
-            breadcrumb.push(headings[i]["heading"].as_str().unwrap_or("?").to_string());
-            current_level = h_level;
+    let mut current_level = range.level;
+    for h in all_headings.iter().rev() {
+        if h.line > range.heading_line {
+            continue;
+        }
+        if h.level < current_level || h.line == range.heading_line {
+            breadcrumb.push(h.text.clone());
+            current_level = h.level;
         }
     }
     breadcrumb.reverse();
 
     // Find siblings: same level headings (excluding the matched one)
-    let siblings: Vec<String> = headings
+    let siblings: Vec<String> = all_headings
         .iter()
-        .filter(|h| {
-            h["level"].as_u64().unwrap_or(0) as usize == level
-                && h["heading"].as_str() != matched["heading"].as_str()
-        })
-        .map(|h| h["heading"].as_str().unwrap_or("?").to_string())
+        .filter(|h| h.level == range.level && h.text != range.heading_text)
+        .map(|h| h.text.clone())
         .collect();
 
     Ok(SectionResult {
         content: section_content,
-        line_range: (line, end_line),
+        line_range: (range.heading_line, range.end_line),
         breadcrumb,
         siblings,
         format: "markdown".to_string(),
@@ -971,6 +1090,23 @@ mod tests {
     }
 
     #[test]
+    fn extract_markdown_section_beyond_30_headings() {
+        let mut content = String::from("# Title\n");
+        for i in 1..=35 {
+            content.push_str(&format!("## Section {i}\ncontent {i}\n"));
+        }
+        let result = extract_markdown_section(&content, "## Section 35").unwrap();
+        assert!(result.content.contains("content 35"));
+    }
+
+    #[test]
+    fn extract_markdown_section_stripped_match() {
+        let content = "# Title\n## The `auth` Module\ndetails here\n";
+        let result = extract_markdown_section(&content, "## The auth Module").unwrap();
+        assert!(result.content.contains("details here"));
+    }
+
+    #[test]
     fn extract_json_path_top_level_key() {
         let content = r#"{"name": "test", "deps": {"a": 1, "b": 2}}"#;
         let (result, type_name, count) = extract_json_path(content, "$.deps").unwrap();
@@ -1044,5 +1180,170 @@ mod tests {
         let content = "database:\n  host: localhost\nserver:\n  port: 8080";
         let result = extract_yaml_key(content, "nonexistent");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_all_headings_basic() {
+        let content = "# Title\ntext\n## Setup\ndo this\n## Usage\nuse it";
+        let headings = parse_all_headings(content);
+        assert_eq!(headings.len(), 3);
+        assert_eq!(headings[0].text, "# Title");
+        assert_eq!(headings[0].level, 1);
+        assert_eq!(headings[0].line, 1);
+        assert_eq!(headings[0].end_line, 6);
+        assert_eq!(headings[1].text, "## Setup");
+        assert_eq!(headings[1].line, 3);
+        assert_eq!(headings[1].end_line, 4);
+        assert_eq!(headings[2].text, "## Usage");
+        assert_eq!(headings[2].line, 5);
+        assert_eq!(headings[2].end_line, 6);
+    }
+
+    #[test]
+    fn parse_all_headings_skips_code_blocks() {
+        let content = "# Title\n```\n## Not a heading\n```\n## Real heading\ntext";
+        let headings = parse_all_headings(content);
+        assert_eq!(headings.len(), 2);
+        assert_eq!(headings[0].text, "# Title");
+        assert_eq!(headings[1].text, "## Real heading");
+    }
+
+    #[test]
+    fn parse_all_headings_no_truncation() {
+        let mut content = String::from("# Title\n");
+        for i in 1..=35 {
+            content.push_str(&format!("## Section {i}\ntext\n"));
+        }
+        let headings = parse_all_headings(&content);
+        assert_eq!(headings.len(), 36); // 1 title + 35 sections
+    }
+
+    #[test]
+    fn parse_all_headings_empty_doc() {
+        let headings = parse_all_headings("no headings here\njust text");
+        assert!(headings.is_empty());
+    }
+
+    #[test]
+    fn strip_inline_formatting_backticks() {
+        assert_eq!(
+            strip_inline_formatting("## The `auth` Module"),
+            "## The auth Module"
+        );
+    }
+
+    #[test]
+    fn strip_inline_formatting_bold() {
+        assert_eq!(
+            strip_inline_formatting("## **Important** Notes"),
+            "## Important Notes"
+        );
+    }
+
+    #[test]
+    fn strip_inline_formatting_italic() {
+        assert_eq!(
+            strip_inline_formatting("## _Setup_ Guide"),
+            "## Setup Guide"
+        );
+    }
+
+    #[test]
+    fn strip_inline_formatting_mixed() {
+        assert_eq!(
+            strip_inline_formatting("## The `auth` **middleware** _layer_"),
+            "## The auth middleware layer"
+        );
+    }
+
+    #[test]
+    fn strip_inline_formatting_no_formatting() {
+        assert_eq!(
+            strip_inline_formatting("## Plain heading"),
+            "## Plain heading"
+        );
+    }
+
+    #[test]
+    fn strip_inline_formatting_collapses_spaces() {
+        assert_eq!(
+            strip_inline_formatting("##  Extra   spaces "),
+            "## Extra spaces"
+        );
+    }
+
+    #[test]
+    fn resolve_section_range_exact_match() {
+        let content = "# Title\ntext\n## Setup\ndo this\n## Usage\nuse it";
+        let range = resolve_section_range(content, "## Setup").unwrap();
+        assert_eq!(range.heading_line, 3);
+        assert_eq!(range.body_start_line, 4);
+        assert_eq!(range.end_line, 4);
+        assert_eq!(range.heading_text, "## Setup");
+        assert_eq!(range.level, 2);
+    }
+
+    #[test]
+    fn resolve_section_range_stripped_match() {
+        let content = "# Title\n## The `auth` Module\ndetails";
+        let range = resolve_section_range(content, "## The auth Module").unwrap();
+        assert_eq!(range.heading_text, "## The `auth` Module");
+        assert_eq!(range.heading_line, 2);
+    }
+
+    #[test]
+    fn resolve_section_range_prefix_match() {
+        let content = "# Title\n## Authentication Guide\ndetails";
+        let range = resolve_section_range(content, "## Auth").unwrap();
+        assert_eq!(range.heading_text, "## Authentication Guide");
+    }
+
+    #[test]
+    fn resolve_section_range_empty_section() {
+        let content = "# Title\n## Empty\n## Next\nstuff";
+        let range = resolve_section_range(content, "## Empty").unwrap();
+        assert_eq!(range.heading_line, 2);
+        assert_eq!(range.body_start_line, 3);
+        assert_eq!(range.end_line, 2);
+    }
+
+    #[test]
+    fn resolve_section_range_last_section() {
+        let content = "# Title\n## Last\nfinal content\nmore";
+        let range = resolve_section_range(content, "## Last").unwrap();
+        assert_eq!(range.end_line, 4);
+    }
+
+    #[test]
+    fn resolve_section_range_not_found() {
+        let content = "# Title\n## Setup\ntext";
+        let err = resolve_section_range(content, "## Nonexistent").unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn resolve_section_range_duplicate_heading_error() {
+        let content = "# Title\n## Example\nfirst\n## Other\n## Example\nsecond";
+        let err = resolve_section_range(content, "## Example").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("2") || msg.contains("multiple"),
+            "should mention duplicate count: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_section_range_nested_sections() {
+        let content = "# Title\n## Parent\nparent text\n### Child\nchild text\n## Sibling\nsibling";
+        let range = resolve_section_range(content, "## Parent").unwrap();
+        assert_eq!(range.heading_line, 2);
+        assert_eq!(range.end_line, 5);
+    }
+
+    #[test]
+    fn resolve_section_range_heading_in_code_block() {
+        let content = "# Title\n```\n## Not a heading\n```\n## Real\ntext";
+        let range = resolve_section_range(content, "## Real").unwrap();
+        assert_eq!(range.heading_line, 5);
     }
 }

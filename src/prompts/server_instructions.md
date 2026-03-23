@@ -60,6 +60,7 @@ These are non-negotiable. Violating the letter IS violating the spirit.
 | Repeat a broad `find_symbol` after overflow | Narrow with `path=`, `kind=`, or more specific pattern | Follow the overflow hint |
 | Ignore `by_file` in overflow response | Use top file from `by_file` as `path=` filter | The hint tells you exactly where to look |
 | `activate_project` for a single lookup | Pass `project: "<id>"` on the tool call | No state mutation, no risk of forgetting to return |
+| `edit_file` / `create_file` to rewrite an entire markdown section | `edit_section(path, heading, action, content)` | Heading-addressed, no string matching needed |
 
 **If you catch yourself rationalizing** ("I'll just quickly read the file", "this edit is
 too small for replace_symbol", "one pipe won't hurt") — that's the signal to stop and
@@ -81,7 +82,14 @@ use the right tool. Small shortcuts compound into large context waste.
 - `create_file(path, content)` — create or overwrite a file.
 - `edit_file(path, old_string, new_string)` — exact string replacement. Whitespace-sensitive.
   `replace_all=true` for all occurrences. `insert="prepend"|"append"` to add at file
-  boundaries. For imports, literals, comments, config — NOT structural code changes.
+  boundaries. `heading=` scopes matching to a markdown section (markdown only).
+  `edits=[{old_string, new_string}, ...]` for batch operations (atomic, one write).
+  For imports, literals, comments, config — NOT structural code changes.
+- `edit_section(path, heading, action, content?)` — edit a markdown section by heading.
+  Actions: `replace` (smart: detects heading in content), `insert_before`, `insert_after`, `remove`.
+  `heading` uses fuzzy matching (strips inline formatting, prefix/substring fallback).
+- `read_file` with `mode="complete"` returns entire plan file inline with a delivery receipt.
+  Only for files in `plans/` directories. Use when you need to read a full implementation plan.
 
 ### Symbol Navigation (LSP)
 

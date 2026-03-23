@@ -3110,6 +3110,9 @@ impl Point {
                 output_buffer: buf(),
                 progress: None,
                 peer: None,
+                section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::tools::section_coverage::SectionCoverage::new(),
+                )),
             },
         ))
     }
@@ -3550,6 +3553,9 @@ impl Point {
             output_buffer: buf(),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         // Should error because no project, but NOT because of unknown param
         let err = ListSymbols
@@ -3574,6 +3580,9 @@ impl Point {
             output_buffer: buf(),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         let err = ListSymbols
@@ -3600,6 +3609,9 @@ impl Point {
             output_buffer: buf(),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         let err = ListSymbols
@@ -3628,6 +3640,9 @@ impl Point {
             output_buffer: buf(),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         let err = ListSymbols
@@ -3651,6 +3666,9 @@ impl Point {
             output_buffer: buf(),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         assert!(ListSymbols.call(json!({"path": "x"}), &ctx).await.is_err());
         assert!(FindSymbol
@@ -3710,6 +3728,9 @@ impl Point {
             output_buffer: buf(),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         // Project-wide search (no relative_path) — LSP will fail/return empty,
@@ -3766,6 +3787,9 @@ impl Point {
             output_buffer: buf(),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         // Project-wide (no path) — should find both root and nested files
@@ -3810,6 +3834,9 @@ impl Point {
             output_buffer: buf(),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         // Target "src" specifically — should be shallow (depth 1)
@@ -4199,6 +4226,9 @@ fn main() {
             output_buffer: buf(),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         // rust-analyzer needs time to load the Cargo project and build its index
@@ -4448,6 +4478,9 @@ fn main() {
                 output_buffer: buf(),
                 progress: None,
                 peer: None,
+                section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::tools::section_coverage::SectionCoverage::new(),
+                )),
             },
         )
     }
@@ -6896,6 +6929,9 @@ fn foo() {
             output_buffer: buf(),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         let result = FindSymbol
@@ -7052,6 +7088,9 @@ fn foo() {
             output_buffer: buf(),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         let result = FindSymbol
@@ -7300,6 +7339,9 @@ fn foo() {
             output_buffer: buf(),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         }
     }
 
@@ -7561,6 +7603,9 @@ fn foo() {
             output_buffer: buf(),
             progress: None,
             peer: None, // no elicitation peer
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         let result = FindSymbol

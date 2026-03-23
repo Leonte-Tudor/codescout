@@ -544,6 +544,10 @@ provided to you separately.
 right? I'll save it to `.codescout/system-prompt.md`." After confirmation, write
 the file using `create_file`. Inform the user they can edit it anytime.
 
+**Editing markdown files later:** Use `edit_section` to replace/insert/remove sections
+by heading. Use `edit_file` with `heading=` param for scoped string matching within
+a section.
+
 ---
 
 ## After Everything Is Created

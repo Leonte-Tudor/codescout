@@ -19,6 +19,8 @@ pub mod semantic;
 pub mod symbol;
 pub mod usage;
 pub use usage::GetUsageStats;
+pub mod section_coverage;
+pub mod section_edit;
 pub mod workflow;
 
 use std::sync::Arc;
@@ -70,6 +72,8 @@ pub struct ToolContext {
     /// MCP peer for sending elicitation requests to the client.
     /// `None` in tests or when the client doesn't support elicitation.
     pub peer: Option<Peer<RoleServer>>,
+    /// Session-scoped markdown section read-coverage tracker.
+    pub section_coverage: std::sync::Arc<std::sync::Mutex<section_coverage::SectionCoverage>>,
 }
 
 impl ToolContext {
@@ -271,6 +275,33 @@ pub fn optional_f64_param(input: &serde_json::Value, name: &str) -> Option<f64> 
     }
     val.as_f64()
         .or_else(|| val.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+}
+
+/// Extract an optional JSON array parameter with lenient coercion.
+///
+/// Some MCP clients serialize array-typed tool parameters as JSON strings
+/// (e.g. `"[\"a\",\"b\"]"` instead of `["a","b"]`). This helper tries
+/// `as_array()` first, then falls back to parsing the string as JSON.
+/// Returns `None` if the parameter is absent, null, or not coercible.
+pub fn optional_array_param(
+    input: &serde_json::Value,
+    name: &str,
+) -> Option<Vec<serde_json::Value>> {
+    let val = input.get(name)?;
+    if val.is_null() {
+        return None;
+    }
+    // Native JSON array — fast path
+    if let Some(arr) = val.as_array() {
+        return Some(arr.clone());
+    }
+    // String-encoded JSON array — fallback for MCP clients that stringify arrays
+    if let Some(s) = val.as_str() {
+        if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str(s) {
+            return Some(arr);
+        }
+    }
+    None
 }
 
 /// Block write operations when git worktrees exist but the agent hasn't
@@ -520,6 +551,39 @@ mod tests {
     }
 
     #[test]
+    fn optional_array_param_coerces_strings() {
+        use serde_json::json;
+        // Absent → None
+        assert_eq!(optional_array_param(&json!({}), "a"), None);
+        // Null → None
+        assert_eq!(optional_array_param(&json!({"a": null}), "a"), None);
+        // Native array → Some
+        assert_eq!(
+            optional_array_param(&json!({"a": ["x", "y"]}), "a"),
+            Some(vec![json!("x"), json!("y")])
+        );
+        // String-encoded array → Some (MCP client workaround)
+        assert_eq!(
+            optional_array_param(&json!({"a": "[\"x\",\"y\"]"}), "a"),
+            Some(vec![json!("x"), json!("y")])
+        );
+        // String-encoded array of objects
+        assert_eq!(
+            optional_array_param(&json!({"a": "[{\"k\":1},{\"k\":2}]"}), "a"),
+            Some(vec![json!({"k": 1}), json!({"k": 2})])
+        );
+        // Non-array string → None
+        assert_eq!(
+            optional_array_param(&json!({"a": "not an array"}), "a"),
+            None
+        );
+        // String-encoded non-array JSON → None
+        assert_eq!(optional_array_param(&json!({"a": "{}"}), "a"), None);
+        // Number → None
+        assert_eq!(optional_array_param(&json!({"a": 42}), "a"), None);
+    }
+
+    #[test]
     fn recoverable_error_stores_message() {
         let e = RecoverableError::new("path not found");
         assert_eq!(e.message, "path not found");
@@ -581,6 +645,9 @@ mod tests {
             output_buffer: std::sync::Arc::new(output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                section_coverage::SectionCoverage::new(),
+            )),
         }
     }
 

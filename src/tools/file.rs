@@ -32,8 +32,18 @@ impl Tool for ReadFile {
                 "start_line": { "type": "integer", "description": "First line (1-indexed). Pair with end_line." },
                 "end_line": { "type": "integer", "description": "Last line (1-indexed, inclusive). Pair with start_line." },
                 "heading": { "type": "string", "description": "Markdown section by heading (e.g. \"## Auth\")." },
+                "headings": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "List of headings to read (returns multiple sections). Mutually exclusive with heading."
+                },
                 "json_path": { "type": "string", "description": "JSON subtree by path (e.g. \"$.dependencies\")." },
-                "toml_key": { "type": "string", "description": "TOML table or YAML section by key (e.g. \"dependencies\")." }
+                "toml_key": { "type": "string", "description": "TOML table or YAML section by key (e.g. \"dependencies\")." },
+                "mode": {
+                    "type": "string",
+                    "enum": ["complete"],
+                    "description": "Read mode. 'complete' returns entire file inline (plan files only, bypasses buffer)."
+                }
             }
         })
     }
@@ -237,17 +247,33 @@ impl Tool for ReadFile {
 
         // Navigation parameters
         let heading = input["heading"].as_str();
+        let headings_param = super::optional_array_param(&input, "headings");
         let json_path = input["json_path"].as_str();
         let toml_key = input["toml_key"].as_str();
-        let nav_param_count = [heading.is_some(), json_path.is_some(), toml_key.is_some()]
-            .iter()
-            .filter(|&&x| x)
-            .count();
+
+        // headings and heading (singular) are mutually exclusive
+        if heading.is_some() && headings_param.is_some() {
+            return Err(RecoverableError::with_hint(
+                "heading and headings are mutually exclusive",
+                "Use heading for a single section, or headings for multiple sections.",
+            )
+            .into());
+        }
+
+        let nav_param_count = [
+            heading.is_some(),
+            headings_param.is_some(),
+            json_path.is_some(),
+            toml_key.is_some(),
+        ]
+        .iter()
+        .filter(|&&x| x)
+        .count();
 
         if nav_param_count > 1 {
             return Err(RecoverableError::with_hint(
                 "only one navigation parameter allowed at a time",
-                "Use heading OR json_path OR toml_key, not multiple",
+                "Use heading OR headings OR json_path OR toml_key, not multiple",
             )
             .into());
         }
@@ -255,7 +281,7 @@ impl Tool for ReadFile {
         if nav_param_count > 0 && (start_line.is_some() || end_line.is_some()) {
             return Err(RecoverableError::with_hint(
                 "navigation parameters are mutually exclusive with start_line/end_line",
-                "Use either heading/json_path/toml_key OR start_line+end_line",
+                "Use either heading/headings/json_path/toml_key OR start_line+end_line",
             )
             .into());
         }
@@ -296,6 +322,145 @@ impl Tool for ReadFile {
             _ => anyhow::anyhow!("failed to read {}: {}", resolved.display(), e),
         })?;
 
+        // Handle multi-heading navigation
+        if let Some(headings_arr) = headings_param {
+            if !path.ends_with(".md") && !path.ends_with(".markdown") {
+                return Err(RecoverableError::with_hint(
+                    "headings parameter is only supported for Markdown files",
+                    "For other formats use format-specific navigation (json_path, toml_key).",
+                )
+                .into());
+            }
+
+            let heading_queries: Vec<String> = headings_arr
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect();
+
+            let mut sections = Vec::new();
+            let mut seen_headings = Vec::new();
+
+            for query in &heading_queries {
+                let section = crate::tools::file_summary::extract_markdown_section(&text, query)?;
+                seen_headings.push(
+                    section
+                        .breadcrumb
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| query.clone()),
+                );
+                sections.push(section.content);
+            }
+
+            let content = sections.join("\n\n");
+
+            // Record coverage
+            if !seen_headings.is_empty() {
+                if let Ok(mut cov) = ctx.section_coverage.lock() {
+                    cov.mark_seen(&resolved, &seen_headings);
+                }
+            }
+
+            // Build response with coverage info
+            let mut result = json!({
+                "content": content,
+                "sections_returned": heading_queries.len(),
+            });
+
+            // Add coverage hint if any sections unread
+            let all_headings = crate::tools::file_summary::parse_all_headings(&text);
+            if !all_headings.is_empty() {
+                let all_texts: Vec<String> = all_headings.iter().map(|h| h.text.clone()).collect();
+                if let Ok(mut cov) = ctx.section_coverage.lock() {
+                    if let Some(status) = cov.status(&resolved, &all_texts) {
+                        if !status.unread.is_empty() {
+                            result["coverage"] = json!({
+                                "read": status.read_count,
+                                "total": status.total_count,
+                                "unread": status.unread,
+                            });
+                        }
+                    }
+                }
+            }
+
+            return Ok(result);
+        }
+
+        // Handle mode=complete: return entire file inline with delivery receipt
+        let mode = input["mode"].as_str();
+        if mode == Some("complete") {
+            // Mutual exclusivity with all other navigation params
+            if heading.is_some()
+                || headings_param.is_some()
+                || start_line.is_some()
+                || end_line.is_some()
+                || json_path.is_some()
+                || toml_key.is_some()
+            {
+                return Err(super::RecoverableError::with_hint(
+                    "mode=complete is mutually exclusive with heading, headings, start_line, end_line, json_path, toml_key",
+                    "Use mode=complete alone to read the entire plan file.",
+                )
+                .into());
+            }
+
+            // Scope restriction: only plans/ directories
+            if !path.contains("/plans/") && !path.starts_with("plans/") {
+                return Err(super::RecoverableError::with_hint(
+                    "mode=complete is restricted to plan files (paths containing /plans/)",
+                    "Use heading= or headings= to read specific sections of non-plan files.",
+                )
+                .into());
+            }
+
+            let line_count = text.lines().count();
+
+            // Parse headings for receipt and coverage
+            let all_headings = crate::tools::file_summary::parse_all_headings(&text);
+            let heading_texts: Vec<String> = all_headings.iter().map(|h| h.text.clone()).collect();
+
+            // Count checkboxes
+            let done_count = text
+                .lines()
+                .filter(|l| {
+                    let trimmed = l.trim_start();
+                    trimmed.starts_with("- [x]") || trimmed.starts_with("- [X]")
+                })
+                .count();
+            let pending_count = text
+                .lines()
+                .filter(|l| {
+                    let trimmed = l.trim_start();
+                    trimmed.starts_with("- [ ]")
+                })
+                .count();
+            let total_checkboxes = done_count + pending_count;
+
+            // Build delivery receipt
+            let section_list = heading_texts.join(", ");
+            let receipt = format!(
+                "\n\n--- delivery receipt ---\nFile: {path}\nLines: {line_count} | Sections: {} | Checkboxes: {total_checkboxes} ({done_count} done, {pending_count} pending)\nSections delivered: [{section_list}]\n",
+                all_headings.len()
+            );
+
+            // Record all sections as seen in coverage
+            if !heading_texts.is_empty() {
+                if let Ok(mut cov) = ctx.section_coverage.lock() {
+                    cov.mark_seen(&resolved, &heading_texts);
+                }
+            }
+
+            let mut content = text;
+            content.push_str(&receipt);
+
+            return Ok(json!({
+                "content": content,
+                "complete": true,
+                "line_count": line_count,
+            }));
+        }
+
         // Handle heading navigation
         if let Some(heading_query) = heading {
             let file_type =
@@ -312,27 +477,36 @@ impl Tool for ReadFile {
             }
             let result =
                 crate::tools::file_summary::extract_markdown_section(&text, heading_query)?;
+            let cov = markdown_coverage(&text, &resolved, ctx, heading, None, None);
             // If extracted section is itself large, buffer it
             if crate::tools::exceeds_inline_limit(&result.content) {
                 let file_id = ctx.output_buffer.store_file(
                     resolved.to_string_lossy().to_string(),
                     result.content.clone(),
                 );
-                return Ok(json!({
+                let mut val = json!({
                     "line_range": [result.line_range.0, result.line_range.1],
                     "breadcrumb": result.breadcrumb,
                     "siblings": result.siblings,
                     "format": "markdown",
                     "file_id": file_id,
-                }));
+                });
+                if let Some(c) = cov {
+                    val["coverage"] = c;
+                }
+                return Ok(val);
             }
-            return Ok(json!({
+            let mut val = json!({
                 "content": result.content,
                 "line_range": [result.line_range.0, result.line_range.1],
                 "breadcrumb": result.breadcrumb,
                 "siblings": result.siblings,
                 "format": "markdown",
-            }));
+            });
+            if let Some(c) = cov {
+                val["coverage"] = c;
+            }
+            return Ok(val);
         }
 
         // Handle json_path navigation
@@ -408,6 +582,13 @@ impl Tool for ReadFile {
                 .into());
             }
             let content = extract_lines(&text, start as usize, end as usize);
+            // Record markdown coverage for line-range reads.
+            let is_md = path.ends_with(".md") || path.ends_with(".markdown");
+            let md_cov = if is_md {
+                markdown_coverage(&text, &resolved, ctx, None, start_line, end_line)
+            } else {
+                None
+            };
             // Proactive buffering: if the extracted range exceeds the inline limit,
             // store as plain-text @file_* so callers can navigate it by line number.
             // Without this, call_content wraps large content in a 3-line @tool_* JSON
@@ -445,11 +626,17 @@ impl Tool for ReadFile {
                 if source_tag != "project" {
                     result["source"] = json!(source_tag);
                 }
+                if let Some(c) = md_cov {
+                    result["coverage"] = c;
+                }
                 return Ok(result);
             }
             let mut result = json!({ "content": content });
             if source_tag != "project" {
                 result["source"] = json!(source_tag);
+            }
+            if let Some(c) = md_cov {
+                result["coverage"] = c;
             }
             return Ok(result);
         }
@@ -490,8 +677,23 @@ impl Tool for ReadFile {
                 };
             let mut result = summary;
             result["file_id"] = json!(file_id);
+            // For large markdown files that return a summary, record all headings as
+            // seen (the agent received the full heading list via the summary).
+            if path.ends_with(".md") || path.ends_with(".markdown") {
+                if let Some(c) = markdown_coverage(&text, &resolved, ctx, None, None, None) {
+                    result["coverage"] = c;
+                }
+            }
             return Ok(result);
         }
+
+        // Record markdown coverage for full-file reads (no range, no heading param).
+        let is_md = path.ends_with(".md") || path.ends_with(".markdown");
+        let md_cov = if is_md {
+            markdown_coverage(&text, &resolved, ctx, None, None, None)
+        } else {
+            None
+        };
 
         // No line range: cap in exploring mode
         let guard = OutputGuard::from_input(&input);
@@ -516,11 +718,17 @@ impl Tool for ReadFile {
                 result["source"] = json!(source_tag);
             }
             result["overflow"] = OutputGuard::overflow_json(&overflow);
+            if let Some(c) = md_cov {
+                result["coverage"] = c;
+            }
             Ok(result)
         } else {
             let mut result = json!({ "content": text, "total_lines": total_lines });
             if source_tag != "project" {
                 result["source"] = json!(source_tag);
+            }
+            if let Some(c) = md_cov {
+                result["coverage"] = c;
             }
             Ok(result)
         }
@@ -967,6 +1175,69 @@ impl Tool for FindFile {
 }
 
 // ── format_compact helpers ────────────────────────────────────────────────────
+
+/// Record which markdown headings were covered by a read operation and return
+/// an optional `coverage` JSON value to merge into the response when unread
+/// sections remain.
+///
+/// `heading_query` – the heading param if a single-section read was requested.
+/// `start_line` / `end_line` – line-range bounds (1-indexed, inclusive) if a
+///   range read was requested; both `None` means the whole file was read.
+fn markdown_coverage(
+    text: &str,
+    resolved: &std::path::PathBuf,
+    ctx: &ToolContext,
+    heading_query: Option<&str>,
+    start_line: Option<u64>,
+    end_line: Option<u64>,
+) -> Option<serde_json::Value> {
+    let all_headings = crate::tools::file_summary::parse_all_headings(text);
+    if all_headings.is_empty() {
+        return None;
+    }
+    let heading_texts: Vec<String> = all_headings.iter().map(|h| h.text.clone()).collect();
+
+    // Determine which headings were "seen" based on the read mode.
+    let seen: Vec<String> = if let Some(query) = heading_query {
+        // Single heading read — only that section.
+        match crate::tools::file_summary::resolve_section_range(text, query) {
+            Ok(range) => vec![range.heading_text],
+            Err(_) => vec![],
+        }
+    } else if start_line.is_some() || end_line.is_some() {
+        // Line-range read — mark headings whose heading line falls within range.
+        let s = start_line.unwrap_or(1) as usize;
+        let e = end_line.unwrap_or(usize::MAX as u64) as usize;
+        all_headings
+            .iter()
+            .filter(|h| h.line >= s && h.line <= e)
+            .map(|h| h.text.clone())
+            .collect()
+    } else {
+        // Full file read — all headings seen.
+        heading_texts.clone()
+    };
+
+    if !seen.is_empty() {
+        if let Ok(mut cov) = ctx.section_coverage.lock() {
+            cov.mark_seen(resolved, &seen);
+        }
+    }
+
+    // Return a coverage hint only when unread sections remain.
+    if let Ok(mut cov) = ctx.section_coverage.lock() {
+        if let Some(status) = cov.status(resolved, &heading_texts) {
+            if !status.unread.is_empty() {
+                return Some(serde_json::json!({
+                    "read": status.read_count,
+                    "total": status.total_count,
+                    "unread": status.unread,
+                }));
+            }
+        }
+    }
+    None
+}
 
 fn format_read_file(val: &Value) -> String {
     // Summary modes have a "type" key
@@ -1519,7 +1790,22 @@ impl Tool for EditFile {
                 "old_string": { "type": "string", "description": "Exact text to find (whitespace-sensitive). Required unless insert is set." },
                 "new_string": { "type": "string", "description": "Replacement text (empty string = delete)." },
                 "replace_all": { "type": "boolean", "default": false, "description": "Replace all occurrences." },
-                "insert": { "type": "string", "enum": ["prepend", "append"], "description": "Insert at file start/end (old_string not required)." }
+                "insert": { "type": "string", "enum": ["prepend", "append"], "description": "Insert at file start/end (old_string not required)." },
+                "heading": { "type": "string", "description": "Scope string matching to a markdown section. Only valid for .md files." },
+                "edits": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old_string": { "type": "string" },
+                            "new_string": { "type": "string" },
+                            "heading": { "type": "string" },
+                            "replace_all": { "type": "boolean" }
+                        },
+                        "required": ["old_string", "new_string"]
+                    },
+                    "description": "Batch mode: array of edit operations applied atomically."
+                }
             }
         })
     }
@@ -1528,6 +1814,120 @@ impl Tool for EditFile {
         super::guard_worktree_write(ctx).await?;
         let path = super::require_str_param(&input, "path")?;
         let new_string = input["new_string"].as_str().unwrap_or("");
+
+        // Batch mode — edits array takes precedence over single old_string.
+        let edits = super::optional_array_param(&input, "edits");
+        let has_old_string = input["old_string"].as_str().is_some();
+
+        if edits.is_some() && has_old_string {
+            return Err(super::RecoverableError::with_hint(
+                "edits and old_string are mutually exclusive",
+                "Use edits for batch mode, or old_string/new_string for single edit.",
+            )
+            .into());
+        }
+
+        if let Some(edits_arr) = edits {
+            let root = ctx.agent.require_project_root().await?;
+            let security = ctx.agent.security_config().await;
+            let resolved = crate::util::path_security::validate_write_path(path, &root, &security)?;
+            let mut content = std::fs::read_to_string(&resolved)?;
+
+            for (i, edit) in edits_arr.iter().enumerate() {
+                let old_s = edit["old_string"].as_str().ok_or_else(|| {
+                    super::RecoverableError::new(format!("edit[{i}]: old_string is required"))
+                })?;
+                let new_s = edit["new_string"].as_str().unwrap_or("");
+                let replace_all_edit = parse_bool_param(&edit["replace_all"]);
+                let heading_scope = edit["heading"].as_str();
+
+                if old_s.is_empty() {
+                    return Err(super::RecoverableError::with_hint(
+                        format!("edit[{i}]: old_string must not be empty"),
+                        "Each edit must have a non-empty old_string.",
+                    )
+                    .into());
+                }
+
+                if let Some(heading) = heading_scope {
+                    let range =
+                        crate::tools::file_summary::resolve_section_range(&content, heading)
+                            .map_err(|e| super::RecoverableError::new(format!("edit[{i}]: {e}")))?;
+                    let lines: Vec<&str> = content.lines().collect();
+                    let section_text = lines[range.heading_line - 1..range.end_line].join("\n");
+
+                    let match_count = section_text.matches(old_s).count();
+                    if match_count == 0 {
+                        return Err(super::RecoverableError::with_hint(
+                            format!(
+                                "edit[{i}]: old_string not found in section '{}'",
+                                range.heading_text
+                            ),
+                            "Batch aborted — no changes written.",
+                        )
+                        .into());
+                    }
+                    if match_count > 1 && !replace_all_edit {
+                        return Err(super::RecoverableError::with_hint(
+                            format!(
+                                "edit[{i}]: old_string found {match_count} times in section '{}'",
+                                range.heading_text
+                            ),
+                            "Add more context or set replace_all: true. Batch aborted.",
+                        )
+                        .into());
+                    }
+
+                    let new_section = if replace_all_edit {
+                        section_text.replace(old_s, new_s)
+                    } else {
+                        section_text.replacen(old_s, new_s, 1)
+                    };
+                    let mut result = String::new();
+                    if range.heading_line > 1 {
+                        result.push_str(&lines[..range.heading_line - 1].join("\n"));
+                        result.push('\n');
+                    }
+                    result.push_str(&new_section);
+                    if range.end_line < lines.len() {
+                        result.push('\n');
+                        result.push_str(&lines[range.end_line..].join("\n"));
+                    }
+                    if !result.ends_with('\n') {
+                        result.push('\n');
+                    }
+                    content = result;
+                } else {
+                    let match_count = content.matches(old_s).count();
+                    if match_count == 0 {
+                        return Err(super::RecoverableError::with_hint(
+                            format!("edit[{i}]: old_string not found"),
+                            "Batch aborted — no changes written.",
+                        )
+                        .into());
+                    }
+                    if match_count > 1 && !replace_all_edit {
+                        return Err(super::RecoverableError::with_hint(
+                            format!("edit[{i}]: old_string found {match_count} times"),
+                            "Add more context or set replace_all: true. Batch aborted.",
+                        )
+                        .into());
+                    }
+                    if replace_all_edit {
+                        content = content.replace(old_s, new_s);
+                    } else {
+                        content = content.replacen(old_s, new_s, 1);
+                    }
+                }
+            }
+
+            // All edits passed — write once.
+            std::fs::write(&resolved, &content)?;
+            ctx.agent.reload_config_if_project_toml(&resolved).await;
+            ctx.lsp.notify_file_changed(&resolved).await;
+            ctx.agent.mark_file_dirty(resolved).await;
+            return Ok(json!("ok"));
+        }
 
         // Prepend/append mode — no string match needed.
         if let Some(insert) = input["insert"].as_str() {
@@ -1561,6 +1961,78 @@ impl Tool for EditFile {
                 "To create a new file use create_file. To insert at a specific line use insert_code. To prepend or append to a file use insert: \"prepend\" or \"append\".",
             )
             .into());
+        }
+
+        // Heading-scoped edit: restrict matching to within a markdown section.
+        let heading_scope = input["heading"].as_str();
+
+        if let Some(heading) = heading_scope {
+            // Only markdown files
+            if !path.ends_with(".md") && !path.ends_with(".markdown") {
+                return Err(super::RecoverableError::with_hint(
+                    "heading param is only supported for Markdown files",
+                    "For TOML files use toml_key, for JSON use json_path.",
+                )
+                .into());
+            }
+
+            let root = ctx.agent.require_project_root().await?;
+            let security = ctx.agent.security_config().await;
+            let resolved = crate::util::path_security::validate_write_path(path, &root, &security)?;
+            let content = std::fs::read_to_string(&resolved)?;
+
+            let range = crate::tools::file_summary::resolve_section_range(&content, heading)?;
+            let lines: Vec<&str> = content.lines().collect();
+            let section_text: String = lines[range.heading_line - 1..range.end_line].join("\n");
+
+            let match_count = section_text.matches(old_string).count();
+            if match_count == 0 {
+                return Err(super::RecoverableError::with_hint(
+                    format!(
+                        "old_string not found in section '{}' (lines {}-{})",
+                        range.heading_text, range.heading_line, range.end_line
+                    ),
+                    "Check whitespace and indentation. Use search_pattern to verify exact text.",
+                )
+                .into());
+            }
+            if match_count > 1 && !replace_all {
+                return Err(super::RecoverableError::with_hint(
+                    format!(
+                        "old_string found {match_count} times in section '{}'",
+                        range.heading_text
+                    ),
+                    "Include more context or set replace_all: true.",
+                )
+                .into());
+            }
+
+            // Replace within section, rebuild full content
+            let new_section = if replace_all {
+                section_text.replace(old_string, new_string)
+            } else {
+                section_text.replacen(old_string, new_string, 1)
+            };
+
+            let mut result = String::new();
+            if range.heading_line > 1 {
+                result.push_str(&lines[..range.heading_line - 1].join("\n"));
+                result.push('\n');
+            }
+            result.push_str(&new_section);
+            if range.end_line < lines.len() {
+                result.push('\n');
+                result.push_str(&lines[range.end_line..].join("\n"));
+            }
+            if !result.ends_with('\n') {
+                result.push('\n');
+            }
+
+            std::fs::write(&resolved, &result)?;
+            ctx.agent.reload_config_if_project_toml(&resolved).await;
+            ctx.lsp.notify_file_changed(&resolved).await;
+            ctx.agent.mark_file_dirty(resolved).await;
+            return Ok(json!("ok"));
         }
 
         // Hard-block multi-line edits that contain definition keywords on LSP-supported languages.
@@ -1630,7 +2102,27 @@ async fn perform_edit(
     std::fs::write(&resolved, &new_content)?;
     ctx.agent.reload_config_if_project_toml(&resolved).await;
     ctx.lsp.notify_file_changed(&resolved).await;
-    ctx.agent.mark_file_dirty(resolved).await;
+    ctx.agent.mark_file_dirty(resolved.clone()).await;
+
+    // Coverage hint for markdown files.
+    if path.ends_with(".md") || path.ends_with(".markdown") {
+        // Update mtime to prevent spurious invalidation after the write.
+        if let Ok(mut cov) = ctx.section_coverage.lock() {
+            cov.update_mtime(&resolved);
+        }
+
+        // If unread sections exist, return a hint alongside the ok status.
+        let written = std::fs::read_to_string(&resolved).unwrap_or_default();
+        let all_headings = crate::tools::file_summary::parse_all_headings(&written);
+        if !all_headings.is_empty() {
+            let heading_texts: Vec<String> = all_headings.iter().map(|h| h.text.clone()).collect();
+            if let Ok(mut cov) = ctx.section_coverage.lock() {
+                if let Some(hint) = cov.unread_hint(&resolved, &heading_texts) {
+                    return Ok(json!({"status": "ok", "hint": hint}));
+                }
+            }
+        }
+    }
 
     Ok(json!("ok"))
 }
@@ -1650,6 +2142,9 @@ mod tests {
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         }
     }
 
@@ -1667,6 +2162,9 @@ mod tests {
                 )),
                 progress: None,
                 peer: None,
+                section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::tools::section_coverage::SectionCoverage::new(),
+                )),
             },
         )
     }
@@ -3797,6 +4295,9 @@ mod tests {
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         // search_pattern with a path pointing into the library — the walker must
@@ -3825,6 +4326,370 @@ mod tests {
                 .contains("hello_world"),
             "match content should include the searched symbol"
         );
+    }
+
+    // ── ReadFile — multi-heading (headings param) ─────────────────────────────
+
+    #[tokio::test]
+    async fn read_file_multiple_headings() {
+        let (dir, ctx) = project_ctx().await;
+        let md = dir.path().join("test.md");
+        std::fs::write(&md, "# Title\n## A\ntext a\n## B\ntext b\n## C\ntext c\n").unwrap();
+
+        let result = ReadFile
+            .call(
+                json!({
+                    "path": md.to_str().unwrap(),
+                    "headings": ["## A", "## C"]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let content = result["content"].as_str().unwrap();
+        assert!(
+            content.contains("text a"),
+            "should contain section A content"
+        );
+        assert!(
+            content.contains("text c"),
+            "should contain section C content"
+        );
+        assert!(
+            !content.contains("text b"),
+            "should not contain section B content"
+        );
+        assert_eq!(result["sections_returned"].as_u64().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn read_file_multiple_headings_string_coerced() {
+        let (dir, ctx) = project_ctx().await;
+        let md = dir.path().join("test.md");
+        std::fs::write(&md, "# Title\n## A\ntext a\n## B\ntext b\n## C\ntext c\n").unwrap();
+
+        // Simulate MCP client that stringifies array params
+        let result = ReadFile
+            .call(
+                json!({
+                    "path": md.to_str().unwrap(),
+                    "headings": "[\"## A\",\"## C\"]"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let content = result["content"].as_str().unwrap();
+        assert!(content.contains("text a"), "should contain section A");
+        assert!(content.contains("text c"), "should contain section C");
+        assert!(!content.contains("text b"), "should not contain section B");
+        assert_eq!(result["sections_returned"].as_u64().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn read_file_headings_and_heading_mutual_exclusion() {
+        let (dir, ctx) = project_ctx().await;
+        let md = dir.path().join("test.md");
+        std::fs::write(&md, "# Title\n## A\ntext\n").unwrap();
+
+        let result = ReadFile
+            .call(
+                json!({
+                    "path": md.to_str().unwrap(),
+                    "heading": "## A",
+                    "headings": ["## A"]
+                }),
+                &ctx,
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "should error when both heading and headings are provided"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_headings_marks_all_seen() {
+        let (dir, ctx) = project_ctx().await;
+        let md = dir.path().join("test.md");
+        std::fs::write(&md, "# Title\n## A\ntext a\n## B\ntext b\n## C\ntext c\n").unwrap();
+
+        let _ = ReadFile
+            .call(
+                json!({
+                    "path": md.to_str().unwrap(),
+                    "headings": ["## A", "## C"]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let resolved = md.canonicalize().unwrap();
+        let all = vec![
+            "# Title".to_string(),
+            "## A".to_string(),
+            "## B".to_string(),
+            "## C".to_string(),
+        ];
+        let status = ctx
+            .section_coverage
+            .lock()
+            .unwrap()
+            .status(&resolved, &all)
+            .unwrap();
+        assert_eq!(status.read_count, 2);
+        assert!(
+            status.unread.contains(&"# Title".to_string()),
+            "Title should be unread"
+        );
+        assert!(
+            status.unread.contains(&"## B".to_string()),
+            "B should be unread"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_headings_coverage_field_in_response() {
+        let (dir, ctx) = project_ctx().await;
+        let md = dir.path().join("test.md");
+        std::fs::write(&md, "# Title\n## A\ntext a\n## B\ntext b\n").unwrap();
+
+        let result = ReadFile
+            .call(
+                json!({
+                    "path": md.to_str().unwrap(),
+                    "headings": ["## A"]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        // Should have coverage hint since ## B and # Title are unread
+        let cov = &result["coverage"];
+        assert!(
+            !cov.is_null(),
+            "should include coverage hint when sections remain unread"
+        );
+        assert!(!cov["unread"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_headings_not_found_returns_error() {
+        let (dir, ctx) = project_ctx().await;
+        let md = dir.path().join("test.md");
+        std::fs::write(&md, "# Title\n## A\ntext a\n").unwrap();
+
+        let result = ReadFile
+            .call(
+                json!({
+                    "path": md.to_str().unwrap(),
+                    "headings": ["## Nonexistent"]
+                }),
+                &ctx,
+            )
+            .await;
+
+        assert!(result.is_err(), "should error when a heading is not found");
+    }
+
+    // ── ReadFile — mode=complete ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn complete_mode_returns_full_content() {
+        let ctx = test_ctx().await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("plans")).unwrap();
+        let plan = dir.path().join("plans/test-plan.md");
+        let mut content = String::from("# Plan\n");
+        for i in 1..=10 {
+            content.push_str(&format!(
+                "## Task {i}\n- [ ] Step 1\n- [x] Step 2\ncontent {i}\n\n"
+            ));
+        }
+        std::fs::write(&plan, &content).unwrap();
+        ctx.agent
+            .activate(dir.path().to_path_buf(), Some(false))
+            .await
+            .unwrap();
+
+        let result = ReadFile
+            .call(
+                json!({
+                    "path": "plans/test-plan.md",
+                    "mode": "complete"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let text = result["content"].as_str().unwrap();
+        assert!(text.contains("## Task 1"));
+        assert!(text.contains("## Task 10"));
+        assert!(!text.contains("@file_"));
+    }
+
+    #[tokio::test]
+    async fn complete_mode_delivery_receipt() {
+        let ctx = test_ctx().await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("plans")).unwrap();
+        std::fs::write(
+            dir.path().join("plans/test-plan.md"),
+            "# Plan\n## Task 1\n- [ ] Step A\n- [x] Step B\n## Task 2\n- [ ] Step C\n",
+        )
+        .unwrap();
+        ctx.agent
+            .activate(dir.path().to_path_buf(), Some(false))
+            .await
+            .unwrap();
+
+        let result = ReadFile
+            .call(
+                json!({
+                    "path": "plans/test-plan.md",
+                    "mode": "complete"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let text = result["content"].as_str().unwrap();
+        assert!(text.contains("--- delivery receipt ---"));
+        assert!(text.contains("Sections: 3"));
+        assert!(text.contains("Checkboxes:"));
+    }
+
+    #[tokio::test]
+    async fn complete_mode_marks_all_seen() {
+        let ctx = test_ctx().await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("plans")).unwrap();
+        std::fs::write(
+            dir.path().join("plans/test-plan.md"),
+            "# Plan\n## A\ntext\n## B\ntext\n## C\ntext\n",
+        )
+        .unwrap();
+        ctx.agent
+            .activate(dir.path().to_path_buf(), Some(false))
+            .await
+            .unwrap();
+
+        let _ = ReadFile
+            .call(
+                json!({
+                    "path": "plans/test-plan.md",
+                    "mode": "complete"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let resolved = dir
+            .path()
+            .join("plans/test-plan.md")
+            .canonicalize()
+            .unwrap();
+        let all = vec![
+            "# Plan".to_string(),
+            "## A".to_string(),
+            "## B".to_string(),
+            "## C".to_string(),
+        ];
+        let status = ctx
+            .section_coverage
+            .lock()
+            .unwrap()
+            .status(&resolved, &all)
+            .unwrap();
+        assert_eq!(status.read_count, 4);
+        assert!(status.unread.is_empty());
+    }
+
+    #[tokio::test]
+    async fn complete_mode_rejects_non_plan_path() {
+        let ctx = test_ctx().await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("README.md"), "# Big file\n").unwrap();
+        ctx.agent
+            .activate(dir.path().to_path_buf(), Some(false))
+            .await
+            .unwrap();
+
+        let result = ReadFile
+            .call(
+                json!({
+                    "path": "README.md",
+                    "mode": "complete"
+                }),
+                &ctx,
+            )
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn complete_mode_mutual_exclusivity() {
+        let ctx = test_ctx().await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("plans")).unwrap();
+        std::fs::write(dir.path().join("plans/p.md"), "# Plan\n").unwrap();
+        ctx.agent
+            .activate(dir.path().to_path_buf(), Some(false))
+            .await
+            .unwrap();
+
+        let result = ReadFile
+            .call(
+                json!({
+                    "path": "plans/p.md",
+                    "mode": "complete",
+                    "heading": "# Plan"
+                }),
+                &ctx,
+            )
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn complete_mode_nested_plans_dir() {
+        let ctx = test_ctx().await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("docs/superpowers/plans")).unwrap();
+        std::fs::write(
+            dir.path().join("docs/superpowers/plans/feature.md"),
+            "# Plan\n## Task 1\ncontent\n",
+        )
+        .unwrap();
+        ctx.agent
+            .activate(dir.path().to_path_buf(), Some(false))
+            .await
+            .unwrap();
+
+        let result = ReadFile
+            .call(
+                json!({
+                    "path": "docs/superpowers/plans/feature.md",
+                    "mode": "complete"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let text = result["content"].as_str().unwrap();
+        assert!(text.contains("## Task 1"));
+        assert!(text.contains("--- delivery receipt ---"));
     }
 
     // ── EditFile ──────────────────────────────────────────────────────────────
@@ -4348,6 +5213,381 @@ mod tests {
             "should allow multi-line edit on non-source file: {:?}",
             result.err()
         );
+    }
+
+    #[tokio::test]
+    async fn edit_file_coverage_hint_on_unread() {
+        let (dir, ctx) = project_ctx().await;
+        let md = dir.path().join("test.md");
+        std::fs::write(&md, "# Title\n## A\ntext a\n## B\ntext b\n").unwrap();
+
+        // Read only section A — marks A as seen, B remains unread.
+        let _ = ReadFile
+            .call(
+                json!({
+                    "path": md.to_str().unwrap(),
+                    "heading": "## A"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        // Edit the file — should get a hint about unread section B.
+        let result = EditFile
+            .call(
+                json!({
+                    "path": md.to_str().unwrap(),
+                    "old_string": "text a",
+                    "new_string": "updated a"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        // Result should have a hint about unread sections.
+        let hint = result["hint"]
+            .as_str()
+            .expect("expected hint field in result");
+        assert!(
+            hint.contains("unread") || hint.contains("## B"),
+            "hint should mention unread sections: {hint}"
+        );
+
+        // The edit itself should have worked.
+        let content = std::fs::read_to_string(&md).unwrap();
+        assert!(content.contains("updated a"));
+    }
+
+    #[tokio::test]
+    async fn edit_section_coverage_hint_on_unread() {
+        use crate::tools::section_edit::EditSection;
+
+        let (dir, ctx) = project_ctx().await;
+        let md = dir.path().join("test.md");
+        std::fs::write(&md, "# Title\n## A\ntext a\n## B\ntext b\n").unwrap();
+
+        // Read only section A — marks A as seen, B remains unread.
+        let _ = ReadFile
+            .call(
+                json!({
+                    "path": md.to_str().unwrap(),
+                    "heading": "## A"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        // edit_section on the file — should get a hint about unread section B.
+        let result = EditSection
+            .call(
+                json!({
+                    "path": md.to_str().unwrap(),
+                    "heading": "## A",
+                    "action": "replace",
+                    "content": "updated a"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let hint = result["hint"]
+            .as_str()
+            .expect("expected hint field in result");
+        assert!(
+            hint.contains("unread") || hint.contains("## B"),
+            "hint should mention unread sections: {hint}"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_file_no_coverage_hint_when_all_read() {
+        let (dir, ctx) = project_ctx().await;
+        let md = dir.path().join("all_read.md");
+        std::fs::write(&md, "# Title\n## A\ntext a\n## B\ntext b\n").unwrap();
+
+        // Read the full file — all headings seen.
+        let _ = ReadFile
+            .call(json!({ "path": md.to_str().unwrap() }), &ctx)
+            .await
+            .unwrap();
+
+        // Edit — no unread sections, so plain "ok".
+        let result = EditFile
+            .call(
+                json!({
+                    "path": md.to_str().unwrap(),
+                    "old_string": "text a",
+                    "new_string": "updated a"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            json!("ok"),
+            "expected plain ok when all sections read"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_file_heading_scoped_match() {
+        let (dir, ctx) = project_ctx().await;
+        let md = dir.path().join("test.md");
+        std::fs::write(
+            &md,
+            "# API\n## Users\nReturns a list of users\n## Posts\nReturns a list of posts\n",
+        )
+        .unwrap();
+
+        let _ = EditFile
+            .call(
+                json!({
+                    "path": md.to_str().unwrap(),
+                    "heading": "## Users",
+                    "old_string": "Returns a list",
+                    "new_string": "Returns a paginated list"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(&md).unwrap();
+        assert!(content.contains("Returns a paginated list of users"));
+        assert!(content.contains("Returns a list of posts"));
+    }
+
+    #[tokio::test]
+    async fn edit_file_heading_scoped_not_found() {
+        let (dir, ctx) = project_ctx().await;
+        let md = dir.path().join("test.md");
+        std::fs::write(&md, "# Title\n## Setup\ncontent\n").unwrap();
+
+        let result = EditFile
+            .call(
+                json!({
+                    "path": md.to_str().unwrap(),
+                    "heading": "## Setup",
+                    "old_string": "nonexistent",
+                    "new_string": "x"
+                }),
+                &ctx,
+            )
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn edit_file_heading_on_non_markdown() {
+        let (dir, ctx) = project_ctx().await;
+        std::fs::write(dir.path().join("config.toml"), "[section]\nkey = 1\n").unwrap();
+
+        let result = EditFile
+            .call(
+                json!({
+                    "path": dir.path().join("config.toml").to_str().unwrap(),
+                    "heading": "## Setup",
+                    "old_string": "key = 1",
+                    "new_string": "key = 2"
+                }),
+                &ctx,
+            )
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn edit_file_heading_with_replace_all() {
+        let (dir, ctx) = project_ctx().await;
+        let md = dir.path().join("test.md");
+        std::fs::write(
+            &md,
+            "# API\n## Users\nitem one\nitem two\n## Posts\nitem three\n",
+        )
+        .unwrap();
+
+        let _ = EditFile
+            .call(
+                json!({
+                    "path": md.to_str().unwrap(),
+                    "heading": "## Users",
+                    "old_string": "item",
+                    "new_string": "entry",
+                    "replace_all": true
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(&md).unwrap();
+        assert!(content.contains("entry one"));
+        assert!(content.contains("entry two"));
+        assert!(
+            content.contains("item three"),
+            "Posts section should be unchanged"
+        );
+    }
+
+    // ── EditFile — batch edits ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn batch_edit_applies_all() {
+        let (dir, ctx) = project_ctx().await;
+        std::fs::write(dir.path().join("test.md"), "# Title\nfoo\nbar\nbaz\n").unwrap();
+
+        let _ = EditFile
+            .call(
+                json!({
+                    "path": dir.path().join("test.md").to_str().unwrap(),
+                    "edits": [
+                        {"old_string": "foo", "new_string": "FOO"},
+                        {"old_string": "bar", "new_string": "BAR"},
+                        {"old_string": "baz", "new_string": "BAZ"}
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("test.md")).unwrap();
+        assert!(content.contains("FOO"));
+        assert!(content.contains("BAR"));
+        assert!(content.contains("BAZ"));
+    }
+
+    #[tokio::test]
+    async fn batch_edit_string_coerced() {
+        let (dir, ctx) = project_ctx().await;
+        std::fs::write(dir.path().join("test.md"), "# Title\nfoo\nbar\n").unwrap();
+
+        // Simulate MCP client that stringifies array params
+        let _ = EditFile
+            .call(
+                json!({
+                    "path": dir.path().join("test.md").to_str().unwrap(),
+                    "edits": "[{\"old_string\":\"foo\",\"new_string\":\"FOO\"},{\"old_string\":\"bar\",\"new_string\":\"BAR\"}]"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("test.md")).unwrap();
+        assert!(content.contains("FOO"), "first edit should apply");
+        assert!(content.contains("BAR"), "second edit should apply");
+    }
+
+    #[tokio::test]
+    async fn batch_edit_atomic_rollback() {
+        let (dir, ctx) = project_ctx().await;
+        std::fs::write(dir.path().join("test.md"), "# Title\nfoo\nbar\n").unwrap();
+
+        let result = EditFile
+            .call(
+                json!({
+                    "path": dir.path().join("test.md").to_str().unwrap(),
+                    "edits": [
+                        {"old_string": "foo", "new_string": "FOO"},
+                        {"old_string": "nonexistent", "new_string": "X"}
+                    ]
+                }),
+                &ctx,
+            )
+            .await;
+
+        assert!(result.is_err());
+        let content = std::fs::read_to_string(dir.path().join("test.md")).unwrap();
+        assert!(
+            content.contains("foo"),
+            "first edit should have been rolled back"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_edit_and_old_string_mutual_exclusion() {
+        let (dir, ctx) = project_ctx().await;
+        std::fs::write(dir.path().join("test.md"), "# Title\n").unwrap();
+
+        let result = EditFile
+            .call(
+                json!({
+                    "path": dir.path().join("test.md").to_str().unwrap(),
+                    "old_string": "foo",
+                    "new_string": "bar",
+                    "edits": [{"old_string": "x", "new_string": "y"}]
+                }),
+                &ctx,
+            )
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn batch_edit_with_heading_scope() {
+        let (dir, ctx) = project_ctx().await;
+        std::fs::write(
+            dir.path().join("test.md"),
+            "# Config\n## Dev\nvalue = 1\n## Prod\nvalue = 2\n",
+        )
+        .unwrap();
+
+        let _ = EditFile
+            .call(
+                json!({
+                    "path": dir.path().join("test.md").to_str().unwrap(),
+                    "edits": [
+                        {"old_string": "value = 1", "new_string": "value = 10", "heading": "## Dev"},
+                        {"old_string": "value = 2", "new_string": "value = 20", "heading": "## Prod"}
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("test.md")).unwrap();
+        assert!(content.contains("value = 10"));
+        assert!(content.contains("value = 20"));
+    }
+
+    #[tokio::test]
+    async fn batch_edit_line_shift() {
+        let (dir, ctx) = project_ctx().await;
+        std::fs::write(
+            dir.path().join("test.md"),
+            "# Title\nline one\nline two\nline three\n",
+        )
+        .unwrap();
+
+        let _ = EditFile
+            .call(
+                json!({
+                    "path": dir.path().join("test.md").to_str().unwrap(),
+                    "edits": [
+                        {"old_string": "line one", "new_string": "line one\nextra line a\nextra line b"},
+                        {"old_string": "line three", "new_string": "line three updated"}
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("test.md")).unwrap();
+        assert!(content.contains("extra line a"));
+        assert!(content.contains("extra line b"));
+        assert!(content.contains("line three updated"));
     }
 
     // --- format_list_dir tests ---
@@ -5010,6 +6250,9 @@ line4"
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         let file = dir.path().join("big.md");
         // Create a file > 10 KB (exceeds MAX_INLINE_TOKENS)
@@ -5106,6 +6349,35 @@ line4"
             "large file should be buffered; got: {}",
             serde_json::to_string_pretty(&result).unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn read_file_coverage_full_read_marks_all() {
+        let ctx = test_ctx().await;
+        let dir = tempfile::tempdir().unwrap();
+        let md = dir.path().join("test.md");
+        std::fs::write(&md, "# Title\n## A\ntext\n## B\nmore\n").unwrap();
+        ctx.agent
+            .activate(dir.path().to_path_buf(), Some(false))
+            .await
+            .unwrap();
+
+        let _result = ReadFile
+            .call(json!({"path": "test.md"}), &ctx)
+            .await
+            .unwrap();
+
+        let resolved = dir.path().join("test.md").canonicalize().unwrap();
+        let all = vec![
+            "# Title".to_string(),
+            "## A".to_string(),
+            "## B".to_string(),
+        ];
+        let status = ctx.section_coverage.lock().unwrap().status(&resolved, &all);
+        assert!(status.is_some(), "coverage should have been recorded");
+        let s = status.unwrap();
+        assert_eq!(s.read_count, 3);
+        assert!(s.unread.is_empty());
     }
 }
 

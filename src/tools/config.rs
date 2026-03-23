@@ -474,6 +474,9 @@ mod tests {
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         // No project initially
@@ -506,6 +509,9 @@ mod tests {
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         let result = ActivateProject
             .call(
@@ -531,6 +537,9 @@ mod tests {
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         // Activate dir2
@@ -560,6 +569,9 @@ mod tests {
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         let tool = ProjectStatus;
         let result = tool.call(json!({}), &ctx).await.unwrap();
@@ -587,6 +599,9 @@ mod tests {
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         let result = ProjectStatus.call(json!({}), &ctx).await.unwrap();
 
@@ -626,6 +641,9 @@ mod tests {
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         // Create memories dir and a memory file
@@ -679,6 +697,9 @@ mod tests {
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         let input = json!({ "path": dir.path().to_str().unwrap() });
         let result = ActivateProject.call(input, &ctx).await.unwrap();
@@ -703,6 +724,9 @@ mod tests {
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         let input = json!({ "path": dir2.path().to_str().unwrap() });
         let result = ActivateProject.call(input, &ctx).await.unwrap();
@@ -735,6 +759,9 @@ mod tests {
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         // Switch away
         ActivateProject
@@ -797,6 +824,9 @@ depends_on = ["test"]
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         let result = ProjectStatus
@@ -830,6 +860,9 @@ depends_on = ["test"]
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         // Initially focused on root project
@@ -861,6 +894,9 @@ depends_on = ["test"]
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         // "unknown-project" has no slash and does not exist as a project ID or a path
@@ -886,6 +922,9 @@ depends_on = ["test"]
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         // post_compact=true should return flushed:true without the normal status fields
@@ -997,6 +1036,9 @@ depends_on = ["test"]
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         let result = ActivateProject
             .call(
@@ -1033,6 +1075,9 @@ depends_on = ["test"]
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         // Now activate another project as RO
         let result = ActivateProject
@@ -1067,6 +1112,9 @@ depends_on = ["test"]
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         let result = ActivateProject
             .call(json!({"path": dir.path().to_str().unwrap()}), &ctx)
@@ -1093,6 +1141,9 @@ depends_on = ["test"]
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         let result = ActivateProject
             .call(
@@ -1118,6 +1169,9 @@ depends_on = ["test"]
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         let result = ActivateProject
             .call(json!({"path": dir.path().to_str().unwrap()}), &ctx)
@@ -1149,6 +1203,9 @@ depends_on = ["test"]
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         // Focus-switch by ID
@@ -1191,6 +1248,9 @@ depends_on = ["test"]
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         let result = ActivateProject
@@ -1221,6 +1281,9 @@ depends_on = ["test"]
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         // Activate home first
@@ -1275,6 +1338,9 @@ depends_on = ["test"]
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
         let result = ActivateProject
             .call(json!({"path": dir.path().to_str().unwrap()}), &ctx)

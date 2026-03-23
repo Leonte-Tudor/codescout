@@ -37,6 +37,9 @@ async fn project_with_files(files: &[(&str, &str)]) -> (tempfile::TempDir, ToolC
         output_buffer: Arc::new(OutputBuffer::new(20)),
         progress: None,
         peer: None,
+        section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+            codescout::tools::section_coverage::SectionCoverage::new(),
+        )),
     };
     (dir, ctx)
 }

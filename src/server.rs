@@ -45,6 +45,7 @@ pub struct CodeScoutServer {
     /// For stdio this means instructions reflect the state at server startup;
     /// for HTTP/SSE each connection gets fresh instructions.
     instructions: String,
+    section_coverage: Arc<std::sync::Mutex<crate::tools::section_coverage::SectionCoverage>>,
 }
 
 impl CodeScoutServer {
@@ -68,6 +69,7 @@ impl CodeScoutServer {
             Arc::new(CreateFile),
             Arc::new(FindFile),
             Arc::new(EditFile),
+            Arc::new(crate::tools::section_edit::EditSection),
             // Workflow tools
             Arc::new(RunCommand),
             Arc::new(Onboarding),
@@ -95,12 +97,16 @@ impl CodeScoutServer {
             Arc::new(RegisterLibrary),
         ];
         let output_buffer = Arc::new(crate::tools::output_buffer::OutputBuffer::new(50));
+        let section_coverage = Arc::new(std::sync::Mutex::new(
+            crate::tools::section_coverage::SectionCoverage::new(),
+        ));
         Self {
             agent,
             lsp,
             output_buffer,
             tools,
             instructions,
+            section_coverage,
         }
     }
 
@@ -148,6 +154,7 @@ impl CodeScoutServer {
             output_buffer: self.output_buffer.clone(),
             progress,
             peer,
+            section_coverage: self.section_coverage.clone(),
         };
 
         let timeout_secs = if tool_skips_server_timeout(&req.name) {
@@ -570,6 +577,7 @@ mod tests {
             "create_file",
             "find_file",
             "edit_file",
+            "edit_section",
             "run_command",
             "onboarding",
             "find_symbol",

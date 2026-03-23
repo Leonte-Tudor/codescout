@@ -530,8 +530,7 @@ impl Tool for Memory {
             "read" => {
                 let topic = super::require_str_param(&input, "topic")?;
                 let private = parse_bool_param(&input["private"]);
-                let sections: Vec<String> = input["sections"]
-                    .as_array()
+                let sections: Vec<String> = super::optional_array_param(&input, "sections")
                     .map(|arr| {
                         arr.iter()
                             .filter_map(|v| v.as_str().map(str::to_string))
@@ -835,6 +834,9 @@ mod tests {
                 )),
                 progress: None,
                 peer: None,
+                section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::tools::section_coverage::SectionCoverage::new(),
+                )),
             },
         )
     }
@@ -846,6 +848,9 @@ mod tests {
             output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         }
     }
 
@@ -1573,6 +1578,9 @@ mod tests {
             output_buffer: Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
             progress: None,
             peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
         };
 
         // Write memory to mcp-server project
@@ -1725,6 +1733,36 @@ mod tests {
             .as_array()
             .expect("missing field should be present");
         assert_eq!(missing, &[json!("Go")]);
+    }
+
+    #[tokio::test]
+    async fn memory_read_sections_string_coerced() {
+        let (_dir, ctx) = test_ctx_with_project().await;
+
+        let content =
+            "# Lang Patterns\n\nIntro.\n\n### Rust\n\nRust stuff.\n\n### TypeScript\n\nTS stuff.\n";
+        Memory
+            .call(
+                json!({ "action": "write", "topic": "lang-coerce-test", "content": content }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        // Simulate MCP client that stringifies array params
+        let result = Memory
+            .call(
+                json!({ "action": "read", "topic": "lang-coerce-test", "sections": "[\"Rust\"]" }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let text = result["content"].as_str().unwrap();
+        assert!(text.contains("### Rust"), "should contain Rust section");
+        assert!(
+            !text.contains("### TypeScript"),
+            "should not contain TypeScript"
+        );
     }
 
     #[tokio::test]

@@ -355,7 +355,7 @@ pub fn check_tool_access(tool_name: &str, config: &PathSecurityConfig) -> Result
             }
         }
         "create_file" | "edit_file" | "replace_symbol" | "insert_code" | "rename_symbol"
-        | "remove_symbol" | "register_library" => {
+        | "remove_symbol" | "register_library" | "edit_section" => {
             if !config.file_write_enabled {
                 bail!(
                     "File writes are disabled for this project. If this project was activated in read-only mode, call activate_project with read_only: false to enable writes."
