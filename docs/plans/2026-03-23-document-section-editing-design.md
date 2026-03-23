@@ -22,6 +22,7 @@ Six features that share the same heading-parsing infrastructure:
 4. **Section-scoped `edit_file`** — optional `heading` param on `edit_file` to restrict string matching to a section's line range.
 5. **Batch `edit_file`** — `edits` array param on `edit_file` for applying multiple edits atomically in one call.
 6. **Inline-format-aware heading matching** — strip backticks, bold, italic from headings before matching, so LLMs don't need to reproduce exact inline formatting.
+7. **Complete read mode for plan files** — `read_file(mode="complete")` bypasses buffer/pagination, delivers entire plan inline with a delivery receipt (section list, checkbox progress). Scoped to `plans/` directories only.
 
 All markdown-only for now. The design includes extension seams for TOML/YAML/JSON later.
 
@@ -291,7 +292,7 @@ This stripping is applied in `resolve_section_range` (and by extension `extract_
 | `src/server.rs` (`from_parts`) | Register `EditSection` (tool #30) |
 | `src/util/path_security.rs` (`check_tool_access`) | **CRITICAL:** Add `"edit_section"` to the write-tool match arm (`"create_file" | "edit_file" | ... | "edit_section"`). The fallthrough is `_ => {}` (always allowed), so a missing entry silently bypasses write-access gates on read-only projects. |
 | `src/tools/file.rs` (`ReadFile::call`) | After markdown read, record seen sections in `SectionCoverage`; include `coverage` field. Add `headings` list param support (Feature 3). |
-| `src/tools/file.rs` (`ReadFile::input_schema`) | Add `headings` param (array of strings) to schema, mutual exclusivity with `heading` |
+| `src/tools/file.rs` (`ReadFile::input_schema`) | Add `headings` param (array of strings), `mode` param (string, enum: "complete"). Mutual exclusivity with `heading`. |
 | `src/tools/file.rs` (`EditFile::call`) | Add optional `heading` param for section-scoped matching (Feature 4). Add `edits` array param for batch mode (Feature 5). On markdown write, check `SectionCoverage` (only if coverage data exists for the file), include unread hint. Update mtime in coverage after write. |
 | `src/tools/file.rs` (`EditFile::input_schema`) | Add `heading` (string, optional) and `edits` (array, optional) params to schema |
 | `src/tools/mod.rs` (`ToolContext`) | Add `section_coverage: Arc<Mutex<SectionCoverage>>` field |
@@ -342,6 +343,17 @@ All 3 prompt surfaces need coordinated updates:
 | `in_session_write_preserves_coverage` | `edit_section` updates mtime, coverage not spuriously cleared |
 | `write_hint_on_unread` | Write tools include unread hint |
 | `write_hint_skipped_when_no_coverage` | No hint if file was never read in this session |
+
+### Complete read mode tests
+
+| Test | Validates |
+|------|-----------|
+| `complete_mode_returns_full_content` | Entire file returned inline, no buffer ref |
+| `complete_mode_delivery_receipt` | Receipt appended with section list, line count, checkbox counts |
+| `complete_mode_marks_all_seen` | All headings recorded in SectionCoverage |
+| `complete_mode_rejects_non_plan_path` | RecoverableError for files outside `plans/` directory |
+| `complete_mode_mutual_exclusivity` | Error when combined with heading/start_line/json_path |
+| `complete_mode_nested_plans_dir` | Works for `docs/superpowers/plans/`, not just `plans/` |
 
 ### Multi-heading read tests
 
@@ -394,3 +406,69 @@ All 3 prompt surfaces need coordinated updates:
 - **JSON key editing:** `resolve_json_key_range` (trickier — JSON has no line-oriented structure)
 - **Finer granularity:** Paragraph-level or list-item-level operations within sections
 - **Section rename:** Dedicated action or handled via `replace` with heading in content (already works)
+- **`occurrence: N` param for `edit_file`:** Replace the Nth match instead of requiring unique context. Avoids the LLM needing to expand `old_string` for disambiguation in repetitive files.
+- **`heading_path` nested resolution:** Support `"## Parent / ### Child"` path syntax in `resolve_section_range`, analogous to `name_path` for symbols. Solves ambiguity when repeated subsection names (e.g., `### Motivation`, `### Parameters`) appear under different parent sections.
+- **Batch edit guidance:** Server instructions should recommend heading-scoped edits within batches — headings are stable anchors that survive earlier edits, while unscoped edits are order-sensitive.
+- **Plan file reading verification:** Structured plan files (with checkbox tasks, numbered steps) need stronger coverage guarantees than generic markdown. See dedicated section below.
+
+## Feature 7: Complete Read Mode for Plan Files
+
+Plan documents are a critical use case for section coverage tracking. They have unique properties:
+
+1. **They are consumed sequentially** — an agent must read tasks in order because later tasks depend on earlier ones.
+2. **They are large** — implementation plans routinely exceed 1000 lines (the plan for this very feature is 2185 lines).
+3. **"Seen" ≠ "understood"** — the LLM may receive content in a buffer but skim middle sections (lost-in-the-middle effect).
+4. **Partial reading causes cascading errors** — skipping Task 3 means Task 5 (which depends on it) will be implemented wrong.
+
+### Motivation
+
+In subagent-driven development (SDD), the controller agent reads the plan once, extracts all tasks with full text, and dispatches subagents with curated context. The subagents never read the plan file — the controller provides exactly what they need.
+
+The problem: `read_file` on large plan files (1000-2000+ lines) routes through the buffer system, requiring pagination. The LLM may skim middle sections. Coverage tracking marks everything "seen" on a full read even if content was only partially processed.
+
+Plan files need a "just give me everything" mode — bypass buffer/pagination and deliver the entire file inline with a delivery receipt.
+
+### Interface Change
+
+Add `mode="complete"` to `read_file`:
+
+```json
+{ "path": "docs/plans/my-feature-plan.md", "mode": "complete" }
+```
+
+**Behavior:**
+- Returns the entire file content inline, bypassing the buffer system and `MAX_INLINE_TOKENS` cap
+- Appends a delivery summary at the end of the content:
+  ```
+  --- delivery receipt ---
+  File: docs/plans/my-feature-plan.md
+  Lines: 2185 | Sections: 24 | Checkboxes: 48 (12 done, 36 pending)
+  Sections delivered: [## Chunk 1: Foundation, ### Task 1: ..., ### Task 2: ..., ...]
+  ```
+- All sections marked as "seen" in `SectionCoverage`
+- Mutually exclusive with `heading`, `headings`, `start_line`/`end_line`, `json_path`, `toml_key`
+
+**Scope restriction:** `mode="complete"` is only allowed for files under a `plans/` directory (any depth — `docs/plans/`, `docs/superpowers/plans/`, etc.). On files outside `plans/`, returns a `RecoverableError`:
+```json
+{ "error": "mode=complete is restricted to plan files (paths containing /plans/)", "hint": "Use heading= or headings= to read specific sections of non-plan files." }
+```
+
+This prevents LLMs from using complete mode as a shortcut to dump arbitrary large files into context.
+
+**No behavior change without `mode`:** Existing `read_file` calls are unaffected. The default buffer/pagination behavior remains for all other files.
+
+### Delivery Receipt
+
+The receipt serves two purposes:
+1. **Verification** — the LLM can confirm it received all sections by checking the list
+2. **Quick reference** — checkbox counts give the controller a progress snapshot without parsing
+
+The receipt is appended as a markdown block at the end of the content (after a `---` separator), not as a separate JSON field. This keeps it in the LLM's text stream where it's most visible.
+
+### Coverage Integration
+
+All sections are marked "seen" on a complete read. The delivery receipt acts as an additional verification layer — even if coverage says "24/24 seen", the receipt lists them explicitly so the LLM can cross-reference.
+
+### Future Relaxation
+
+The `plans/` restriction can be relaxed later if needed — e.g., allowing `mode="complete"` for any file under a configurable size threshold, or for files matching specific patterns. For now, the tight scope prevents misuse.

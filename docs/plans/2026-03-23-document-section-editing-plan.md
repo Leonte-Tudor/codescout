@@ -2098,7 +2098,249 @@ Each edit can optionally scope to a heading. Mutually exclusive with old_string.
 
 ---
 
-## Chunk 6: Prompt Surfaces & Final Verification
+## Chunk 6: Complete Read Mode for Plan Files
+
+### Task 10b: Implement `mode="complete"` on `ReadFile`
+
+**Files:**
+- Modify: `src/tools/file.rs` (`ReadFile::input_schema` and `ReadFile::call`)
+
+This adds a `mode="complete"` param to `read_file` that bypasses buffer/pagination and returns the entire file inline with a delivery receipt. Scoped to files in `plans/` directories only.
+
+- [ ] **Step 1: Write failing tests**
+
+```rust
+#[tokio::test]
+async fn complete_mode_returns_full_content() {
+    let ctx = test_ctx().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("plans")).unwrap();
+    let plan = dir.path().join("plans/test-plan.md");
+    let mut content = String::from("# Plan\n");
+    for i in 1..=10 {
+        content.push_str(&format!("## Task {i}\n- [ ] Step 1\n- [x] Step 2\ncontent {i}\n\n"));
+    }
+    std::fs::write(&plan, &content).unwrap();
+    ctx.agent.activate(dir.path(), false).await.unwrap();
+
+    let result = ReadFile.call(json!({
+        "path": "plans/test-plan.md",
+        "mode": "complete"
+    }), &ctx).await.unwrap();
+
+    let text = result["content"].as_str().unwrap();
+    // Should contain all tasks inline, not a buffer ref
+    assert!(text.contains("## Task 1"));
+    assert!(text.contains("## Task 10"));
+    assert!(!text.contains("@file_")); // no buffer ref
+}
+
+#[tokio::test]
+async fn complete_mode_delivery_receipt() {
+    let ctx = test_ctx().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("plans")).unwrap();
+    let plan = dir.path().join("plans/test-plan.md");
+    std::fs::write(&plan, "# Plan\n## Task 1\n- [ ] Step A\n- [x] Step B\n## Task 2\n- [ ] Step C\n").unwrap();
+    ctx.agent.activate(dir.path(), false).await.unwrap();
+
+    let result = ReadFile.call(json!({
+        "path": "plans/test-plan.md",
+        "mode": "complete"
+    }), &ctx).await.unwrap();
+
+    let text = result["content"].as_str().unwrap();
+    assert!(text.contains("--- delivery receipt ---"));
+    assert!(text.contains("Sections: 3")); // # Plan, ## Task 1, ## Task 2
+    assert!(text.contains("Checkboxes:")); // should show done/pending counts
+}
+
+#[tokio::test]
+async fn complete_mode_marks_all_seen() {
+    let ctx = test_ctx().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("plans")).unwrap();
+    let plan = dir.path().join("plans/test-plan.md");
+    std::fs::write(&plan, "# Plan\n## A\ntext\n## B\ntext\n## C\ntext\n").unwrap();
+    ctx.agent.activate(dir.path(), false).await.unwrap();
+
+    let _ = ReadFile.call(json!({
+        "path": "plans/test-plan.md",
+        "mode": "complete"
+    }), &ctx).await.unwrap();
+
+    let resolved = dir.path().join("plans/test-plan.md").canonicalize().unwrap();
+    let all = vec!["# Plan".into(), "## A".into(), "## B".into(), "## C".into()];
+    let status = ctx.section_coverage.lock().unwrap().status(&resolved, &all).unwrap();
+    assert_eq!(status.read_count, 4);
+    assert!(status.unread.is_empty());
+}
+
+#[tokio::test]
+async fn complete_mode_rejects_non_plan_path() {
+    let ctx = test_ctx().await;
+    let dir = tempfile::tempdir().unwrap();
+    let md = dir.path().join("README.md");
+    std::fs::write(&md, "# Big file\nLots of content\n").unwrap();
+    ctx.agent.activate(dir.path(), false).await.unwrap();
+
+    let result = ReadFile.call(json!({
+        "path": "README.md",
+        "mode": "complete"
+    }), &ctx).await;
+
+    // Should error — not in a plans/ directory
+    assert!(result.is_err() || result.unwrap()["error"].is_string());
+}
+
+#[tokio::test]
+async fn complete_mode_mutual_exclusivity() {
+    let ctx = test_ctx().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("plans")).unwrap();
+    std::fs::write(dir.path().join("plans/p.md"), "# Plan\n").unwrap();
+    ctx.agent.activate(dir.path(), false).await.unwrap();
+
+    let result = ReadFile.call(json!({
+        "path": "plans/p.md",
+        "mode": "complete",
+        "heading": "# Plan"
+    }), &ctx).await;
+
+    assert!(result.is_err() || result.unwrap()["error"].is_string());
+}
+
+#[tokio::test]
+async fn complete_mode_nested_plans_dir() {
+    let ctx = test_ctx().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("docs/superpowers/plans")).unwrap();
+    let plan = dir.path().join("docs/superpowers/plans/feature.md");
+    std::fs::write(&plan, "# Plan\n## Task 1\ncontent\n").unwrap();
+    ctx.agent.activate(dir.path(), false).await.unwrap();
+
+    let result = ReadFile.call(json!({
+        "path": "docs/superpowers/plans/feature.md",
+        "mode": "complete"
+    }), &ctx).await.unwrap();
+
+    let text = result["content"].as_str().unwrap();
+    assert!(text.contains("## Task 1"));
+    assert!(text.contains("--- delivery receipt ---"));
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cargo test complete_mode -- --nocapture 2>&1 | head -20`
+Expected: FAIL — `mode` param not handled yet
+
+- [ ] **Step 3: Implement complete mode in `ReadFile::call`**
+
+In `ReadFile::input_schema`, add to the properties:
+
+```json
+"mode": {
+    "type": "string",
+    "enum": ["complete"],
+    "description": "Read mode. 'complete' returns entire file inline (plan files only, bypasses buffer)."
+}
+```
+
+In `ReadFile::call`, early in the function after parsing params, add:
+
+```rust
+let mode = input["mode"].as_str();
+
+if mode == Some("complete") {
+    // Mutual exclusivity check
+    if heading.is_some() || headings_param.is_some() || start_line.is_some()
+        || end_line.is_some() || json_path.is_some() || toml_key.is_some()
+    {
+        return Err(RecoverableError::with_hint(
+            "mode=complete is mutually exclusive with heading, headings, start_line, end_line, json_path, toml_key",
+            "Use mode=complete alone to read the entire plan file.",
+        ).into());
+    }
+
+    // Scope restriction: only plans/ directories
+    if !path.contains("/plans/") && !path.starts_with("plans/") {
+        return Err(RecoverableError::with_hint(
+            "mode=complete is restricted to plan files (paths containing /plans/)",
+            "Use heading= or headings= to read specific sections of non-plan files.",
+        ).into());
+    }
+
+    let root = ctx.agent.require_project_root().await?;
+    let security = ctx.agent.security_config().await;
+    let resolved = crate::util::path_security::resolve_path(path, &root)?;
+    let text = std::fs::read_to_string(&resolved)?;
+    let line_count = text.lines().count();
+
+    // Parse headings for receipt and coverage
+    let all_headings = crate::tools::file_summary::parse_all_headings(&text);
+    let heading_texts: Vec<String> = all_headings.iter().map(|h| h.text.clone()).collect();
+
+    // Count checkboxes
+    let done_count = text.lines().filter(|l| {
+        let trimmed = l.trim_start();
+        trimmed.starts_with("- [x]") || trimmed.starts_with("- [X]")
+    }).count();
+    let pending_count = text.lines().filter(|l| {
+        let trimmed = l.trim_start();
+        trimmed.starts_with("- [ ]")
+    }).count();
+    let total_checkboxes = done_count + pending_count;
+
+    // Build delivery receipt
+    let section_list = heading_texts.join(", ");
+    let receipt = format!(
+        "\n\n--- delivery receipt ---\nFile: {path}\nLines: {line_count} | Sections: {} | Checkboxes: {total_checkboxes} ({done_count} done, {pending_count} pending)\nSections delivered: [{section_list}]\n",
+        all_headings.len()
+    );
+
+    // Record all sections as seen in coverage
+    if !heading_texts.is_empty() {
+        if let Ok(mut cov) = ctx.section_coverage.lock() {
+            cov.mark_seen(&resolved, &heading_texts);
+        }
+    }
+
+    let mut content = text;
+    content.push_str(&receipt);
+
+    return Ok(json!({
+        "content": content,
+        "complete": true,
+        "line_count": line_count,
+    }));
+}
+```
+
+- [ ] **Step 4: Run tests**
+
+Run: `cargo test complete_mode -- --nocapture 2>&1 | head -40`
+Expected: All 6 tests pass
+
+- [ ] **Step 5: Run full suite + clippy**
+
+Run: `cargo fmt && cargo clippy -- -D warnings && cargo test 2>&1 | tail -20`
+Expected: All clean
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/tools/file.rs
+git commit -m "feat: add mode=complete to ReadFile for plan files
+
+Bypasses buffer/pagination, returns entire file inline with a delivery
+receipt (section list, line count, checkbox progress). Scoped to plans/
+directories only to prevent misuse on arbitrary large files."
+```
+
+## Chunk 7: Prompt Surfaces & Final Verification
+
+> Note: Task numbering continues from previous chunks. Task 11 and 12 unchanged.
 
 ### Task 11: Update prompt surfaces
 
@@ -2132,6 +2374,13 @@ Add note about `edit_file` enhancements:
 ```markdown
 - `edit_file` now supports `heading` param for section-scoped matching (markdown only)
   and `edits` array for batch operations (atomic, one write).
+```
+
+Add note about complete read mode:
+
+```markdown
+- `read_file` with `mode="complete"` returns entire plan file inline with a delivery receipt.
+  Only for files in `plans/` directories. Use when you need to read a full implementation plan.
 ```
 
 - [ ] **Step 3: Update `onboarding_prompt.md`**
