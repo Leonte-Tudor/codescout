@@ -1,6 +1,5 @@
 # Multi-Ecosystem Library Auto-Registration
 
-> ⚠ Experimental — may change without notice.
 
 ## Overview
 

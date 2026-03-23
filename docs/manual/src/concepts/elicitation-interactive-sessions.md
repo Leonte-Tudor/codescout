@@ -1,6 +1,5 @@
 # Elicitation-Driven Interactive Sessions
 
-> ⚠ Experimental — may change without notice.
 
 `run_command` now supports an `interactive: true` parameter that spawns the
 process with piped stdin/stdout/stderr and drives it via MCP elicitation in a

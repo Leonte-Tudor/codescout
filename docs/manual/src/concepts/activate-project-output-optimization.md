@@ -1,6 +1,5 @@
 # activate_project Output Optimization
 
-> ⚠ Experimental — may change without notice.
 
 `activate_project` now returns a slim **orientation card** instead of the full raw config dump.
 
