@@ -289,13 +289,15 @@ fn route_tool_error(e: anyhow::Error) -> CallToolResult {
         CallToolResult::success(vec![Content::text(text)])
     } else if e.to_string().contains("code -32800") {
         // LSP RequestCancelled — treat as recoverable so sibling parallel tool calls are not aborted.
+        // Log at WARN so this is visible in diagnostic logs (otherwise it appears as ok=true).
+        tracing::warn!("LSP RequestCancelled (-32800): {}", e);
         let body = serde_json::json!({
             "error": e.to_string(),
             "hint": "The LSP server cancelled this request (code -32800). Common causes:\n\
-                     (1) Another editor (e.g. VS Code) is running a language server for the same \
-                     project. kotlin-lsp v0.253 uses an on-disk MVStore index that only supports \
-                     one session at a time — the workspace database is locked. Close the other \
-                     editor session or upgrade kotlin-lsp to v261+ (which allows shared access).\n\
+                     (1) Another process holds the workspace lock — e.g. another codescout instance \
+                     or an editor (VS Code, IntelliJ) running a language server for the same project. \
+                     For kotlin-lsp, each instance needs a separate --system-path to avoid lock \
+                     contention on the IntelliJ platform's .app.lock file.\n\
                      (2) The server just started and is still running background indexing \
                      (can take 1-5 minutes on first run). Wait and retry the call."
         });

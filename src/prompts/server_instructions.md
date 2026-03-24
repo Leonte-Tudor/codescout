@@ -282,6 +282,26 @@ Multi-tool chains for common tasks. Follow the steps in order.
 | 4 | `run_command("cargo check")` | Verify compilation |
 
 
+## Language Support — Known Issues
+
+### Kotlin (kotlin-lsp)
+
+kotlin-lsp (JetBrains) has a **single workspace session** limitation: only one
+kotlin-lsp process can serve a given project directory at a time. If another
+codescout instance or editor is already running kotlin-lsp for the same project,
+new instances will fail with:
+
+> "Multiple editing sessions for one workspace are not supported yet"
+
+codescout detects this and fails fast with a clear error. **Workaround:** close
+the other session first, or use a single codescout instance for Kotlin projects.
+
+This is a known kotlin-lsp limitation (the "not yet" wording indicates JetBrains
+plans to lift it in a future release). codescout will update when this is resolved.
+
+All other supported languages (Rust, Python, TypeScript, JavaScript, Go, Java, C/C++,
+C#, Ruby) support multiple concurrent LSP sessions without issues.
+
 ## Rules
 
 1. **Exploring mode first.** Only `detail_level: "full"` after you know what you need.

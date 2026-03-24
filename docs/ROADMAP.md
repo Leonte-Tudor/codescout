@@ -281,6 +281,23 @@ Decay rules:
 
 ---
 
+
+### LSP Temp Dir Cleanup
+
+**Priority:** Low | **Effort:** Small
+
+kotlin-lsp instances use per-process `--system-path=/tmp/codescout-<PID>-kotlin-lsp`
+dirs for workspace isolation. These are tiny (~4KB) and PID-scoped, but accumulate
+across sessions until OS reboot clears `/tmp`.
+
+**Options:**
+- Clean up in `LspManager::evict_idle` or `LspClient::shutdown` — requires plumbing
+  the system-path from `LspServerConfig` through to the cleanup site
+- Periodic sweep: `glob /tmp/codescout-*-kotlin-lsp`, skip dirs whose PID is alive
+- Do nothing — `/tmp` is self-cleaning and dirs are negligible
+
+**Context:** See `docs/issues/2026-03-24-kotlin-lsp-concurrent-instances.md`
+
 ## Contributor Skills
 
 Three Claude Code skills living in `.claude/skills/` within this repo. Contributors who open codescout in Claude Code get them automatically — no build step required. See [`plans/2026-02-26-contributor-skills-design.md`](plans/2026-02-26-contributor-skills-design.md) for the full design.

@@ -41,12 +41,22 @@ pub fn default_config(language: &str, workspace_root: &Path) -> Option<LspServer
             workspace_root: root,
             init_timeout: jvm_timeout,
         }),
-        "kotlin" => Some(LspServerConfig {
-            command: crate::platform::lsp_binary_name("kotlin-lsp"),
-            args: vec!["--stdio".into()],
-            workspace_root: root,
-            init_timeout: jvm_timeout,
-        }),
+        "kotlin" => {
+            // Each codescout instance needs its own kotlin-lsp system-path to avoid
+            // IntelliJ platform .app.lock contention between concurrent instances.
+            // See docs/issues/2026-03-24-kotlin-lsp-concurrent-instances.md
+            let system_dir =
+                std::env::temp_dir().join(format!("codescout-{}-kotlin-lsp", std::process::id()));
+            Some(LspServerConfig {
+                command: crate::platform::lsp_binary_name("kotlin-lsp"),
+                args: vec![
+                    "--stdio".into(),
+                    format!("--system-path={}", system_dir.display()),
+                ],
+                workspace_root: root,
+                init_timeout: jvm_timeout,
+            })
+        }
         "c" | "cpp" => Some(LspServerConfig {
             command: crate::platform::lsp_binary_name("clangd"),
             args: vec![],

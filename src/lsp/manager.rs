@@ -73,6 +73,11 @@ pub struct LspManager {
     pub(crate) pending_reason: StdMutex<HashMap<LspKey, String>>,
     /// Project root for production usage.db writes. Set at construction time via new_arc_with_root.
     project_root: Option<std::path::PathBuf>,
+    /// Circuit-breaker: tracks consecutive startup failures per key.
+    /// After `CIRCUIT_BREAKER_MAX_FAILURES` failures within `CIRCUIT_BREAKER_WINDOW`,
+    /// get_or_start returns an error immediately instead of spawning another process.
+    /// Reset on successful start or after the window expires.
+    startup_failures: StdMutex<HashMap<LspKey, (usize, Instant)>>,
     /// Project root for test-only DB writes. Set by new_for_test_with_root.
     #[cfg(test)]
     project_root_for_test: Option<std::path::PathBuf>,
@@ -116,6 +121,12 @@ impl Drop for StartingCleanup<'_> {
 }
 
 impl LspManager {
+    /// Maximum consecutive startup failures before the circuit-breaker trips.
+    const CIRCUIT_BREAKER_MAX_FAILURES: usize = 5;
+
+    /// Time window for the circuit-breaker. Failures older than this are forgotten.
+    const CIRCUIT_BREAKER_WINDOW: Duration = Duration::from_secs(60);
+
     pub fn new() -> Self {
         Self {
             clients: Mutex::new(HashMap::new()),
@@ -126,6 +137,7 @@ impl LspManager {
             pending_first_response: StdMutex::new(HashMap::new()),
             pending_reason: StdMutex::new(HashMap::new()),
             project_root: None,
+            startup_failures: StdMutex::new(HashMap::new()),
             #[cfg(test)]
             project_root_for_test: None,
         }
@@ -164,6 +176,31 @@ impl LspManager {
                     if let Some(client) = clients.get(&key) {
                         return Ok(client.clone());
                     }
+                }
+            }
+        }
+
+        // Circuit-breaker: if this language has failed too many times recently,
+        // stop spawning processes and return a clear error.
+        {
+            let failures = self
+                .startup_failures
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some((count, first_failure)) = failures.get(&key) {
+                if first_failure.elapsed() < Self::CIRCUIT_BREAKER_WINDOW
+                    && *count >= Self::CIRCUIT_BREAKER_MAX_FAILURES
+                {
+                    anyhow::bail!(
+                        "LSP server for {} failed to start {} times in {}s — circuit-breaker open. \
+                         Another process may hold the workspace lock. Check for other codescout \
+                         instances or editors targeting this project. \
+                         The breaker resets after {}s of inactivity.",
+                        language,
+                        count,
+                        first_failure.elapsed().as_secs(),
+                        Self::CIRCUIT_BREAKER_WINDOW.as_secs()
+                    );
                 }
             }
         }
@@ -349,12 +386,41 @@ impl LspManager {
                     }
                 }
 
+                // Circuit-breaker: reset on success.
+                self.startup_failures
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(key);
+
                 // Signal success. The `starting` entry is removed by _cleanup
                 // when this function returns.
                 let _ = tx.send(Some(true));
                 Ok(new_client)
             }
             Err(e) => {
+                // Circuit-breaker: record failure.
+                {
+                    let mut failures = self
+                        .startup_failures
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    let entry = failures.entry(key.clone()).or_insert((0, Instant::now()));
+                    if entry.1.elapsed() >= Self::CIRCUIT_BREAKER_WINDOW {
+                        // Window expired — start a fresh count.
+                        *entry = (1, Instant::now());
+                    } else {
+                        entry.0 += 1;
+                    }
+                    if entry.0 >= Self::CIRCUIT_BREAKER_MAX_FAILURES {
+                        tracing::warn!(
+                            "LSP circuit-breaker tripped for {} ({} failures in {}s)",
+                            key,
+                            entry.0,
+                            entry.1.elapsed().as_secs()
+                        );
+                    }
+                }
+
                 // Signal failure. The `starting` entry is removed by _cleanup
                 // when this function returns.
                 let _ = tx.send(Some(false));

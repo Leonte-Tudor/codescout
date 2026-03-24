@@ -302,6 +302,26 @@ The `PreToolUse` hook will **block** any attempt to use the native `Read`, `Grep
 
 See codescout memory `language-patterns` (Rust section) for anti-patterns and idiomatic patterns.
 
+
+## Language-Specific LSP Issues
+
+### Kotlin (kotlin-lsp, JetBrains)
+
+**Single workspace session:** kotlin-lsp allows only one LSP process per project
+directory. A second instance fails with *"Multiple editing sessions for one
+workspace are not supported yet"*. codescout detects this on stderr and fails
+fast instead of retrying for 120s.
+
+**Cold start:** JVM bootstrap + Gradle import takes 8–15s. codescout retries the
+LSP initialize handshake (5 × 3s backoff = ~30s window) to handle -32800
+(RequestCancelled) during this phase.
+
+**Per-instance isolation:** Each codescout process passes
+`--system-path=/tmp/codescout-<PID>-kotlin-lsp` to avoid IntelliJ platform
+`.app.lock` contention between instances.
+
+**Tracking:** `docs/issues/2026-03-24-kotlin-lsp-concurrent-instances.md`
+
 ## Docs
 
 - **`docs/PROGRESSIVE_DISCOVERABILITY.md`** — Canonical guide for output sizing, overflow hints, and agent guidance patterns. **READ THIS before adding or modifying any tool.**

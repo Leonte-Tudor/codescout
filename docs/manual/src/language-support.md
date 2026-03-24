@@ -24,7 +24,7 @@ available for a given language.
 | TSX        | `.tsx`                  | `typescript-language-server` | Full          |
 | Go         | `.go`                   | `gopls`                      | Full          |
 | Java       | `.java`                 | `jdtls`                      | Full          |
-| Kotlin     | `.kt`, `.kts`           | `kotlin-language-server`     | Full          |
+| Kotlin     | `.kt`, `.kts`           | `kotlin-lsp` (JetBrains)     | Full          |
 | JavaScript | `.js`                   | `typescript-language-server` | LSP only      |
 | JSX        | `.jsx`                  | `typescript-language-server` | LSP only      |
 | C          | `.c`                    | `clangd`                     | LSP only      |
@@ -128,11 +128,12 @@ Binary: `jdtls`
 
 ### Kotlin
 
-`kotlin-language-server` is distributed as a release archive on the
-[GitHub releases page](https://github.com/fwcd/kotlin-language-server/releases).
-Unpack and place the `kotlin-language-server` script on `PATH`.
+`kotlin-lsp` (JetBrains) is distributed as a release archive on the
+[GitHub releases page](https://github.com/Kotlin/kotlin-lsp/releases).
+Unpack and place the `kotlin-lsp` script on `PATH`.
 
-Binary: `kotlin-language-server`
+Binary: `kotlin-lsp`, invoked with `--stdio`. Each codescout instance
+automatically passes `--system-path` to isolate its workspace cache.
 
 ### C and C++
 
@@ -186,9 +187,17 @@ assuming the server is unavailable.
 (`--stdio`). This differs from most other servers. The invocation is
 `solargraph stdio`, not `solargraph --stdio`.
 
-**kotlin-language-server** builds a project index on first startup, which can
-take 30–120 seconds on a large project. Symbol tools will return empty results
-until the index is ready. Subsequent startups are fast.
+**kotlin-lsp** (JetBrains) has a **single workspace session limitation**: only
+one kotlin-lsp process can serve a given project directory at a time. If another
+codescout instance or editor is already running kotlin-lsp for the same project,
+new instances fail with *"Multiple editing sessions for one workspace are not
+supported yet"*. codescout detects this and fails fast with a clear error.
+**Workaround:** close the other session first, or use a single codescout instance
+for Kotlin projects. JetBrains plans to lift this restriction in a future release.
+
+kotlin-lsp also builds a project index on first startup (JVM bootstrap + Gradle
+import), which takes 8–15 seconds. codescout retries the LSP handshake during
+this window automatically.
 
 **typescript-language-server** handles JavaScript and JSX in addition to
 TypeScript and TSX. The LSP `languageId` sent for TSX files is

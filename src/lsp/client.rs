@@ -117,6 +117,9 @@ pub struct LspClient {
     /// The spec prohibits sending didOpen for an already-open file without an
     /// intervening didClose; some servers (e.g. kotlin-lsp) error on duplicates.
     open_files: StdMutex<HashMap<PathBuf, i32>>,
+    /// Collects stderr lines from the server process. Checked during init retries
+    /// to detect fatal errors (e.g. kotlin-lsp "Multiple editing sessions").
+    stderr_lines: Arc<StdMutex<Vec<String>>>,
 }
 
 impl LspClient {
@@ -155,7 +158,11 @@ impl LspClient {
         // Wrap writer in Arc so the reader task can share it for auto-responses.
         let writer = Arc::new(Mutex::new(stdin));
 
-        // Spawn stderr reader (logs server stderr, doesn't affect protocol)
+        // Shared stderr buffer — checked by initialize() to detect fatal errors.
+        let stderr_lines: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
+        let stderr_lines_clone = stderr_lines.clone();
+
+        // Spawn stderr reader (logs server stderr, populates shared buffer)
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr);
             let mut line = String::new();
@@ -163,7 +170,22 @@ impl LspClient {
                 line.clear();
                 match tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line).await {
                     Ok(0) => break,
-                    Ok(_) => tracing::debug!(target: "lsp_stderr", "{}", line.trim_end()),
+                    Ok(_) => {
+                        let trimmed = line.trim_end();
+                        let lower = trimmed.to_lowercase();
+                        if lower.contains("error")
+                            || lower.contains("exception")
+                            || lower.contains("fatal")
+                        {
+                            tracing::warn!(target: "lsp_stderr", "{}", trimmed);
+                            stderr_lines_clone
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .push(trimmed.to_string());
+                        } else {
+                            tracing::debug!(target: "lsp_stderr", "{}", trimmed);
+                        }
+                    }
                     Err(_) => break,
                 }
             }
@@ -232,11 +254,11 @@ impl LspClient {
                         // Ok(Some(status)) if it has exited, or Err if the call itself failed.
                         match child.try_wait() {
                             Ok(Some(status)) => {
-                                tracing::debug!(exit_status = ?status, "LSP server exited")
+                                tracing::warn!(exit_status = ?status, "LSP server exited")
                             }
-                            Ok(None) => tracing::debug!("LSP reader EOF but child still running"),
+                            Ok(None) => tracing::warn!("LSP reader EOF but child still running"),
                             Err(wait_err) => {
-                                tracing::debug!("could not get LSP exit status: {wait_err}")
+                                tracing::warn!("could not get LSP exit status: {wait_err}")
                             }
                         }
                         alive_clone.store(false, Ordering::SeqCst);
@@ -267,6 +289,7 @@ impl LspClient {
             child_pid,
             init_timeout,
             open_files: StdMutex::new(HashMap::new()),
+            stderr_lines,
         };
 
         // Perform the LSP initialize handshake
@@ -391,6 +414,10 @@ impl LspClient {
     }
 
     /// Perform the LSP initialize/initialized handshake.
+    ///
+    /// Retries on -32800 (RequestCancelled) because JVM-based servers like
+    /// kotlin-lsp may return this during early JVM bootstrap before they're
+    /// ready to handle the initialize request.
     async fn initialize(&self) -> Result<()> {
         let root_uri = path_to_uri(&self.workspace_root)?;
 
@@ -427,25 +454,63 @@ impl LspClient {
             }]),
             ..Default::default()
         };
-        // Use the per-server init_timeout. JVM-based servers (Kotlin, Java) need 300s;
-        // lightweight servers (rust-analyzer, pyright) use the default 30s.
-        let result = self
-            .request_with_timeout(
-                "initialize",
-                serde_json::to_value(params)?,
-                self.init_timeout,
-            )
-            .await?;
 
-        // Parse and store server capabilities
-        let init_result: lsp_types::InitializeResult = serde_json::from_value(result)?;
-        *self.capabilities.lock().unwrap_or_else(|e| e.into_inner()) = init_result.capabilities;
+        // Retry on -32800 (RequestCancelled) during initialization.
+        // JVM-based servers (kotlin-lsp) may cancel the init request while
+        // still bootstrapping their platform subsystems.
+        const MAX_INIT_RETRIES: usize = 5;
+        const INIT_RETRY_DELAY_MS: u64 = 3000;
 
-        // Send initialized notification
-        self.notify("initialized", json!({})).await?;
+        let params_value = serde_json::to_value(params)?;
+        let mut last_err = None;
+        for attempt in 0..=MAX_INIT_RETRIES {
+            if attempt > 0 {
+                let delay = std::time::Duration::from_millis(INIT_RETRY_DELAY_MS * attempt as u64);
+                tokio::time::sleep(delay).await;
+                tracing::info!(
+                    "LSP initialize cancelled, retrying {}/{}: {}",
+                    attempt,
+                    MAX_INIT_RETRIES,
+                    self.workspace_root.display()
+                );
+            }
+            match self
+                .request_with_timeout("initialize", params_value.clone(), self.init_timeout)
+                .await
+            {
+                Ok(result) => {
+                    // Parse and store server capabilities
+                    let init_result: lsp_types::InitializeResult = serde_json::from_value(result)?;
+                    *self.capabilities.lock().unwrap_or_else(|e| e.into_inner()) =
+                        init_result.capabilities;
 
-        tracing::info!("LSP server initialized successfully");
-        Ok(())
+                    // Send initialized notification
+                    self.notify("initialized", json!({})).await?;
+
+                    tracing::info!("LSP server initialized successfully");
+                    return Ok(());
+                }
+                Err(e) if e.to_string().contains("code -32800") => {
+                    // Check stderr for fatal errors that make retrying pointless.
+                    let stderr = self.stderr_lines.lock().unwrap_or_else(|e| e.into_inner());
+                    for line in stderr.iter() {
+                        if line.contains("Multiple editing sessions") {
+                            return Err(anyhow::anyhow!(
+                                "kotlin-lsp rejected this workspace: \
+                                 \"Multiple editing sessions for one workspace are not supported yet\". \
+                                 Another codescout instance or editor is already serving this project \
+                                 with kotlin-lsp. Only one Kotlin LSP session per workspace is allowed \
+                                 in the current kotlin-lsp release."
+                            ));
+                        }
+                    }
+                    drop(stderr);
+                    last_err = Some(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_err.unwrap())
     }
 
     /// Check if the server process is still alive.
