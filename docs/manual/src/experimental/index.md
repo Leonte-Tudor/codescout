@@ -1,6 +1,14 @@
 # Experimental Features
 
-Experimental features live on the [`experiments` branch](https://github.com/mareurs/codescout/tree/experiments/docs/manual/src/experimental).
-Browse that branch to see what's in the works — each feature has its own page with full documentation.
+> Features on this page are available on the [`experiments` branch](https://github.com/mareurs/codescout/tree/experiments)
+> and may change without notice. When a feature graduates to stable, its page
+> moves into the main manual.
 
-When a feature graduates to stable, its page moves into the main manual here.
+## Available Features
+
+- [Document Section Editing](document-section-editing.md) — structured markdown
+  operations: `edit_section`, `headings=[]`, heading-scoped edits, batch mode,
+  fuzzy heading matching, and section coverage tracking.
+
+- [Tool Workflows](tool-workflows.md) — named multi-tool chains for common
+  tasks: markdown editing, impact analysis, dependency tracing, and safe rename.

@@ -166,6 +166,9 @@ Do not proceed from signatures alone. Signatures tell you *what*; bodies tell yo
 - `read_file("docs/ARCHITECTURE.md")` fully if it exists
 - `read_file` on any design docs, ADRs, or plans referenced in README or CLAUDE.md
 - `read_file` on any additional doc files under `docs/`
+- For plans: use `read_file(path, mode="complete")` to get the full file inline
+- For large docs: use `read_file(path, headings=["## Section A", "## Section B"])` to
+  read multiple sections in one call
 - Read completely — do not skim headings and move on
 
 **If there are no architecture docs:** explicitly note this in your exploration summary.

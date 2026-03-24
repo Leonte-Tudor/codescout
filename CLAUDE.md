@@ -246,8 +246,9 @@ from change" problem). Always grep all three surfaces when modifying tool names.
 
 ## Server Instructions Design Rules
 
-`src/prompts/server_instructions.md` is injected on **every MCP request**. Every
-token costs on every call. Follow these rules when modifying it:
+`src/prompts/server_instructions.md` is injected **once at MCP session start**,
+not per-request. Token cost is session-scoped, not per-call — invest in clarity
+over brevity. Follow these rules when modifying it:
 
 1. **Cap hard rules at 5–8.** Beyond 8 behavioral constraints, compliance on all
    drops. Consolidate, don't accumulate.
@@ -262,6 +263,12 @@ token costs on every call. Follow these rules when modifying it:
    document params that change behavior in non-obvious ways.
 6. **Prompt caching matters.** Keep section order stable between releases so the
    static prefix benefits from automatic caching. Don't reorganize for cosmetic reasons.
+7. **You are the consumer.** When writing or reviewing prompt changes, think as
+   the agent who will read this mid-task. Ask: "Would this have helped me find
+   the right tool chain naturally?" Test by simulating a realistic task and
+   checking whether the prompt guided you to the right flow. Usage data
+   (`usage.db`) is the ground truth — if a tool has near-zero calls despite
+   being useful, the prompt isn't surfacing it.
 
 **Research:** See `docs/research/2026-03-21-claude-prompt-engineering.md` and
 `docs/research/2026-03-21-superpowers-prompt-patterns.md` for the evidence behind

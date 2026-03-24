@@ -46,6 +46,7 @@ These are non-negotiable. Violating the letter IS violating the spirit.
 | **Nothing** (new codebase) | `list_dir(path)` → `list_symbols(file)` | `semantic_search("what does this do")` |
 | **A text pattern** (regex, error message) | `search_pattern(pattern)` | `find_symbol` on matched files |
 | **A filename** (glob pattern) | `find_file(pattern)` | `read_file` or `list_symbols` on result |
+| **All usages/callers of X** | `find_references(name_path, path)` | `find_symbol` on callers |
 
 ## Anti-Patterns — STOP if you catch yourself doing these
 
@@ -61,6 +62,7 @@ These are non-negotiable. Violating the letter IS violating the spirit.
 | Ignore `by_file` in overflow response | Use top file from `by_file` as `path=` filter | The hint tells you exactly where to look |
 | `activate_project` for a single lookup | Pass `project: "<id>"` on the tool call | No state mutation, no risk of forgetting to return |
 | `edit_file` / `create_file` to rewrite an entire markdown section | `edit_section(path, heading, action, content)` | Heading-addressed, no string matching needed |
+| `search_pattern("fn_name")` to find all callers | `find_references(name_path, path)` | LSP finds actual usages; regex matches comments, strings, partial names |
 
 **If you catch yourself rationalizing** ("I'll just quickly read the file", "this edit is
 too small for replace_symbol", "one pipe won't hurt") — that's the signal to stop and
@@ -71,7 +73,8 @@ use the right tool. Small shortcuts compound into large context waste.
 ### File I/O
 
 - `read_file(path)` — read a file. Large files return a summary + `@file_*` ref.
-  Navigate large files by format: `heading=` (Markdown), `json_path=` (JSON),
+  Navigate markdown: `read_file(path)` for heading map, then `heading=` or `headings=[]`
+  for targeted sections. Other formats: `json_path=` (JSON),
   `toml_key=` (TOML/YAML), or `start_line`/`end_line` for excerpts.
   Auto-chunked: follow the `next` field to continue reading.
   Prefer `list_symbols`/`find_symbol` over `read_file` for source code.
@@ -85,11 +88,15 @@ use the right tool. Small shortcuts compound into large context waste.
   boundaries. `heading=` scopes matching to a markdown section (markdown only).
   `edits=[{old_string, new_string}, ...]` for batch operations (atomic, one write).
   For imports, literals, comments, config — NOT structural code changes.
-- `edit_section(path, heading, action, content?)` — edit a markdown section by heading.
-  Actions: `replace` (smart: detects heading in content), `insert_before`, `insert_after`, `remove`.
+- `edit_section(path, heading, action, content?)` — whole-section operations on markdown.
+  Actions: `replace` (pass body only — heading is preserved automatically),
+  `insert_before`, `insert_after`, `remove`.
   `heading` uses fuzzy matching (strips inline formatting, prefix/substring fallback).
+  Use `edit_section` to replace/insert/remove entire sections; use `edit_file(heading=)` for
+  surgical string replacements within a section.
 - `read_file` with `mode="complete"` returns entire plan file inline with a delivery receipt.
-  Only for files in `plans/` directories. Use when you need to read a full implementation plan.
+  Only for files in `plans/` directories. Prefer heading map + `headings=[]` for targeted
+  reads — use `mode="complete"` only when you truly need the full plan.
 
 ### Symbol Navigation (LSP)
 
@@ -232,6 +239,48 @@ The project's security profile is set in `.codescout/project.toml`:
 - `profile = "root"` — unrestricted: no read deny-list, writes allowed anywhere,
   dangerous commands execute without speed bump. For system-administration projects
   that need full filesystem access.
+
+## Workflows
+
+Multi-tool chains for common tasks. Follow the steps in order.
+
+### Editing a Markdown Document
+
+| Step | Tool | Purpose |
+|------|------|---------|
+| 1 | `read_file(path)` | Get heading map — see all sections |
+| 2 | `read_file(path, headings=[...])` | Read target sections (one call, multiple sections) |
+| 3a | `edit_section(path, heading, action, content)` | Whole-section: replace (body only — heading preserved), insert, remove |
+| 3b | `edit_file(path, heading=, old_string, new_string)` | Surgical: string replacement scoped to a section |
+| 3c | `edit_file(path, edits=[...])` | Batch: multiple edits across sections, atomic |
+
+### Impact Analysis — "What breaks if I change X?"
+
+| Step | Tool | Purpose |
+|------|------|---------|
+| 1 | `find_symbol(name, include_body=true)` | Read current implementation |
+| 2 | `find_references(name_path, path)` | Find all callers and dependents |
+| 3 | `hover` on key call sites | Reveal concrete types (especially generics/traits) |
+| 4 | Edit with full knowledge of blast radius | |
+
+### Dependency Tracing — "How does data flow from A to B?"
+
+| Step | Tool | Purpose |
+|------|------|---------|
+| 1 | `find_symbol(entry_point)` | Locate starting function |
+| 2 | `goto_definition` on called functions | Follow the call chain forward |
+| 3 | `hover` on parameters/return values | See resolved types at each stage |
+| 4 | `find_references` at destination | Confirm which callers reach this point |
+
+### Safe Rename
+
+| Step | Tool | Purpose |
+|------|------|---------|
+| 1 | `find_references(name_path, path)` | Map all usages before renaming |
+| 2 | `rename_symbol(name_path, path, new_name)` | LSP-powered rename across files |
+| 3 | `search_pattern(old_name)` | Catch stragglers in comments, strings, docs |
+| 4 | `run_command("cargo check")` | Verify compilation |
+
 
 ## Rules
 
