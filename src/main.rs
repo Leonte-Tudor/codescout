@@ -72,6 +72,30 @@ enum Commands {
         #[arg(long)]
         no_open: bool,
     },
+
+    /// Run the LSP multiplexer (internal — spawned automatically by codescout)
+    #[command(hide = true)]
+    Mux {
+        /// Path to the Unix socket to listen on
+        #[arg(long)]
+        socket: std::path::PathBuf,
+
+        /// Path to the lock file for ownership
+        #[arg(long)]
+        lock: std::path::PathBuf,
+
+        /// Working directory for the LSP server (workspace root)
+        #[arg(long)]
+        cwd: std::path::PathBuf,
+
+        /// Seconds to wait with 0 clients before shutting down
+        #[arg(long, default_value_t = 300)]
+        idle_timeout: u64,
+
+        /// LSP server command and arguments (after --)
+        #[arg(last = true, required = true)]
+        server_cmd: Vec<String>,
+    },
 }
 
 #[tokio::main]
@@ -130,6 +154,24 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|| std::path::PathBuf::from("."));
             tracing::info!("Launching dashboard for {}", root.display());
             codescout::dashboard::serve(root, host, port, !no_open).await?;
+        }
+        Commands::Mux {
+            socket,
+            lock,
+            cwd,
+            idle_timeout,
+            server_cmd,
+        } => {
+            codescout::lsp::mux::process::run(
+                &socket,
+                &lock,
+                &cwd,
+                idle_timeout,
+                &server_cmd[0],
+                &server_cmd[1..],
+                &[],
+            )
+            .await?;
         }
     }
 

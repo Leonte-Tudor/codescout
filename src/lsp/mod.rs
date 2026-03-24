@@ -9,6 +9,7 @@ pub mod symbols;
 pub use mock::{MockLspClient, MockLspProvider};
 pub mod ops;
 pub use ops::{LspClientOps, LspProvider};
+pub mod mux;
 pub mod transport;
 
 pub use client::{LspClient, LspServerConfig};

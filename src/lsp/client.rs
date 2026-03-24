@@ -8,8 +8,9 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
+use tokio::io::AsyncWrite;
 use tokio::io::BufReader;
-use tokio::process::{ChildStdin, Command};
+use tokio::process::Command;
 use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
 
@@ -91,11 +92,25 @@ pub struct LspServerConfig {
     /// Timeout for the LSP `initialize` handshake. JVM-based servers need longer.
     /// Defaults to 30s if not set.
     pub init_timeout: Option<std::time::Duration>,
+    /// If true, this language uses the LSP multiplexer for shared instances.
+    pub mux: bool,
+    /// Additional environment variables for the LSP server process.
+    pub env: Vec<(String, String)>,
+}
+
+/// How this LspClient is connected to its language server.
+#[derive(Debug)]
+#[allow(dead_code)] // Socket variant used in Task 3 (LspClient::connect)
+pub(crate) enum LspTransport {
+    /// Direct child process (normal LSP servers).
+    Process { child_pid: Option<u32> },
+    /// Connected to a mux socket (shared LSP servers like kotlin-lsp).
+    Socket { socket_path: std::path::PathBuf },
 }
 
 /// A running LSP client session connected to a language server process.
 pub struct LspClient {
-    writer: Arc<Mutex<ChildStdin>>,
+    writer: Arc<Mutex<Box<dyn AsyncWrite + Unpin + Send>>>,
     #[allow(dead_code)]
     next_id: AtomicI64,
     #[allow(dead_code)]
@@ -107,8 +122,7 @@ pub struct LspClient {
     pub workspace_root: std::path::PathBuf,
     #[allow(dead_code)]
     pub(crate) capabilities: StdMutex<lsp_types::ServerCapabilities>,
-    #[allow(dead_code)]
-    child_pid: Option<u32>,
+    transport: LspTransport,
     /// Timeout for the LSP initialize handshake.
     init_timeout: std::time::Duration,
     /// Tracks files opened via textDocument/didOpen, mapped to their current document version.
@@ -128,13 +142,17 @@ impl LspClient {
     pub async fn start(config: LspServerConfig) -> Result<Self> {
         tracing::info!("Starting LSP server: {} {:?}", config.command, config.args);
 
-        let mut child = Command::new(&config.command)
-            .args(&config.args)
+        let mut cmd = Command::new(&config.command);
+        cmd.args(&config.args)
             .current_dir(&config.workspace_root)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+        for (key, val) in &config.env {
+            cmd.env(key, val);
+        }
+        let mut child = cmd
             .spawn()
             .with_context(|| format!("Failed to start LSP server: {}", config.command))?;
 
@@ -156,7 +174,9 @@ impl LspClient {
         let alive = Arc::new(AtomicBool::new(true));
 
         // Wrap writer in Arc so the reader task can share it for auto-responses.
-        let writer = Arc::new(Mutex::new(stdin));
+        let writer = Arc::new(Mutex::new(
+            Box::new(stdin) as Box<dyn AsyncWrite + Unpin + Send>
+        ));
 
         // Shared stderr buffer — checked by initialize() to detect fatal errors.
         let stderr_lines: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
@@ -286,7 +306,7 @@ impl LspClient {
             reader_handle: StdMutex::new(Some(reader_handle)),
             workspace_root: config.workspace_root.clone(),
             capabilities: StdMutex::new(lsp_types::ServerCapabilities::default()),
-            child_pid,
+            transport: LspTransport::Process { child_pid },
             init_timeout,
             open_files: StdMutex::new(HashMap::new()),
             stderr_lines,
@@ -296,6 +316,129 @@ impl LspClient {
         client.initialize().await?;
 
         Ok(client)
+    }
+
+    /// Connect to an existing mux socket instead of spawning a process.
+    ///
+    /// The mux sends a JSON init message immediately on connect containing
+    /// the cached `InitializeResult`. This client does NOT perform the LSP
+    /// initialize handshake.
+    #[cfg(unix)]
+    pub async fn connect(
+        socket_path: &std::path::Path,
+        workspace_root: std::path::PathBuf,
+    ) -> Result<Self> {
+        use tokio::net::UnixStream;
+
+        let stream = UnixStream::connect(socket_path)
+            .await
+            .with_context(|| format!("Failed to connect to mux socket: {:?}", socket_path))?;
+
+        let (read_half, write_half) = stream.into_split();
+
+        let pending: Arc<StdMutex<HashMap<i64, oneshot::Sender<Result<Value>>>>> =
+            Arc::new(StdMutex::new(HashMap::new()));
+        let alive = Arc::new(AtomicBool::new(true));
+        let writer: Arc<Mutex<Box<dyn AsyncWrite + Unpin + Send>>> =
+            Arc::new(Mutex::new(Box::new(write_half)));
+
+        // Read init message from the mux — contains the cached InitializeResult
+        // so we skip the full LSP handshake.
+        let mut buf_reader = BufReader::new(read_half);
+        let init_msg = transport::read_message(&mut buf_reader)
+            .await
+            .context("Failed to read mux init message")?;
+
+        let capabilities = if let Some(result) = init_msg.get("result") {
+            let init_result: lsp_types::InitializeResult =
+                serde_json::from_value(result.clone())
+                    .context("Failed to parse InitializeResult from mux")?;
+            init_result.capabilities
+        } else {
+            tracing::warn!("Mux init message missing 'result' field, using default capabilities");
+            lsp_types::ServerCapabilities::default()
+        };
+
+        // Spawn reader task — dispatches responses to pending senders.
+        // Same pattern as start(), but reads from the socket instead of stdout.
+        let pending_clone = pending.clone();
+        let alive_clone = alive.clone();
+        let writer_clone = writer.clone();
+        let reader_handle = tokio::spawn(async move {
+            let mut reader = buf_reader;
+            loop {
+                match transport::read_message(&mut reader).await {
+                    Ok(msg) => {
+                        if let Some(id) = msg.get("id").and_then(|v| v.as_i64()) {
+                            if msg.get("method").is_some() {
+                                // Server-to-client request forwarded through mux.
+                                // Auto-respond null so the server doesn't stall.
+                                tracing::debug!(
+                                    "mux forwarded server request (id={}): {} — auto-responding null",
+                                    id,
+                                    msg["method"]
+                                );
+                                let response = json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "result": null,
+                                });
+                                let mut w = writer_clone.lock().await;
+                                let _ = transport::write_message(&mut *w, &response).await;
+                            } else {
+                                // Response to our request
+                                if let Some(sender) = pending_clone
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .remove(&id)
+                                {
+                                    if let Some(error) = msg.get("error") {
+                                        let err_msg = error["message"]
+                                            .as_str()
+                                            .unwrap_or("unknown LSP error");
+                                        let _ = sender.send(Err(anyhow::anyhow!(
+                                            "LSP error (code {}): {}",
+                                            error["code"],
+                                            err_msg
+                                        )));
+                                    } else {
+                                        let result =
+                                            msg.get("result").cloned().unwrap_or(Value::Null);
+                                        let _ = sender.send(Ok(result));
+                                    }
+                                }
+                            }
+                        } else if let Some(method) = msg.get("method").and_then(|v| v.as_str()) {
+                            tracing::debug!("LSP notification from mux: {}", method);
+                        }
+                    }
+                    Err(_) => {
+                        alive_clone.store(false, Ordering::SeqCst);
+                        let mut map = pending_clone.lock().unwrap_or_else(|e| e.into_inner());
+                        for (_, sender) in map.drain() {
+                            let _ = sender.send(Err(anyhow::anyhow!("Mux connection lost")));
+                        }
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(Self {
+            writer,
+            next_id: AtomicI64::new(1),
+            pending,
+            alive,
+            reader_handle: StdMutex::new(Some(reader_handle)),
+            workspace_root,
+            capabilities: StdMutex::new(capabilities),
+            transport: LspTransport::Socket {
+                socket_path: socket_path.to_path_buf(),
+            },
+            init_timeout: std::time::Duration::from_secs(30),
+            open_files: StdMutex::new(HashMap::new()),
+            stderr_lines: Arc::new(StdMutex::new(Vec::new())),
+        })
     }
 
     /// Send a JSON-RPC request and await the response.
@@ -599,17 +742,22 @@ impl LspClient {
 
     /// Send textDocument/didOpen notification for a file.
     pub async fn did_open(&self, path: &Path, language_id: &str) -> Result<()> {
-        // Canonicalize before tracking to avoid treating symlinks or relative paths
-        // as different files — the LSP spec prohibits duplicate didOpen notifications.
-        let canonical = std::fs::canonicalize(path)
-            .with_context(|| format!("Failed to canonicalize path for didOpen: {:?}", path))?;
-        {
-            let mut open_files = self.open_files.lock().unwrap_or_else(|e| e.into_inner());
-            if open_files.contains_key(&canonical) {
-                return Ok(());
+        // For socket transport, the mux handles document state dedup — skip
+        // local open_files tracking so every didOpen is forwarded to the mux.
+        let is_socket = matches!(self.transport, LspTransport::Socket { .. });
+        if !is_socket {
+            // Canonicalize before tracking to avoid treating symlinks or relative paths
+            // as different files — the LSP spec prohibits duplicate didOpen notifications.
+            let canonical = std::fs::canonicalize(path)
+                .with_context(|| format!("Failed to canonicalize path for didOpen: {:?}", path))?;
+            {
+                let mut open_files = self.open_files.lock().unwrap_or_else(|e| e.into_inner());
+                if open_files.contains_key(&canonical) {
+                    return Ok(());
+                }
+                // Version 1 is the conventional initial version per LSP spec.
+                open_files.insert(canonical, 1);
             }
-            // Version 1 is the conventional initial version per LSP spec.
-            open_files.insert(canonical, 1);
         }
 
         const MAX_DID_OPEN_SIZE: u64 = 10 * 1024 * 1024; // 10 MiB
@@ -878,11 +1026,14 @@ impl LspClient {
 
     /// Send textDocument/didClose notification for a file.
     pub async fn did_close(&self, path: &Path) -> Result<()> {
-        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        self.open_files
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&canonical);
+        // For socket transport, the mux tracks document state — skip local bookkeeping.
+        if !matches!(self.transport, LspTransport::Socket { .. }) {
+            let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            self.open_files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&canonical);
+        }
 
         let uri = path_to_uri(path)?;
 
@@ -900,33 +1051,47 @@ impl LspClient {
     /// If the file is already open in this session, sends `textDocument/didChange`.
     /// If not (e.g. newly created by `create_file`), falls back to `textDocument/didOpen`
     /// so the LSP learns about the file immediately — BUG-028 fix.
+    ///
+    /// For socket transport, the mux tracks document versions — we always send
+    /// didChange with version 0 and let the mux remap to the correct version.
     pub async fn did_change(&self, path: &Path) -> Result<()> {
+        let is_socket = matches!(self.transport, LspTransport::Socket { .. });
+
         let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        // Increment the per-file version counter. Fall back to did_open for files
-        // that were never opened — the LSP spec only allows didChange for open documents,
-        // but we transparently open new/unknown files so callers don't have to.
-        //
-        // The guard is scoped strictly to the inner block so it drops before any await
-        // point — StdMutex guards are not Send and cannot be held across awaits.
-        let maybe_version = {
-            let mut open_files = self.open_files.lock().unwrap_or_else(|e| e.into_inner());
-            open_files.get_mut(&canonical).map(|v| {
-                *v += 1;
-                *v
-            })
-        }; // guard drops here
-        let version = match maybe_version {
-            Some(v) => v,
-            None => {
-                // File not yet open — use did_open to register it with the LSP.
-                if let Some(lang) = crate::ast::detect_language(path) {
-                    if crate::lsp::servers::has_lsp_config(lang) {
-                        let _ = self.did_open(path, lang).await;
+
+        // For socket transport, skip local version tracking — the mux owns versions.
+        // Always send didChange and let the mux handle state.
+        let version = if is_socket {
+            // Use version 0 as a sentinel; the mux will remap to the real version.
+            0
+        } else {
+            // Increment the per-file version counter. Fall back to did_open for files
+            // that were never opened — the LSP spec only allows didChange for open documents,
+            // but we transparently open new/unknown files so callers don't have to.
+            //
+            // The guard is scoped strictly to the inner block so it drops before any await
+            // point — StdMutex guards are not Send and cannot be held across awaits.
+            let maybe_version = {
+                let mut open_files = self.open_files.lock().unwrap_or_else(|e| e.into_inner());
+                open_files.get_mut(&canonical).map(|v| {
+                    *v += 1;
+                    *v
+                })
+            }; // guard drops here
+            match maybe_version {
+                Some(v) => v,
+                None => {
+                    // File not yet open — use did_open to register it with the LSP.
+                    if let Some(lang) = crate::ast::detect_language(path) {
+                        if crate::lsp::servers::has_lsp_config(lang) {
+                            let _ = self.did_open(path, lang).await;
+                        }
                     }
+                    return Ok(());
                 }
-                return Ok(());
             }
         };
+
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read file for didChange: {:?}", path))?;
         let uri = path_to_uri(path)?;
@@ -958,13 +1123,17 @@ impl Drop for LspClient {
         // The graceful shutdown path (shutdown_all -> shutdown) sends LSP
         // shutdown/exit first.  This ensures the process dies even if the
         // graceful path was skipped (e.g., panic, abrupt exit).
-        if let Some(pid) = self.child_pid {
+        // For socket-connected clients there is no child to kill.
+        if let LspTransport::Process {
+            child_pid: Some(pid),
+        } = &self.transport
+        {
             // SAFETY: `pid` was captured from `child.id()` immediately after spawn and remains
             // valid for the lifetime of this `LspClient` (we hold the child handle). SIGTERM
             // (signal 15) is safe to send to a child process — it requests clean termination
             // without undefined behaviour. The `u32 as i32` cast is safe because Linux PIDs
             // are assigned from a range that fits in i32 (maximum 4,194,304 on 64-bit kernels).
-            let _ = crate::platform::terminate_process(pid);
+            let _ = crate::platform::terminate_process(*pid);
         }
     }
 }
@@ -1088,6 +1257,8 @@ struct Point {
             args: vec![],
             workspace_root: dir.path().to_path_buf(),
             init_timeout: None,
+            mux: false,
+            env: vec![],
         };
 
         let client = LspClient::start(config).await.unwrap();
@@ -1111,6 +1282,8 @@ struct Point {
             args: vec![],
             workspace_root: dir.path().to_path_buf(),
             init_timeout: None,
+            mux: false,
+            env: vec![],
         };
 
         let result = LspClient::start(config).await;
@@ -1132,6 +1305,8 @@ struct Point {
             args: vec![],
             workspace_root: dir.path().to_path_buf(),
             init_timeout: None,
+            mux: false,
+            env: vec![],
         };
 
         let client = LspClient::start(config).await.unwrap();
@@ -1181,6 +1356,8 @@ struct Point {
             args: vec![],
             workspace_root: dir.path().to_path_buf(),
             init_timeout: None,
+            mux: false,
+            env: vec![],
         };
 
         let client = LspClient::start(config).await.unwrap();
@@ -1457,9 +1634,14 @@ struct Point {
             args: vec![],
             workspace_root: dir.path().to_path_buf(),
             init_timeout: None,
+            mux: false,
+            env: vec![],
         };
         let client = LspClient::start(config).await.unwrap();
-        let pid = client.child_pid.unwrap();
+        let pid = match &client.transport {
+            LspTransport::Process { child_pid } => child_pid.unwrap(),
+            _ => panic!("expected Process transport"),
+        };
 
         // Verify child is alive
         assert!(
@@ -1498,6 +1680,8 @@ struct Point {
             args: vec![],
             workspace_root: dir.path().to_path_buf(),
             init_timeout: None,
+            mux: false,
+            env: vec![],
         };
         let client = LspClient::start(config).await.unwrap();
 
@@ -1559,6 +1743,8 @@ struct Point {
             args: vec![],
             workspace_root: dir.path().to_path_buf(),
             init_timeout: None,
+            mux: false,
+            env: vec![],
         };
         let client = LspClient::start(config).await.unwrap();
 
@@ -1618,6 +1804,8 @@ struct Point {
             args: vec![fake_lsp.to_string_lossy().into_owned(), "2".into()],
             workspace_root: dir.path().to_path_buf(),
             init_timeout: Some(std::time::Duration::from_secs(5)),
+            mux: false,
+            env: vec![],
         };
 
         let client = LspClient::start(config)
@@ -1669,6 +1857,8 @@ struct Point {
             args: vec![fake_lsp.to_string_lossy().into_owned(), "10".into()],
             workspace_root: dir.path().to_path_buf(),
             init_timeout: Some(std::time::Duration::from_secs(5)),
+            mux: false,
+            env: vec![],
         };
 
         let client = LspClient::start(config)
@@ -1693,5 +1883,23 @@ struct Point {
         );
 
         client.shutdown().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn lsp_client_connect_to_nonexistent_socket_returns_error() {
+        let socket_path = std::env::temp_dir().join("codescout-test-nonexistent.sock");
+        // Clean up in case a previous test run left a stale socket
+        let _ = std::fs::remove_file(&socket_path);
+        let result = LspClient::connect(&socket_path, std::env::temp_dir()).await;
+        let err_msg = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("connecting to nonexistent socket should fail"),
+        };
+        assert!(
+            err_msg.contains("Failed to connect to mux socket"),
+            "error should mention mux socket, got: {}",
+            err_msg
+        );
     }
 }

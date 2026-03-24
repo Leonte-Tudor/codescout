@@ -12,3 +12,7 @@
 
 - [Tool Workflows](tool-workflows.md) — named multi-tool chains for common
   tasks: markdown editing, impact analysis, dependency tracing, and safe rename.
+
+- [Kotlin LSP Multiplexer](kotlin-lsp-multiplexer.md) — share a single
+  kotlin-lsp JVM across multiple codescout instances via a detached multiplexer
+  process, eliminating resource contention and cold-start penalties.

@@ -211,6 +211,24 @@ impl LspManager {
             anyhow::anyhow!("No LSP server configured for language: {}", language)
         })?;
 
+        // Mux path: languages that use the multiplexer bypass the normal pool.
+        // The fast-path cache check at the top of get_or_start() handles
+        // subsequent calls within the same session.
+        #[cfg(unix)]
+        if config.mux {
+            let client = self
+                .get_or_start_via_mux(language, workspace_root, config)
+                .await?;
+            // Cache the mux client so subsequent calls hit the fast path
+            let key = LspKey::new(language, workspace_root);
+            {
+                let mut clients = self.clients.lock().await;
+                clients.insert(key.clone(), client.clone());
+            }
+            self.last_used.lock().await.insert(key, Instant::now());
+            return Ok(client);
+        }
+
         // LRU eviction: if at capacity, shut down the least-recently-used client.
         // Check + find + remove all happen under one lock acquisition to prevent TOCTOU.
         let evict_info: Option<(LspKey, Option<Arc<LspClient>>)> = {
@@ -297,6 +315,113 @@ impl LspManager {
         // We're the starter.
         self.do_start(&key, config, tx_opt.expect("tx_opt is always Some when rx_opt is None — set in the same exclusive branch above"))
             .await
+    }
+
+    /// Start or connect to a multiplexed LSP server.
+    ///
+    /// The mux process is a detached codescout child that owns the real LSP
+    /// server and multiplexes connections over a Unix socket.  If no mux is
+    /// running for this workspace we spawn one and wait for its "ready" line
+    /// on stdout before connecting.
+    #[cfg(unix)]
+    async fn get_or_start_via_mux(
+        &self,
+        language: &str,
+        workspace_root: &Path,
+        config: LspServerConfig,
+    ) -> Result<Arc<LspClient>> {
+        use anyhow::Context;
+        use fs2::FileExt;
+
+        let socket_path = crate::lsp::mux::socket_path_for_workspace(language, workspace_root);
+        let lock_path = crate::lsp::mux::lock_path_for_workspace(language, workspace_root);
+
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .context("Failed to open mux lock file")?;
+
+        let need_spawn = match lock_file.try_lock_exclusive() {
+            Ok(()) => {
+                // Got the lock — no mux running. Drop releases it so the
+                // mux child can acquire.
+                drop(lock_file);
+                true
+            }
+            Err(_) => {
+                tracing::info!("mux already running for {}, connecting to {:?}", language, socket_path);
+                false
+            }
+        };
+
+        if need_spawn {
+            let exe =
+                std::env::current_exe().context("Failed to determine codescout binary path")?;
+
+            let mut mux_args = vec![
+                "mux".to_string(),
+                "--socket".to_string(),
+                socket_path.to_string_lossy().to_string(),
+                "--lock".to_string(),
+                lock_path.to_string_lossy().to_string(),
+                "--cwd".to_string(),
+                workspace_root.to_string_lossy().to_string(),
+                "--idle-timeout".to_string(),
+                "300".to_string(),
+                "--".to_string(),
+                config.command.clone(),
+            ];
+            mux_args.extend(config.args.iter().cloned());
+
+            // Spawn mux as a detached process — do NOT set kill_on_drop
+            let mut child = tokio::process::Command::new(&exe)
+                .args(&mux_args)
+                .stdout(std::process::Stdio::piped())
+                .stdin(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .context("Failed to spawn mux process")?;
+
+            // Wait for "ready" signal on stdout
+            let stdout = child.stdout.take().expect("stdout piped");
+            let mut reader = tokio::io::BufReader::new(stdout);
+            let mut line = String::new();
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(120),
+                tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line),
+            )
+            .await
+            {
+                Ok(Ok(_)) if line.trim().starts_with("ready") => {
+                    tracing::info!("mux process ready for {} at {:?}", language, socket_path);
+                }
+                Ok(Ok(_)) => {
+                    anyhow::bail!("mux process failed to start: {}", line.trim());
+                }
+                Ok(Err(e)) => {
+                    anyhow::bail!("mux process stdout error: {}", e);
+                }
+                Err(_) => {
+                    anyhow::bail!("mux process timed out waiting for ready (120s)");
+                }
+            }
+            // Detach child — mux runs independently
+        }
+
+        // Connect as client, with retries
+        let mut last_err = None;
+        for attempt in 0..5u32 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+            match LspClient::connect(&socket_path, workspace_root.to_path_buf()).await {
+                Ok(client) => return Ok(Arc::new(client)),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap())
     }
 
     /// Internal: actually start the LSP, update cache, and signal waiters.
@@ -733,6 +858,8 @@ mod tests {
             args: vec![],
             workspace_root: dir.to_path_buf(),
             init_timeout: Some(std::time::Duration::from_secs(30)),
+            mux: false,
+            env: vec![],
         })
     }
 
@@ -803,6 +930,8 @@ mod tests {
             // Short init timeout so the LSP-level request also fails fast,
             // but the outer tokio::time::timeout fires first.
             init_timeout: Some(std::time::Duration::from_secs(30)),
+            mux: false,
+            env: vec![],
         };
 
         // Step 2 — cancel the future after 100 ms (before initialize responds)

@@ -16,37 +16,46 @@ pub fn default_config(language: &str, workspace_root: &Path) -> Option<LspServer
             args: vec![],
             workspace_root: root,
             init_timeout: None,
+            mux: false,
+            env: vec![],
         }),
         "python" => Some(LspServerConfig {
             command: crate::platform::lsp_binary_name("pyright-langserver"),
             args: vec!["--stdio".into()],
             workspace_root: root,
             init_timeout: None,
+            mux: false,
+            env: vec![],
         }),
         "typescript" | "javascript" | "tsx" | "jsx" => Some(LspServerConfig {
             command: crate::platform::lsp_binary_name("typescript-language-server"),
             args: vec!["--stdio".into()],
             workspace_root: root,
             init_timeout: None,
+            mux: false,
+            env: vec![],
         }),
         "go" => Some(LspServerConfig {
             command: crate::platform::lsp_binary_name("gopls"),
             args: vec![],
             workspace_root: root,
             init_timeout: None,
+            mux: false,
+            env: vec![],
         }),
         "java" => Some(LspServerConfig {
             command: crate::platform::lsp_binary_name("jdtls"),
             args: vec![],
             workspace_root: root,
             init_timeout: jvm_timeout,
+            mux: false,
+            env: vec![],
         }),
         "kotlin" => {
-            // Each codescout instance needs its own kotlin-lsp system-path to avoid
-            // IntelliJ platform .app.lock contention between concurrent instances.
-            // See docs/issues/2026-03-24-kotlin-lsp-concurrent-instances.md
-            let system_dir =
-                std::env::temp_dir().join(format!("codescout-{}-kotlin-lsp", std::process::id()));
+            // With the mux, there's only one kotlin-lsp instance per workspace,
+            // so we use a stable (non-PID) system-path.
+            let system_dir = std::env::temp_dir().join("codescout-mux-kotlin-lsp");
+            let gradle_home = std::env::temp_dir().join("codescout-mux-gradle");
             Some(LspServerConfig {
                 command: crate::platform::lsp_binary_name("kotlin-lsp"),
                 args: vec![
@@ -55,6 +64,11 @@ pub fn default_config(language: &str, workspace_root: &Path) -> Option<LspServer
                 ],
                 workspace_root: root,
                 init_timeout: jvm_timeout,
+                mux: true,
+                env: vec![(
+                    "GRADLE_USER_HOME".to_string(),
+                    gradle_home.to_string_lossy().to_string(),
+                )],
             })
         }
         "c" | "cpp" => Some(LspServerConfig {
@@ -62,18 +76,24 @@ pub fn default_config(language: &str, workspace_root: &Path) -> Option<LspServer
             args: vec![],
             workspace_root: root,
             init_timeout: None,
+            mux: false,
+            env: vec![],
         }),
         "csharp" => Some(LspServerConfig {
             command: crate::platform::lsp_binary_name("OmniSharp"),
             args: vec!["-lsp".into()],
             workspace_root: root,
             init_timeout: None,
+            mux: false,
+            env: vec![],
         }),
         "ruby" => Some(LspServerConfig {
             command: crate::platform::lsp_binary_name("solargraph"),
             args: vec!["stdio".into()],
             workspace_root: root,
             init_timeout: None,
+            mux: false,
+            env: vec![],
         }),
         _ => None,
     }

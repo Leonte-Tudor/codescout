@@ -17,6 +17,7 @@ name = "codescout"
 path = "src/main.rs"
 
 [dependencies]
+fs2 = "0.4"
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
