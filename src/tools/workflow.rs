@@ -390,37 +390,37 @@ fn gather_project_context(
 fn language_navigation_hints(lang: &str) -> Option<&'static str> {
     match lang {
         "rust" => Some(
-            "- name_path: `StructName/method`, `impl Trait for Type/method`\n\
+            "- symbol: `StructName/method`, `impl Trait for Type/method`\n\
              - find_symbol(kind=\"struct\") for data types, kind=\"function\" for free fns\n\
              - impl blocks: `find_symbol(\"impl MyStruct\")` or list_symbols shows `impl Trait for Type`\n\
              - Example: `find_symbol(\"Server/handle_request\")` finds a method on Server",
         ),
         "python" => Some(
-            "- name_path: `ClassName/method_name`, `module_func`\n\
+            "- symbol: `ClassName/method_name`, `module_func`\n\
              - find_symbol(kind=\"class\") for classes, kind=\"function\" for functions/methods\n\
-             - Decorators aren't in name_path — search for the function name\n\
+             - Decorators aren't in symbol — search for the function name\n\
              - Example: `find_symbol(\"UserService/create\")` finds a method on UserService",
         ),
         "typescript" | "javascript" | "tsx" | "jsx" => Some(
-            "- name_path: `ClassName/method`, `exportedFunction`\n\
+            "- symbol: `ClassName/method`, `exportedFunction`\n\
              - find_symbol(kind=\"class\") for classes, kind=\"function\" for functions/arrow fns\n\
              - React components are functions — use kind=\"function\" not kind=\"class\"\n\
              - Example: `find_symbol(\"AuthProvider/login\")` finds a class method",
         ),
         "go" => Some(
-            "- name_path: `TypeName/MethodName`, `PackageFunc`\n\
+            "- symbol: `TypeName/MethodName`, `PackageFunc`\n\
              - find_symbol(kind=\"function\") covers both functions and methods\n\
              - Receiver methods: `find_symbol(\"Server/ListenAndServe\")`\n\
              - Interfaces: find_symbol(kind=\"interface\") then list_symbols for signatures",
         ),
         "java" | "kotlin" => Some(
-            "- name_path: `ClassName/methodName`, `InnerClass`\n\
+            "- symbol: `ClassName/methodName`, `InnerClass`\n\
              - find_symbol(kind=\"class\") for classes/interfaces, kind=\"function\" for methods\n\
-             - Annotations aren't in name_path — search by method name\n\
+             - Annotations aren't in symbol — search by method name\n\
              - Example: `find_symbol(\"UserRepository/findById\")`",
         ),
         "c" | "cpp" => Some(
-            "- name_path: `ClassName/method`, `namespace_func`\n\
+            "- symbol: `ClassName/method`, `namespace_func`\n\
              - find_symbol(kind=\"struct\") or kind=\"class\" depending on codebase style\n\
              - Header vs implementation: find_symbol shows both — use path= to narrow",
         ),
@@ -726,6 +726,7 @@ fn build_system_prompt_draft(
         }
         draft.push_str("3. `semantic_search(\"your concept\")` — find relevant code\n");
         draft.push_str("4. `find_symbol(\"Name\", include_body=true)` — read implementation\n");
+        draft.push_str("   - regex-like patterns belong in `grep`, not `find_symbol`\n");
         draft.push_str(
             "5. `memory(action=\"recall\", query=\"...\")` — search memories by meaning\n\n",
         );
@@ -810,7 +811,7 @@ fn build_system_prompt_draft(
             ));
         }
         draft.push_str(
-            "\nUse `scope=\"lib:<name>\"` with `find_symbol`, `list_symbols`, `search_pattern`, \
+            "\nUse `scope=\"lib:<name>\"` with `find_symbol`, `list_symbols`, `grep`, \
              and `semantic_search` to navigate library code. \
              Run `index_project(scope=\"lib:<name>\")` to enable semantic search for a library.\n",
         );
@@ -3874,10 +3875,7 @@ mod tests {
         );
         assert!(draft.contains("**rust:**"), "should have rust hints");
         assert!(draft.contains("**python:**"), "should have python hints");
-        assert!(
-            draft.contains("name_path"),
-            "hints should mention name_path"
-        );
+        assert!(draft.contains("symbol"), "hints should mention symbol");
     }
 
     #[test]

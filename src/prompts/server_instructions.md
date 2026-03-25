@@ -41,82 +41,84 @@ These are non-negotiable. Violating the letter IS violating the spirit.
 
 | You know… | Start with | Then drill with |
 |---|---|---|
-| **The name** (function, type, symbol) | `find_symbol(pattern)` or `list_symbols(path)` | `find_symbol(name_path, include_body=true)` |
+| **The name** (function, type, symbol) | `find_symbol(query)` or `list_symbols(path)` | `find_symbol(symbol, include_body=true)` |
 | **The concept** ("how does auth work?") | `semantic_search(query)` | `list_symbols` / `find_symbol` on results |
 | **Nothing** (new codebase) | `list_dir(path)` → `list_symbols(file)` | `semantic_search("what does this do")` |
-| **A text pattern** (regex, error message) | `search_pattern(pattern)` | `find_symbol` on matched files |
-| **A filename** (glob pattern) | `find_file(pattern)` | `read_file` or `list_symbols` on result |
-| **All usages/callers of X** | `find_references(name_path, path)` | `find_symbol` on callers |
+| **A text pattern** (regex, error message) | `grep(pattern)` | `find_symbol` on matched files |
+| **A filename** (glob pattern) | `glob(pattern)` | `read_file` or `list_symbols` on result |
+| **All usages/callers of X** | `find_references(symbol, path)` | `find_symbol` on callers |
 
 ## Anti-Patterns — STOP if you catch yourself doing these
 
 | ❌ Never do this | ✅ Do this instead | Why |
 |---|---|---|
 | `run_command("jq '.key' @file_ref")` to query JSON | `read_file(path, json_path="$.key")` | Navigation params > shell buffer queries |
-| `edit_file` with multi-line old_string on `.rs`/`.py`/`.ts` | `replace_symbol(name_path, path, new_body)` | Structural edits > fragile string matching |
-| `edit_file` to delete a function | `remove_symbol(name_path, path)` | LSP knows the exact range |
-| `edit_file` to add code after a function | `insert_code(name_path, path, code, "after")` | Position-aware, no string matching |
+| `edit_file` with multi-line old_string on `.rs`/`.py`/`.ts` | `replace_symbol(symbol, path, new_body)` | Structural edits > fragile string matching |
+| `edit_file` to delete a function | `remove_symbol(symbol, path)` | LSP knows the exact range |
+| `edit_file` to add code after a function | `insert_code(symbol, path, code, "after")` | Position-aware, no string matching |
 | Native Edit/Write on source files | `replace_symbol`, `insert_code`, `edit_file` | codescout tools are LSP-aware; native tools bypass all safety gates |
 | `run_command("cd /abs/path && cmd")` | `run_command("cmd")` — already in project root | Use `cwd` param for subdirectories |
 | Repeat a broad `find_symbol` after overflow | Narrow with `path=`, `kind=`, or more specific pattern | Follow the overflow hint |
 | Ignore `by_file` in overflow response | Use top file from `by_file` as `path=` filter | The hint tells you exactly where to look |
-| `activate_project` for a single lookup | Pass `project: "<id>"` on the tool call | No state mutation, no risk of forgetting to return |
-| `edit_file` / `create_file` to rewrite an entire markdown section | `edit_section(path, heading, action, content)` | Heading-addressed, no string matching needed |
-| `search_pattern("fn_name")` to find all callers | `find_references(name_path, path)` | LSP finds actual usages; regex matches comments, strings, partial names |
+| `activate_project` for a single lookup | Pass `project_id: "<id>"` on the tool call | No state mutation, no risk of forgetting to return |
+| `edit_file` / `create_file` to rewrite an entire markdown section | `edit_markdown(path, heading, action, content)` | Heading-addressed, no string matching needed |
+| `grep("fn_name")` to find all callers | `find_references(symbol, path)` | LSP finds actual usages; regex matches comments, strings, partial names |
+| `read_file` on a `.md` file | `read_markdown(path)` | Heading navigation > line guessing |
+| `edit_file` to change a markdown section | `edit_markdown(path, heading, action, content)` | Heading-addressed > string matching |
+| `find_symbol(query="foo\|bar")` | `grep(pattern="foo\|bar")` or separate `find_symbol` calls | `find_symbol` rejects regex-like patterns |
 
 **If you catch yourself rationalizing** ("I'll just quickly read the file", "this edit is
 too small for replace_symbol", "one pipe won't hurt") — that's the signal to stop and
 use the right tool. Small shortcuts compound into large context waste.
-
 ## Tool Reference
 
 ### File I/O
 
 - `read_file(path)` — read a file. Large files return a summary + `@file_*` ref.
-  Navigate markdown: `read_file(path)` for heading map, then `heading=` or `headings=[]`
-  for targeted sections. Other formats: `json_path=` (JSON),
-  `toml_key=` (TOML/YAML), or `start_line`/`end_line` for excerpts.
-  Auto-chunked: follow the `next` field to continue reading.
+  Formats: `json_path=` (JSON), `toml_key=` (TOML/YAML), or `start_line`/`end_line`
+  for excerpts. Auto-chunked: follow the `next` field to continue reading.
+  For markdown files, use `read_markdown` instead.
   Prefer `list_symbols`/`find_symbol` over `read_file` for source code.
 - `list_dir(path)` — list files and directories. Pass `recursive=true` for a full tree.
-- `search_pattern(pattern)` — regex search across files. Pass `context_lines` for
-  merged context blocks. Scope with `path=`, limit with `max_results` (default 50).
-- `find_file(pattern)` — glob-based file search (e.g. `**/*.rs`, `src/**/mod.rs`).
+- `grep(pattern)` — regex search across files. Pass `context_lines` for
+  merged context blocks. Scope with `path=`, limit with `limit` (default 50).
+- `glob(pattern)` — glob-based file search (e.g. `**/*.rs`, `src/**/mod.rs`).
 - `create_file(path, content)` — create or overwrite a file.
 - `edit_file(path, old_string, new_string)` — exact string replacement. Whitespace-sensitive.
   `replace_all=true` for all occurrences. `insert="prepend"|"append"` to add at file
-  boundaries. `heading=` scopes matching to a markdown section (markdown only).
-  `edits=[{old_string, new_string}, ...]` for batch operations (atomic, one write).
+  boundaries. `edits=[{old_string, new_string}, ...]` for batch operations (atomic, one write).
   For imports, literals, comments, config — NOT structural code changes.
-- `edit_section(path, heading, action, content?)` — whole-section operations on markdown.
-  Actions: `replace` (pass body only — heading is preserved automatically),
-  `insert_before`, `insert_after`, `remove`.
-  `heading` uses fuzzy matching (strips inline formatting, prefix/substring fallback).
-  Use `edit_section` to replace/insert/remove entire sections; use `edit_file(heading=)` for
-  surgical string replacements within a section.
+  Gates `.md` files to `edit_markdown` (except `insert="prepend"|"append"`).
+- `read_markdown(path)` — read markdown files with heading navigation. Returns heading
+  map by default. Use `heading=` or `headings=[]` for targeted sections, or
+  `start_line`/`end_line` for line ranges.
+- `edit_markdown(path, heading, action, content?)` — markdown editing: section ops
+  (replace, insert_before, insert_after, remove) and scoped string replacement
+  (action="edit" with old_string/new_string). Batch mode via `edits=[]` array.
+  `heading` uses fuzzy matching.
 - `read_file` with `mode="complete"` returns entire plan file inline with a delivery receipt.
   Only for files in `plans/` directories. Prefer heading map + `headings=[]` for targeted
   reads — use `mode="complete"` only when you truly need the full plan.
 
 ### Symbol Navigation (LSP)
 
-- `find_symbol(pattern)` — locate by name substring. Accepts `name_path` (e.g.
+- `find_symbol(query)` — locate by name substring. Accepts `symbol` (e.g.
   `MyStruct/my_method`). Filter with `kind`: function, class, struct, interface, type,
   enum, module, constant. Pass `include_body=true` to read the implementation.
 - `list_symbols(path)` — symbol tree for file/dir/glob. Pass `include_docs=true` for
   docstrings. Signatures always included. Single-file mode caps at 100 top-level symbols.
-- `find_references(name_path, path)` — find all usages of a symbol.
+- `find_references(symbol, path)` — find all usages of a symbol.
 - `goto_definition(path, line)` — jump to definition via LSP. Auto-discovers libraries.
 - `hover(path, line)` — type info and documentation for a symbol at a position.
 
 ### Symbol Editing (LSP)
 
-- `replace_symbol(name_path, path, new_body)` — replace entire symbol body.
+- `replace_symbol(symbol, path, new_body)` — replace entire symbol body.
   `new_body` must include the full declaration: attributes, doc comments, signature,
   and body — matching what `find_symbol(include_body=true)` returns.
-- `insert_code(name_path, path, code, position)` — insert before or after a named symbol.
-- `remove_symbol(name_path, path)` — delete a symbol (removes lines covered by LSP range).
-- `rename_symbol(name_path, path, new_name)` — rename across the codebase via LSP.
+- `insert_code(symbol, path, code, position)` — insert before or after a named symbol.
+- `remove_symbol(symbol, path)` — delete a symbol (removes lines covered by LSP range).
+- `rename_symbol(symbol, path, new_name)` — rename across the codebase via LSP.
   Sweeps for textual remainders in comments/docs/strings. **Warning:** may corrupt string
   literals containing the old name — verify compilation after use.
 
@@ -155,7 +157,7 @@ use the right tool. Small shortcuts compound into large context waste.
   - `action="recall"` — search memories by meaning. Requires `query`. Optional `bucket` filter, `limit`.
   - `action="forget"` — delete a semantic memory. Requires `id` (from recall results).
   - `action="refresh_anchors"` — re-hash anchored files without changing memory content. Use after reviewing a stale memory and confirming it's still accurate. Requires `topic`.
-  - **Multi-project workspaces**: Pass `project: "<id>"` to scope operations to a specific project. Omit to use workspace-level memories. Example: `memory(action: "read", project: "backend", topic: "architecture")` 
+  - **Multi-project workspaces**: Pass `project_id: "<id>"` to scope operations to a specific project. Omit to use workspace-level memories. Example: `memory(action: "read", project_id: "backend", topic: "architecture")` 
 
 ### Project & Libraries
 
@@ -248,18 +250,18 @@ Multi-tool chains for common tasks. Follow the steps in order.
 
 | Step | Tool | Purpose |
 |------|------|---------|
-| 1 | `read_file(path)` | Get heading map — see all sections |
-| 2 | `read_file(path, headings=[...])` | Read target sections (one call, multiple sections) |
-| 3a | `edit_section(path, heading, action, content)` | Whole-section: replace (body only — heading preserved), insert, remove |
-| 3b | `edit_file(path, heading=, old_string, new_string)` | Surgical: string replacement scoped to a section |
-| 3c | `edit_file(path, edits=[...])` | Batch: multiple edits across sections, atomic |
+| 1 | `read_markdown(path)` | Get heading map — see all sections |
+| 2 | `read_markdown(path, headings=[...])` | Read target sections (one call, multiple sections) |
+| 3a | `edit_markdown(path, heading, action, content)` | Whole-section: replace (body only — heading preserved), insert, remove |
+| 3b | `edit_markdown(path, heading, action="edit", old_string, new_string)` | Surgical: scoped string replacement within a section |
+| 3c | `edit_markdown(path, edits=[...])` | Batch: multiple edits across sections, atomic |
 
 ### Impact Analysis — "What breaks if I change X?"
 
 | Step | Tool | Purpose |
 |------|------|---------|
 | 1 | `find_symbol(name, include_body=true)` | Read current implementation |
-| 2 | `find_references(name_path, path)` | Find all callers and dependents |
+| 2 | `find_references(symbol, path)` | Find all callers and dependents |
 | 3 | `hover` on key call sites | Reveal concrete types (especially generics/traits) |
 | 4 | Edit with full knowledge of blast radius | |
 
@@ -276,9 +278,9 @@ Multi-tool chains for common tasks. Follow the steps in order.
 
 | Step | Tool | Purpose |
 |------|------|---------|
-| 1 | `find_references(name_path, path)` | Map all usages before renaming |
-| 2 | `rename_symbol(name_path, path, new_name)` | LSP-powered rename across files |
-| 3 | `search_pattern(old_name)` | Catch stragglers in comments, strings, docs |
+| 1 | `find_references(symbol, path)` | Map all usages before renaming |
+| 2 | `rename_symbol(symbol, path, new_name)` | LSP-powered rename across files |
+| 3 | `grep(old_name)` | Catch stragglers in comments, strings, docs |
 | 4 | `run_command("cargo check")` | Verify compilation |
 
 

@@ -311,7 +311,7 @@ fn symbol_to_json(
     let mut map = serde_json::Map::new();
 
     map.insert("name".into(), json!(sym.name));
-    map.insert("name_path".into(), json!(sym.name_path));
+    map.insert("symbol".into(), json!(sym.name_path));
     map.insert("kind".into(), json!(format!("{:?}", sym.kind)));
 
     if show_file {
@@ -636,7 +636,7 @@ impl Tool for ListSymbols {
                 let hint = format!(
                     "File has {total} top-level symbols ({flat_total} total including children). \
                      Use depth=0 for a top-level-only overview, or \
-                     find_symbol(name_path='...', include_body=true) for a specific symbol."
+                     find_symbol(symbol='...', include_body=true) for a specific symbol."
                 );
                 let ov = OverflowInfo {
                     shown,
@@ -652,7 +652,7 @@ impl Tool for ListSymbols {
                 file_guard.max_results = LIST_SYMBOLS_SINGLE_FILE_CAP;
                 let hint = format!(
                     "File has {total} symbols. Use depth=0 for top-level overview, \
-                     or find_symbol(name_path='ClassName/methodName', include_body=true) for a specific symbol."
+                     or find_symbol(symbol='ClassName/methodName', include_body=true) for a specific symbol."
                 );
                 file_guard.cap_items(json_symbols, &hint)
             };
@@ -866,8 +866,8 @@ impl Tool for FindSymbol {
         json!({
             "type": "object",
             "properties": {
-                "pattern": { "type": "string", "description": "Symbol name or substring to search for" },
-                "name_path": { "type": "string", "description": "Exact path (e.g. 'MyStruct/my_method'). Alternative to pattern." },
+                "query": { "type": "string", "description": "Symbol name or substring to search for" },
+                "symbol": { "type": "string", "description": "Symbol identifier (e.g. 'MyStruct/my_method'). Alternative to query." },
                 "path": { "type": "string", "description": "File or glob to restrict search (e.g. 'src/**/*.rs')" },
                 "kind": {
                     "type": "string",
@@ -884,13 +884,13 @@ impl Tool for FindSymbol {
         })
     }
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
-        let pattern = input["pattern"]
+        let pattern = input["query"]
             .as_str()
-            .or_else(|| input["name_path"].as_str())
+            .or_else(|| input["symbol"].as_str())
             .ok_or_else(|| {
                 RecoverableError::with_hint(
                     "missing required parameter",
-                    "Provide 'pattern' (substring search) or 'name_path' (exact path from get_symbols_overview, e.g. 'MyStruct/my_method')",
+                    "Provide 'query' (substring search) or 'symbol' (exact identifier, e.g. 'MyStruct/my_method')",
                 )
             })?;
         let mut guard = OutputGuard::from_input(&input);
@@ -900,7 +900,31 @@ impl Tool for FindSymbol {
         }
 
         // kind filter only applies to pattern-based searches, not exact name_path lookups.
-        let is_name_path = input["name_path"].is_string();
+        let is_name_path = input["symbol"].is_string();
+
+        // Reject regex-like patterns early — find_symbol does substring matching,
+        // not regex. Point the LLM to grep instead.
+        if !is_name_path && super::is_regex_like(pattern) {
+            let trigger = if pattern.contains('|') {
+                "'|'"
+            } else if pattern.contains(".*") || pattern.contains(".+") {
+                "'.*'"
+            } else if pattern.starts_with('^') || pattern.ends_with('$') {
+                "'^'/'$'"
+            } else {
+                "regex syntax"
+            };
+            return Err(RecoverableError::with_hint(
+                format!(
+                    "pattern looks like a regex (found {trigger}) — \
+                     find_symbol searches symbol names, not text"
+                ),
+                "Use grep(pattern=\"...\") for regex text search, \
+                 or make separate find_symbol calls for each symbol name",
+            )
+            .into());
+        }
+
         let kind_filter: Option<&str> = if is_name_path {
             None
         } else {
@@ -1192,7 +1216,7 @@ impl Tool for FindSymbol {
                     obj.remove("body");
                     obj.insert(
                         "body_omitted".to_string(),
-                        json!("use find_symbol with name_path for full body"),
+                        json!("use find_symbol with symbol for full body"),
                     );
                 }
             }
@@ -1234,14 +1258,14 @@ impl Tool for FindReferences {
         "find_references"
     }
     fn description(&self) -> &str {
-        "Find all usages of a symbol. Requires name_path and file."
+        "Find all usages of a symbol. Requires symbol and file."
     }
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
-            "required": ["name_path", "path"],
+            "required": ["symbol", "path"],
             "properties": {
-                "name_path": { "type": "string", "description": "Symbol path (e.g. 'MyStruct/my_method')" },
+                "symbol": { "type": "string", "description": "Symbol identifier (e.g. 'MyStruct/my_method')" },
                 "path": { "type": "string", "description": "File containing the symbol" },
                 "detail_level": { "type": "string", "description": "'full' for bodies (default: compact)" },
                 "offset": { "type": "integer", "description": "Pagination offset" },
@@ -1251,7 +1275,7 @@ impl Tool for FindReferences {
         })
     }
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
-        let name_path = super::require_str_param(&input, "name_path")?;
+        let name_path = super::require_str_param(&input, "symbol")?;
         let rel_path = get_path_param(&input, true)?.unwrap();
         let scope = crate::library::scope::Scope::parse(input["scope"].as_str());
 
@@ -1407,7 +1431,7 @@ impl Tool for GotoDefinition {
                     line_1,
                     full_path.display()
                 ),
-                "Check the line number — use list_symbols or search_pattern to find correct lines",
+                "Check the line number — use list_symbols or grep to find correct lines",
             )
         })?;
 
@@ -1581,7 +1605,7 @@ impl Tool for Hover {
                     line_1,
                     full_path.display()
                 ),
-                "Check the line number — use list_symbols or search_pattern to find correct lines",
+                "Check the line number — use list_symbols or grep to find correct lines",
             )
         })?;
 
@@ -1818,9 +1842,9 @@ impl Tool for ReplaceSymbol {
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
-            "required": ["name_path", "path", "new_body"],
+            "required": ["symbol", "path", "new_body"],
             "properties": {
-                "name_path": { "type": "string" },
+                "symbol": { "type": "string" },
                 "path": { "type": "string" },
                 "new_body": { "type": "string" }
             }
@@ -1828,7 +1852,7 @@ impl Tool for ReplaceSymbol {
     }
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
         super::guard_worktree_write(ctx).await?;
-        let name_path = super::require_str_param(&input, "name_path")?;
+        let name_path = super::require_str_param(&input, "symbol")?;
         let rel_path = get_path_param(&input, true)?.unwrap();
         let new_body = super::require_str_param(&input, "new_body")?;
 
@@ -1893,9 +1917,9 @@ impl Tool for RemoveSymbol {
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
-            "required": ["name_path", "path"],
+            "required": ["symbol", "path"],
             "properties": {
-                "name_path": { "type": "string", "description": "Symbol name path (e.g. 'MyStruct/my_method', 'tests/old_test')" },
+                "symbol": { "type": "string", "description": "Symbol identifier (e.g. 'MyStruct/my_method', 'tests/old_test')" },
                 "path": { "type": "string", "description": "File path" }
             }
         })
@@ -1903,7 +1927,7 @@ impl Tool for RemoveSymbol {
 
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
         super::guard_worktree_write(ctx).await?;
-        let name_path = super::require_str_param(&input, "name_path")?;
+        let name_path = super::require_str_param(&input, "symbol")?;
         let rel_path = get_path_param(&input, true)?.unwrap();
 
         let full_path = resolve_write_path(ctx, rel_path).await?;
@@ -1970,9 +1994,9 @@ impl Tool for InsertCode {
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
-            "required": ["name_path", "path", "code"],
+            "required": ["symbol", "path", "code"],
             "properties": {
-                "name_path": { "type": "string", "description": "Symbol name path (e.g. 'MyStruct/my_method')" },
+                "symbol": { "type": "string", "description": "Symbol identifier (e.g. 'MyStruct/my_method')" },
                 "path": { "type": "string", "description": "File path (relative or absolute)" },
                 "code": { "type": "string", "description": "Code to insert (may contain newlines)" },
                 "position": {
@@ -1985,7 +2009,7 @@ impl Tool for InsertCode {
     }
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
         super::guard_worktree_write(ctx).await?;
-        let name_path = super::require_str_param(&input, "name_path")?;
+        let name_path = super::require_str_param(&input, "symbol")?;
         let rel_path = get_path_param(&input, true)?.unwrap();
         let code = super::require_str_param(&input, "code")?;
         let position = input["position"].as_str().unwrap_or("after");
@@ -2154,9 +2178,9 @@ impl Tool for RenameSymbol {
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
-            "required": ["name_path", "path", "new_name"],
+            "required": ["symbol", "path", "new_name"],
             "properties": {
-                "name_path": { "type": "string" },
+                "symbol": { "type": "string" },
                 "path": { "type": "string" },
                 "new_name": { "type": "string" }
             }
@@ -2164,7 +2188,7 @@ impl Tool for RenameSymbol {
     }
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
         super::guard_worktree_write(ctx).await?;
-        let name_path = super::require_str_param(&input, "name_path")?;
+        let name_path = super::require_str_param(&input, "symbol")?;
         let rel_path = get_path_param(&input, true)?.unwrap();
         let new_name = super::require_str_param(&input, "new_name")?;
 
@@ -2500,7 +2524,7 @@ fn format_find_symbol(val: &Value) -> String {
             } else {
                 format!("{file}:{start}")
             };
-            let name_path = s["name_path"]
+            let name_path = s["symbol"]
                 .as_str()
                 .or_else(|| s["name"].as_str())
                 .unwrap_or("?")
@@ -2639,7 +2663,7 @@ fn format_symbol_tree(out: &mut String, symbols: &[Value], indent: usize) {
     let max_name_len = symbols
         .iter()
         .map(|s| {
-            s["name_path"]
+            s["symbol"]
                 .as_str()
                 .or_else(|| s["name"].as_str())
                 .unwrap_or("")
@@ -2652,7 +2676,7 @@ fn format_symbol_tree(out: &mut String, symbols: &[Value], indent: usize) {
 
     for sym in symbols {
         let kind = sym["kind"].as_str().unwrap_or("?");
-        let name = sym["name_path"]
+        let name = sym["symbol"]
             .as_str()
             .or_else(|| sym["name"].as_str())
             .unwrap_or("?");
@@ -3166,7 +3190,7 @@ impl Point {
 
         // Trigger LSP startup and background indexing via a file-restricted call.
         let _ = FindSymbol
-            .call(json!({ "pattern": "main", "path": "src/main.rs" }), &ctx)
+            .call(json!({ "query": "main", "path": "src/main.rs" }), &ctx)
             .await;
 
         // Retry project-wide search (no relative_path → workspace/symbol fast path)
@@ -3174,7 +3198,7 @@ impl Point {
         let mut found = false;
         for _ in 0..10 {
             let result = FindSymbol
-                .call(json!({ "pattern": "Point" }), &ctx)
+                .call(json!({ "query": "Point" }), &ctx)
                 .await
                 .unwrap();
             let symbols = result["symbols"].as_array().unwrap();
@@ -3530,7 +3554,7 @@ impl Point {
         let result = FindSymbol
             .call(
                 json!({
-                    "pattern": "add",
+                    "query": "add",
                     "path": "src/main.rs"
                 }),
                 &ctx,
@@ -3671,12 +3695,9 @@ impl Point {
             )),
         };
         assert!(ListSymbols.call(json!({"path": "x"}), &ctx).await.is_err());
-        assert!(FindSymbol
-            .call(json!({"pattern": "x"}), &ctx)
-            .await
-            .is_err());
+        assert!(FindSymbol.call(json!({"query": "x"}), &ctx).await.is_err());
         assert!(FindReferences
-            .call(json!({"name_path": "x", "path": "y"}), &ctx)
+            .call(json!({"symbol": "x", "path": "y"}), &ctx)
             .await
             .is_err());
     }
@@ -3736,7 +3757,7 @@ impl Point {
         // Project-wide search (no relative_path) — LSP will fail/return empty,
         // so tree-sitter fallback should find the symbol.
         let result = FindSymbol
-            .call(json!({ "pattern": "unique_benchmark_fn" }), &ctx)
+            .call(json!({ "query": "unique_benchmark_fn" }), &ctx)
             .await
             .unwrap();
 
@@ -3752,7 +3773,7 @@ impl Point {
 
         // Also check struct is findable
         let result2 = FindSymbol
-            .call(json!({ "pattern": "UniqueTestStruct" }), &ctx)
+            .call(json!({ "query": "UniqueTestStruct" }), &ctx)
             .await
             .unwrap();
         let symbols2 = result2["symbols"].as_array().unwrap();
@@ -4242,7 +4263,7 @@ fn main() {
             let result = FindReferences
                 .call(
                     json!({
-                        "name_path": "add",
+                        "symbol": "add",
                         "path": "src/main.rs"
                     }),
                     &ctx,
@@ -4370,7 +4391,7 @@ fn main() {
 
         // "src" is a directory — should walk it and find symbols inside
         let result = FindSymbol
-            .call(json!({ "pattern": "add", "path": "src" }), &ctx)
+            .call(json!({ "query": "add", "path": "src" }), &ctx)
             .await
             .unwrap();
 
@@ -4490,7 +4511,7 @@ fn main() {
         let (_dir, ctx) = rich_project_ctx().await;
 
         let result = FindSymbol
-            .call(json!({ "pattern": "add", "path": "src/main.rs" }), &ctx)
+            .call(json!({ "query": "add", "path": "src/main.rs" }), &ctx)
             .await
             .unwrap();
 
@@ -4507,7 +4528,7 @@ fn main() {
         let (_dir, ctx) = rich_project_ctx().await;
 
         let result = FindSymbol
-            .call(json!({ "pattern": "helper", "path": "src" }), &ctx)
+            .call(json!({ "query": "helper", "path": "src" }), &ctx)
             .await
             .unwrap();
 
@@ -4525,7 +4546,7 @@ fn main() {
         let (_dir, ctx) = rich_project_ctx().await;
 
         let result = FindSymbol
-            .call(json!({ "pattern": "multiply", "path": "src/utils" }), &ctx)
+            .call(json!({ "query": "multiply", "path": "src/utils" }), &ctx)
             .await
             .unwrap();
 
@@ -4543,7 +4564,7 @@ fn main() {
         let (_dir, ctx) = rich_project_ctx().await;
 
         let result = FindSymbol
-            .call(json!({ "pattern": "add", "path": "src/**/*.rs" }), &ctx)
+            .call(json!({ "query": "add", "path": "src/**/*.rs" }), &ctx)
             .await
             .unwrap();
 
@@ -4560,7 +4581,7 @@ fn main() {
         let (_dir, ctx) = rich_project_ctx().await;
 
         let result = FindSymbol
-            .call(json!({ "pattern": "anything", "path": "src/empty" }), &ctx)
+            .call(json!({ "query": "anything", "path": "src/empty" }), &ctx)
             .await
             .unwrap();
 
@@ -4574,7 +4595,7 @@ fn main() {
 
         let result = FindSymbol
             .call(
-                json!({ "pattern": "impl Calculator/compute", "path": "src" }),
+                json!({ "query": "impl Calculator/compute", "path": "src" }),
                 &ctx,
             )
             .await
@@ -4596,7 +4617,7 @@ fn main() {
         // tree-sitter merges impl methods under the type name directly
         // (no "impl" prefix), so name_path is "Calculator/compute"
         let result = FindSymbol
-            .call(json!({ "pattern": "Calculator/compute" }), &ctx)
+            .call(json!({ "query": "Calculator/compute" }), &ctx)
             .await
             .unwrap();
 
@@ -4839,8 +4860,8 @@ fn main() {
     #[test]
     fn kind_filter_skipped_when_using_name_path() {
         // Verify the logic: if name_path is set, kind_filter is None.
-        let input = json!({ "name_path": "Foo", "kind": "function" });
-        let is_name_path = input["name_path"].is_string();
+        let input = json!({ "symbol": "Foo", "kind": "function" });
+        let is_name_path = input["symbol"].is_string();
         let kind_filter: Option<&str> = if is_name_path {
             None
         } else {
@@ -5017,7 +5038,7 @@ fn main() {
         assert_eq!(ov.total, 150);
         assert_eq!(ov.shown, 100);
         assert!(ov.hint.contains("find_symbol"));
-        assert!(ov.hint.contains("name_path"));
+        assert!(ov.hint.contains("symbol"));
         assert!(
             ov.by_file.is_none(),
             "single-file overflow must not include by_file"
@@ -6458,12 +6479,12 @@ fn foo() {
         let val = serde_json::json!({
             "symbols": [
                 {
-                    "name": "OutputGuard", "name_path": "OutputGuard",
+                    "name": "OutputGuard", "symbol": "OutputGuard",
                     "kind": "Struct", "file": "src/tools/output.rs",
                     "start_line": 35, "end_line": 50
                 },
                 {
-                    "name": "cap_items", "name_path": "OutputGuard/cap_items",
+                    "name": "cap_items", "symbol": "OutputGuard/cap_items",
                     "kind": "Function", "file": "src/tools/output.rs",
                     "start_line": 55, "end_line": 80
                 }
@@ -6485,7 +6506,7 @@ fn foo() {
         let val = serde_json::json!({
             "symbols": [
                 {
-                    "name": "cap_items", "name_path": "OutputGuard/cap_items",
+                    "name": "cap_items", "symbol": "OutputGuard/cap_items",
                     "kind": "Function", "file": "src/tools/output.rs",
                     "start_line": 55, "end_line": 80,
                     "body": "pub fn cap_items(&self) -> Option<OverflowInfo> {\n    // impl\n}"
@@ -6515,7 +6536,7 @@ fn foo() {
         let val = serde_json::json!({
             "symbols": [
                 {
-                    "name": "convert", "name_path": "Stage1ToStage2Converter/convert",
+                    "name": "convert", "symbol": "Stage1ToStage2Converter/convert",
                     "kind": "Method", "file": "src/Converter.kt",
                     "start_line": 160, "end_line": 490,
                     "body": long_body
@@ -6545,7 +6566,7 @@ fn foo() {
         let val = serde_json::json!({
             "symbols": [
                 {
-                    "name": "foo", "name_path": "foo",
+                    "name": "foo", "symbol": "foo",
                     "kind": "Function", "file": "src/a.rs",
                     "start_line": 10, "end_line": 10
                 }
@@ -6583,12 +6604,12 @@ fn foo() {
         let val = serde_json::json!({
             "symbols": [
                 {
-                    "name": "Foo", "name_path": "Foo",
+                    "name": "Foo", "symbol": "Foo",
                     "kind": "Struct", "file": "src/a.rs",
                     "start_line": 1, "end_line": 5
                 },
                 {
-                    "name": "bar_baz", "name_path": "bar_baz",
+                    "name": "bar_baz", "symbol": "bar_baz",
                     "kind": "Function", "file": "src/very/long/path.rs",
                     "start_line": 100, "end_line": 200
                 }
@@ -6607,7 +6628,7 @@ fn foo() {
         let val = serde_json::json!({
             "symbols": [
                 {
-                    "name": "X", "name_path": "X",
+                    "name": "X", "symbol": "X",
                     "kind": "Constant", "file": "src/lib.rs",
                     "start_line": 42, "end_line": 42
                 }
@@ -6627,7 +6648,7 @@ fn foo() {
             "file": "src/tools/output.rs",
             "symbols": [
                 {
-                    "name": "OutputMode", "name_path": "OutputMode",
+                    "name": "OutputMode", "symbol": "OutputMode",
                     "kind": "Enum", "start_line": 10, "end_line": 15,
                     "children": [
                         { "name": "Exploring", "kind": "EnumMember", "start_line": 11, "end_line": 11 },
@@ -6635,7 +6656,7 @@ fn foo() {
                     ]
                 },
                 {
-                    "name": "OutputGuard", "name_path": "OutputGuard",
+                    "name": "OutputGuard", "symbol": "OutputGuard",
                     "kind": "Struct", "start_line": 35, "end_line": 50
                 }
             ]
@@ -6663,14 +6684,14 @@ fn foo() {
                 {
                     "file": "src/tools/ast.rs",
                     "symbols": [
-                        { "name": "ListFunctions", "name_path": "ListFunctions", "kind": "Struct", "start_line": 10, "end_line": 20 }
+                        { "name": "ListFunctions", "symbol": "ListFunctions", "kind": "Struct", "start_line": 10, "end_line": 20 }
                     ]
                 },
                 {
                     "file": "src/tools/config.rs",
                     "symbols": [
-                        { "name": "GetConfig", "name_path": "GetConfig", "kind": "Struct", "start_line": 5, "end_line": 15 },
-                        { "name": "ActivateProject", "name_path": "ActivateProject", "kind": "Struct", "start_line": 20, "end_line": 30 }
+                        { "name": "GetConfig", "symbol": "GetConfig", "kind": "Struct", "start_line": 5, "end_line": 15 },
+                        { "name": "ActivateProject", "symbol": "ActivateProject", "kind": "Struct", "start_line": 20, "end_line": 30 }
                     ]
                 }
             ]
@@ -6692,7 +6713,7 @@ fn foo() {
                 {
                     "file": "src/main.rs",
                     "symbols": [
-                        { "name": "main", "name_path": "main", "kind": "Function", "start_line": 1, "end_line": 10 }
+                        { "name": "main", "symbol": "main", "kind": "Function", "start_line": 1, "end_line": 10 }
                     ]
                 }
             ]
@@ -6731,7 +6752,7 @@ fn foo() {
                 {
                     "file": "src/a.rs",
                     "symbols": [
-                        { "name": "Foo", "name_path": "Foo", "kind": "Struct", "start_line": 1, "end_line": 5 }
+                        { "name": "Foo", "symbol": "Foo", "kind": "Struct", "start_line": 1, "end_line": 5 }
                     ]
                 }
             ],
@@ -6748,7 +6769,7 @@ fn foo() {
             "file": "src/model.rs",
             "symbols": [
                 {
-                    "name": "Config", "name_path": "Config",
+                    "name": "Config", "symbol": "Config",
                     "kind": "Struct", "start_line": 1, "end_line": 10,
                     "children": [
                         { "name": "port", "kind": "Field", "start_line": 2, "end_line": 2 },
@@ -6771,7 +6792,7 @@ fn foo() {
             "file": "src/service.rs",
             "symbols": [
                 {
-                    "name": "Server", "name_path": "Server",
+                    "name": "Server", "symbol": "Server",
                     "kind": "Struct", "start_line": 1, "end_line": 50,
                     "children": [
                         { "name": "new", "kind": "Function", "start_line": 5, "end_line": 10 },
@@ -6796,7 +6817,7 @@ fn foo() {
         let val = serde_json::json!({
             "file": "src/single.rs",
             "symbols": [
-                { "name": "main", "name_path": "main", "kind": "Function", "start_line": 1, "end_line": 5 }
+                { "name": "main", "symbol": "main", "kind": "Function", "start_line": 1, "end_line": 5 }
             ]
         });
         let result = format_list_symbols(&val);
@@ -6937,7 +6958,7 @@ fn foo() {
         let result = FindSymbol
             .call(
                 json!({
-                    "pattern": "helper",
+                    "query": "helper",
                     "include_body": true,
                 }),
                 &ctx,
@@ -7096,7 +7117,7 @@ fn foo() {
         let result = FindSymbol
             .call(
                 json!({
-                    "pattern": "helper",
+                    "query": "helper",
                     "include_body": true,
                 }),
                 &ctx,
@@ -7458,7 +7479,7 @@ fn foo() {
         let result = tool
             .call(
                 json!({
-                    "pattern": "library_unique_symbol_xyz",
+                    "query": "library_unique_symbol_xyz",
                     "scope": "libraries"
                 }),
                 &ctx,
@@ -7505,7 +7526,7 @@ fn foo() {
         let result = tool
             .call(
                 json!({
-                    "pattern": "func",
+                    "query": "func",
                     "scope": "all"
                 }),
                 &ctx,
@@ -7554,7 +7575,7 @@ fn foo() {
         let result = tool
             .call(
                 json!({
-                    "pattern": "my_func",
+                    "query": "my_func",
                     "scope": "project"
                 }),
                 &ctx,
@@ -7609,7 +7630,7 @@ fn foo() {
         };
 
         let result = FindSymbol
-            .call(json!({ "pattern": "process" }), &ctx)
+            .call(json!({ "query": "process" }), &ctx)
             .await
             .unwrap();
 
@@ -7624,5 +7645,79 @@ fn foo() {
         // The total field must also reflect >= 3 results.
         let total = result["total"].as_u64().unwrap_or(0);
         assert!(total >= 3, "total should be >= 3 with no peer, got {total}");
+    }
+
+    #[tokio::test]
+    async fn find_symbol_rejects_regex_alternation() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        let ctx = test_ctx_with_agent(agent);
+
+        let err = FindSymbol
+            .call(json!({"query": "foo|bar"}), &ctx)
+            .await
+            .unwrap_err();
+
+        let rec = err
+            .downcast_ref::<crate::tools::RecoverableError>()
+            .expect("should be RecoverableError");
+        assert!(
+            rec.message.contains("regex"),
+            "message should mention regex, got: {}",
+            rec.message
+        );
+        assert!(
+            rec.hint.as_deref().unwrap_or("").contains("grep"),
+            "hint should mention grep, got: {:?}",
+            rec.hint
+        );
+    }
+
+    #[tokio::test]
+    async fn find_symbol_rejects_regex_wildcard() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        let ctx = test_ctx_with_agent(agent);
+
+        let err = FindSymbol
+            .call(json!({"query": "foo.*bar"}), &ctx)
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.downcast_ref::<crate::tools::RecoverableError>()
+                .is_some(),
+            "should be RecoverableError, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn find_symbol_allows_plain_pattern() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+        std::fs::write(dir.path().join("test.rs"), "fn my_function() {}\n").unwrap();
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        let ctx = test_ctx_with_agent(agent);
+
+        let result = FindSymbol.call(json!({"query": "my_function"}), &ctx).await;
+        assert!(result.is_ok(), "plain pattern should not be rejected");
+    }
+
+    #[tokio::test]
+    async fn find_symbol_allows_name_path_with_regex_chars() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        let ctx = test_ctx_with_agent(agent);
+
+        let result = FindSymbol.call(json!({"symbol": "foo|bar"}), &ctx).await;
+        assert!(
+            result.is_ok(),
+            "name_path should skip regex check, got err: {:?}",
+            result.err()
+        );
     }
 }

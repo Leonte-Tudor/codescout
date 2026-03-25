@@ -16,3 +16,7 @@
 - [Kotlin LSP Multiplexer](kotlin-lsp-multiplexer.md) — share a single
   kotlin-lsp JVM across multiple codescout instances via a detached multiplexer
   process, eliminating resource contention and cold-start penalties.
+
+- [search_pattern: Literal Fallback](search-pattern-literal-fallback.md) —
+  when a pattern is invalid regex but doesn't look like intended regex syntax,
+  `search_pattern` escapes it and searches literally instead of erroring.

@@ -2,7 +2,7 @@ use crate::e2e::expectations::{load_expectations, LangExpectation};
 use codescout::agent::Agent;
 use codescout::lsp::manager::LspManager;
 use codescout::tools::ast::ListFunctions;
-use codescout::tools::file::SearchPattern;
+use codescout::tools::file::Grep;
 use codescout::tools::symbol::{FindReferences, FindSymbol, ListSymbols};
 use codescout::tools::{Tool, ToolContext};
 use serde_json::{json, Value};
@@ -275,7 +275,7 @@ async fn run_list_functions(ctx: &ToolContext, exp: &LangExpectation) -> Result<
 
 async fn run_search_pattern(ctx: &ToolContext, exp: &LangExpectation) -> Result<(), String> {
     let pattern = exp.pattern.as_deref().ok_or("Missing 'pattern'")?;
-    let result = SearchPattern
+    let result = Grep
         .call(json!({ "pattern": pattern }), ctx)
         .await
         .map_err(|e| format!("Tool error: {e}"))?;

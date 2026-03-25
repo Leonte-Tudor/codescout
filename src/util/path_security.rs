@@ -355,7 +355,7 @@ pub fn check_tool_access(tool_name: &str, config: &PathSecurityConfig) -> Result
             }
         }
         "create_file" | "edit_file" | "replace_symbol" | "insert_code" | "rename_symbol"
-        | "remove_symbol" | "register_library" | "edit_section" => {
+        | "remove_symbol" | "register_library" | "edit_markdown" => {
             if !config.file_write_enabled {
                 bail!(
                     "File writes are disabled for this project. If this project was activated in read-only mode, call activate_project with read_only: false to enable writes."
@@ -525,7 +525,7 @@ fn split_outside_quotes(s: &str, seps: &[&str]) -> Vec<String> {
 /// Two-part heuristic: both a blocked command name AND a source file extension must be
 /// present in the command string. Use codescout tools instead:
 /// - `read_file`, `list_symbols`, `find_symbol` for reading
-/// - `search_pattern` for regex extraction
+/// - `grep` for regex extraction
 ///
 /// Known limits:
 /// - Variable expansion (`cat $FILE`) is undetectable at parse time — accepted.
@@ -569,7 +569,7 @@ pub fn check_source_file_access(command: &str) -> Option<String> {
     let hint = match first_cmd {
         "sed" | "awk" => {
             "use read_file(path, start_line, end_line), list_symbols(path), \
-             find_symbol(name, include_body=true), or search_pattern(regex) instead. \
+             find_symbol(name, include_body=true), or grep(regex) instead. \
              Re-run with acknowledge_risk: true if you need raw shell access."
         }
         _ => {
@@ -988,8 +988,9 @@ mod tests {
         for tool in &[
             "read_file",
             "list_dir",
-            "search_pattern",
-            "find_file",
+            "grep",
+            "glob",
+            "read_markdown",
             "find_symbol",
             "list_symbols",
             "list_functions",
@@ -1249,11 +1250,11 @@ mod tests {
     }
 
     #[test]
-    fn source_file_access_sed_hint_mentions_search_pattern() {
+    fn source_file_access_sed_hint_mentions_grep() {
         let hint = check_source_file_access("sed -n '1p' foo.ts").unwrap();
         assert!(
-            hint.contains("search_pattern"),
-            "sed hint should mention search_pattern, got: {hint}"
+            hint.contains("grep"),
+            "sed hint should mention grep, got: {hint}"
         );
     }
 

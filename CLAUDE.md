@@ -244,6 +244,12 @@ The project has **three prompt surfaces** that reference tool names:
 closer to the change get updated; distant ones accumulate stale refs ("distance
 from change" problem). Always grep all three surfaces when modifying tool names.
 
+**Any change to tool behavior or signatures requires a prompt surface review.**
+This includes: adding new tools, renaming tools, changing parameter semantics,
+adding new error/fallback modes, or modifying response shapes. Ask yourself:
+"Does the LLM need to know about this change to use the tool correctly?" If yes,
+update all three surfaces in the same commit.
+
 ## Server Instructions Design Rules
 
 `src/prompts/server_instructions.md` is injected **once at MCP session start**,

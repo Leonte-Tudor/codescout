@@ -19,8 +19,8 @@ pub mod semantic;
 pub mod symbol;
 pub mod usage;
 pub use usage::GetUsageStats;
+pub mod markdown;
 pub mod section_coverage;
-pub mod section_edit;
 pub mod workflow;
 
 use std::sync::Arc;
@@ -472,6 +472,48 @@ pub trait Tool: Send + Sync {
     }
 }
 
+/// Returns true if the input looks like it was intended as a regex pattern
+/// rather than a plain symbol name or literal text.
+// Used by find_symbol and search_pattern.
+pub(crate) fn is_regex_like(s: &str) -> bool {
+    // Alternation: `foo|bar` but not `|leading` or `trailing|`
+    if s.contains('|') {
+        let parts: Vec<&str> = s.split('|').collect();
+        if parts.iter().filter(|p| !p.is_empty()).count() >= 2 {
+            return true;
+        }
+    }
+    // Quantified wildcard: .* .+ .?
+    if s.contains(".*") || s.contains(".+") || s.contains(".?") {
+        return true;
+    }
+    // Anchors
+    if s.starts_with('^') || s.ends_with('$') {
+        return true;
+    }
+    // Character class with range: [A-Z] but not [u8]
+    // Note: only inspects the first [...] pair in the string.
+    if let Some(open) = s.find('[') {
+        if let Some(close) = s[open..].find(']') {
+            let inside = &s[open + 1..open + close];
+            if inside.contains('-') && inside.len() > 2 {
+                return true;
+            }
+        }
+    }
+    // Regex escape sequences
+    if s.contains(r"\b") || s.contains(r"\w") || s.contains(r"\d") || s.contains(r"\s") {
+        return true;
+    }
+    // Grouping: ( followed by )
+    if let Some(open) = s.find('(') {
+        if s[open..].contains(')') {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -634,6 +676,68 @@ mod tests {
             e.downcast_ref::<RecoverableError>().is_some(),
             "must be recoverable via downcast"
         );
+    }
+
+    #[test]
+    fn is_regex_like_detects_alternation() {
+        assert!(is_regex_like("foo|bar"));
+        assert!(is_regex_like("foo|bar|baz"));
+    }
+
+    #[test]
+    fn is_regex_like_detects_wildcards() {
+        assert!(is_regex_like("foo.*bar"));
+        assert!(is_regex_like("foo.+bar"));
+        assert!(is_regex_like("foo.?bar"));
+    }
+
+    #[test]
+    fn is_regex_like_detects_anchors() {
+        assert!(is_regex_like("^main"));
+        assert!(is_regex_like("name$"));
+    }
+
+    #[test]
+    fn is_regex_like_detects_character_classes_with_range() {
+        assert!(is_regex_like("[A-Z]foo"));
+        assert!(is_regex_like("bar[0-9]"));
+    }
+
+    #[test]
+    fn is_regex_like_detects_escape_sequences() {
+        assert!(is_regex_like(r"\bword"));
+        assert!(is_regex_like(r"foo\d+"));
+        assert!(is_regex_like(r"\w+bar"));
+        assert!(is_regex_like(r"foo\s"));
+    }
+
+    #[test]
+    fn is_regex_like_detects_grouping() {
+        assert!(is_regex_like("(foo|bar)"));
+        assert!(is_regex_like("some(thing)"));
+    }
+
+    #[test]
+    fn is_regex_like_rejects_plain_identifiers() {
+        assert!(!is_regex_like("my_function"));
+        assert!(!is_regex_like("MyStruct/method"));
+        assert!(!is_regex_like("some-name"));
+        assert!(!is_regex_like("CamelCase"));
+        assert!(!is_regex_like("foo.bar"));
+        assert!(!is_regex_like("Vec<String>"));
+        assert!(!is_regex_like(""));
+    }
+
+    #[test]
+    fn is_regex_like_rejects_lone_pipe() {
+        assert!(!is_regex_like("|leading"));
+        assert!(!is_regex_like("trailing|"));
+    }
+
+    #[test]
+    fn is_regex_like_rejects_brackets_without_range() {
+        assert!(!is_regex_like("[u8]"));
+        assert!(!is_regex_like("[i32; 4]"));
     }
 
     // ---- call_content auto-buffering tests ----

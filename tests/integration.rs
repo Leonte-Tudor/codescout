@@ -40,7 +40,7 @@ async fn project_with_files(files: &[(&str, &str)]) -> (tempfile::TempDir, ToolC
 
 #[tokio::test]
 async fn workflow_read_search_replace() {
-    use codescout::tools::file::{EditFile, ReadFile, SearchPattern};
+    use codescout::tools::file::{EditFile, Grep, ReadFile};
     let (dir, ctx) = project_with_files(&[
         (
             "src/main.txt",
@@ -54,7 +54,7 @@ async fn workflow_read_search_replace() {
     .await;
 
     // Step 1: Search for "Hello" across the project
-    let search_result = SearchPattern
+    let search_result = Grep
         .call(
             json!({ "pattern": "Hello", "path": dir.path().display().to_string() }),
             &ctx,

@@ -103,7 +103,7 @@ this to the user:
 > 2. **Build from CLI** — Run `codescout index --project .` in another
 >    terminal, then restart onboarding with `onboarding(force: true)`.
 > 3. **Skip** — Proceed without semantic search. Exploration will use
->    `search_pattern` (regex) instead of `semantic_search`. You can always
+>    `grep` (regex) instead of `semantic_search`. You can always
 >    build the index later.
 
 Wait for the user's choice before proceeding.
@@ -112,7 +112,7 @@ Wait for the user's choice before proceeding.
   seconds until the response shows completion or failure. If it fails, inform
   the user of the error and fall back to option 3.
 - **Option 2:** Stop and wait for the user to return.
-- **Option 3:** Proceed to Phase 1. Step 6 will use `search_pattern` instead
+- **Option 3:** Proceed to Phase 1. Step 6 will use `grep` instead
   of `semantic_search`.
 
 ---
@@ -201,8 +201,11 @@ different aspects of the codebase:
 5. A core domain concept specific to this project (not generic)
 
 Use `semantic_search` if the embedding index is built. If `semantic_search` returns
-empty results or errors (index not yet built), use `search_pattern` (regex) instead —
+empty results or errors (index not yet built), use `grep` (regex) instead —
 it works without an index and still reveals how the codebase handles each concept.
+
+`find_symbol` searches by symbol name substring — use `grep` for regex or
+text discovery. Do not pass regex alternation (`foo|bar`) to `find_symbol`.
 
 Do NOT run `index_project` during onboarding — it can take minutes and is not required
 for thorough exploration.
@@ -227,7 +230,7 @@ Before writing ANY memory, verify ALL of these are true. If any is unchecked, co
 - [ ] Read the FULL body (not just signature) of at least 5 core types/functions
 - [ ] Read ALL architecture docs found, completely (not skimmed)
 - [ ] Traced two distinct data flows from entry point to terminal output
-- [ ] Ran at least 5 concept-level queries (`semantic_search` or `search_pattern` fallback)
+- [ ] Ran at least 5 concept-level queries (`semantic_search` or `grep` fallback)
 - [ ] Read 2–3 test files and understood the testing pattern
 - [ ] Verified build/dev commands against actual repo contents
 
@@ -264,7 +267,7 @@ If you notice any of these thoughts, STOP. Return to Phase 1 immediately.
 - You have read fewer than 5 code bodies with `include_body=true`
 - You have run `list_symbols` on fewer than 3 modules/directories
 - You have traced only one data flow
-- You have run fewer than 5 concept-level queries (semantic_search or search_pattern)
+- You have run fewer than 5 concept-level queries (semantic_search or grep)
 
 **ALL of these mean: STOP. Return to Phase 1.**
 
@@ -318,7 +321,7 @@ OR `staleness.stale_files` is non-empty):** Run the merge flow:
 
 1. The existing content is in `protected_memories[topic].content`.
 2. For entries referencing files listed in `staleness.stale_files` (or all
-   entries if `untracked`): use `find_symbol`, `read_file`, `search_pattern`
+   entries if `untracked`): use `find_symbol`, `read_file`, `grep`
    to verify whether each entry is still accurate.
 3. Identify new discoveries from your Phase 1 exploration that belong in
    this memory.
@@ -547,9 +550,9 @@ provided to you separately.
 right? I'll save it to `.codescout/system-prompt.md`." After confirmation, write
 the file using `create_file`. Inform the user they can edit it anytime.
 
-**Editing markdown files later:** Use `edit_section` to replace/insert/remove sections
-by heading. Use `edit_file` with `heading=` param for scoped string matching within
-a section.
+**Editing markdown files later:** Use `edit_markdown` to replace/insert/remove sections
+by heading, or for scoped string replacement within a section (action="edit").
+Use `read_markdown` to navigate markdown files by heading.
 
 ---
 
@@ -578,7 +581,7 @@ After confirming all 6 memories and the system prompt with the user, deliver thi
   - `list_libraries` — view all registered libraries and their index/version status.
   - `index_project(scope="lib:<name>")` — index a specific library for semantic search.
   - Once registered, use `scope="lib:<name>"` with `find_symbol`, `list_symbols`,
-    `search_pattern`, and `semantic_search` to navigate library code.
+    `grep`, and `semantic_search` to navigate library code.
 
 ---
 

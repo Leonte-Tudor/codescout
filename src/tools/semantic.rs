@@ -28,7 +28,7 @@ impl Tool for SemanticSearch {
                 "offset": { "type": "integer", "description": "Pagination offset" },
                 "scope": { "type": "string", "description": "'project' (default), 'libraries', 'all', or 'lib:<name>'" },
                 "include_memories": { "type": "boolean", "default": false, "description": "Also search semantic memories." },
-                "project": { "type": "string", "description": "Filter to a project ID." }
+                "project_id": { "type": "string", "description": "Filter to a workspace project ID." }
             }
         })
     }
@@ -39,7 +39,7 @@ impl Tool for SemanticSearch {
         let limit = optional_u64_param(&input, "limit").unwrap_or(10) as usize;
         let include_memories = parse_bool_param(&input["include_memories"]);
         let project_filter = input
-            .get("project")
+            .get("project_id")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         let guard = OutputGuard::from_input(&input);
@@ -1092,8 +1092,8 @@ mod tests {
         let schema = SemanticSearch.input_schema();
         let props = schema["properties"].as_object().unwrap();
         assert!(
-            props.contains_key("project"),
-            "schema should have project param"
+            props.contains_key("project_id"),
+            "schema should have project_id param"
         );
     }
 

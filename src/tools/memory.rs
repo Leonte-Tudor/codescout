@@ -346,7 +346,7 @@ async fn resolve_memory_dir(
     input: &Value,
     ctx: &ToolContext,
 ) -> anyhow::Result<std::path::PathBuf> {
-    let project_param = input.get("project").and_then(|v| v.as_str());
+    let project_param = input.get("project_id").and_then(|v| v.as_str());
     let inner = ctx.agent.inner.read().await;
     if let Some(ws) = inner.workspace.as_ref() {
         let project_id = project_param
@@ -454,7 +454,7 @@ impl Tool for Memory {
                 "query": { "type": "string", "description": "For recall. Search query." },
                 "limit": { "type": "integer", "description": "For recall. Max results (default 5)." },
                 "id": { "type": "integer", "description": "For forget. Memory ID to delete." },
-                "project": { "type": "string", "description": "Scope to a project ID. Default: focused project." }
+                "project_id": { "type": "string", "description": "Scope to a workspace project ID. Default: focused project." }
             }
         })
     }
@@ -1590,7 +1590,7 @@ mod tests {
                     "action": "write",
                     "topic": "conventions",
                     "content": "Use camelCase",
-                    "project": "mcp-server"
+                    "project_id": "mcp-server"
                 }),
                 &ctx,
             )
@@ -1626,7 +1626,10 @@ mod tests {
 
         // list scoped to mcp-server should only show conventions
         let list_result = Memory
-            .call(json!({ "action": "list", "project": "mcp-server" }), &ctx)
+            .call(
+                json!({ "action": "list", "project_id": "mcp-server" }),
+                &ctx,
+            )
             .await
             .unwrap();
         let topics: Vec<&str> = list_result["topics"]
@@ -1640,7 +1643,7 @@ mod tests {
         // read scoped to mcp-server
         let read_result = Memory
             .call(
-                json!({ "action": "read", "topic": "conventions", "project": "mcp-server" }),
+                json!({ "action": "read", "topic": "conventions", "project_id": "mcp-server" }),
                 &ctx,
             )
             .await
@@ -1650,7 +1653,7 @@ mod tests {
         // delete scoped to mcp-server
         Memory
             .call(
-                json!({ "action": "delete", "topic": "conventions", "project": "mcp-server" }),
+                json!({ "action": "delete", "topic": "conventions", "project_id": "mcp-server" }),
                 &ctx,
             )
             .await

@@ -19,8 +19,9 @@ use serde_json::Value;
 use crate::agent::Agent;
 use crate::tools::{
     config::{ActivateProject, ProjectStatus},
-    file::{CreateFile, EditFile, FindFile, ListDir, ReadFile, SearchPattern},
+    file::{CreateFile, EditFile, Glob, Grep, ListDir, ReadFile},
     library::{ListLibraries, RegisterLibrary},
+    markdown::{EditMarkdown, ReadMarkdown},
     memory::Memory,
     progress,
     semantic::{IndexProject, IndexStatus, SemanticSearch},
@@ -65,11 +66,12 @@ impl CodeScoutServer {
             // File tools (fully implemented)
             Arc::new(ReadFile),
             Arc::new(ListDir),
-            Arc::new(SearchPattern),
+            Arc::new(Grep),
             Arc::new(CreateFile),
-            Arc::new(FindFile),
+            Arc::new(Glob),
             Arc::new(EditFile),
-            Arc::new(crate::tools::section_edit::EditSection),
+            Arc::new(EditMarkdown),
+            Arc::new(ReadMarkdown),
             // Workflow tools
             Arc::new(RunCommand),
             Arc::new(Onboarding),
@@ -575,11 +577,12 @@ mod tests {
         let expected_tools = [
             "read_file",
             "list_dir",
-            "search_pattern",
+            "grep",
             "create_file",
-            "find_file",
+            "glob",
             "edit_file",
-            "edit_section",
+            "edit_markdown",
+            "read_markdown",
             "run_command",
             "onboarding",
             "find_symbol",
