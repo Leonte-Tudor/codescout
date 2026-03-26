@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 /// Bump this when system prompt surfaces change significantly.
 /// Missing or lower stored version triggers auto-refresh of the system prompt.
 /// See CLAUDE.md § "Onboarding Version" for when to bump.
-const ONBOARDING_VERSION: u32 = 1;
+const ONBOARDING_VERSION: u32 = 2;
 
 /// Returns true if the stored onboarding version is stale (needs refresh).
 /// `None` means pre-versioning project — always stale.
