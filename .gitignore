@@ -14,7 +14,8 @@
 /.codescout/diagnostic-*.log
 /.codescout/libraries.json
 /.codescout/embeddings/
-# memories/, projects/*/memories/, system-prompt.md, and workspace.toml are intentionally tracked
+/.codescout/workspace.toml
+# memories/, projects/*/memories/, and system-prompt.md are intentionally tracked
 /docs/observations.md
 /scripts/node_modules/
 /scripts/package-lock.json
