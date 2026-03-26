@@ -853,6 +853,88 @@ fn build_system_prompt_draft(
     draft
 }
 
+/// Build the preamble prepended to the onboarding prompt for the subagent.
+/// Instructs the subagent to activate the project before following the exploration steps.
+fn build_subagent_preamble() -> String {
+    let mut s = String::new();
+    s.push_str("You are an onboarding subagent for codescout. ");
+    s.push_str("Your job is to thoroughly explore this codebase and write project memories ");
+    s.push_str("that will be used by every future session.\n\n");
+    s.push_str("FIRST ACTION: Call activate_project(\".\", read_only: false) to initialize the ");
+    s.push_str("project context. All subsequent tool calls depend on this.\n\n");
+    s.push_str("Then follow the exploration and memory-writing instructions below exactly.\n\n");
+    s.push_str("---\n\n");
+    s
+}
+
+/// Build the epilogue appended to the onboarding prompt for the subagent.
+/// Defines the return contract: what the subagent must include in its final response.
+fn build_subagent_epilogue() -> String {
+    let mut s = String::new();
+    s.push_str("\n---\n\n");
+    s.push_str("## Return Contract\n\n");
+    s.push_str(
+        "When you have completed ALL exploration steps and written ALL memories, end your \
+response with this structured summary:\n\n",
+    );
+    s.push_str("**Exploration Summary:**\n");
+    s.push_str("- What this system does (your own words, not the README's)\n");
+    s.push_str("- The 5 most important types/modules (name, file, role)\n");
+    s.push_str("- How a typical operation flows (concrete function names)\n");
+    s.push_str("- What surprised you (things docs didn't mention)\n\n");
+    s.push_str("**Memories Written:**\n");
+    s.push_str(
+        "- List each memory topic you wrote (e.g., \"architecture\", \"conventions\", etc.)\n\n",
+    );
+    s.push_str("**Warnings:**\n");
+    s.push_str(
+        "- Any issues encountered (index not built, LSP failures, files that couldn't be read)\n",
+    );
+    s.push_str("- Steps you couldn't fully complete and why\n\n");
+    s.push_str(
+        "This summary is returned to the main agent and shown to the user. Make it \
+informative but concise — aim for 300-500 tokens total.\n\n",
+    );
+    s.push_str(
+        "LAST ACTION: Call activate_project(\".\") before returning to ensure the parent's \
+project state is unchanged.",
+    );
+    s
+}
+
+/// Build the short dispatch instructions for the main agent.
+/// This is the only part the main agent needs to read — ~200 tokens.
+fn build_main_agent_instructions() -> String {
+    "\
+Onboarding required — this project has not been explored yet.
+
+Spawn a general-purpose subagent with model=sonnet to perform the exploration and \
+memory writing. Pass the content of the `subagent_prompt` field as the subagent's \
+task prompt. Do NOT read or summarize `subagent_prompt` yourself — pass it through \
+as-is.
+
+The subagent will:
+1. Explore the codebase thoroughly (symbol surveys, code reading, data flow tracing)
+2. Write project memories (architecture, conventions, gotchas, etc.)
+3. Return an exploration summary and list of memories written
+
+When the subagent completes, report its summary to the user. Then read whichever \
+memories are relevant to the user's current task via memory(action=\"read\", topic=...).
+
+Wait for the subagent to complete before continuing — onboarding is a prerequisite \
+for all subsequent work.
+
+Do NOT attempt to perform the exploration yourself — it will exhaust your context \
+window. The subagent handles it in isolation.
+
+If the subagent fails, report the error to the user. Do NOT fall back to exploring \
+inline — suggest the user re-run onboarding or check the MCP server status.
+
+If you cannot spawn subagents, execute the subagent prompt directly — but be aware \
+this will consume significant context."
+        .to_string()
+}
+
 /// Gather staleness state for protected memory topics.
 /// Returns a JSON object keyed by topic name, suitable for inclusion
 /// in the onboarding result.
@@ -1299,6 +1381,50 @@ impl Tool for Onboarding {
             (false, None)
         };
 
+        // Build the subagent prompt by concatenating preamble + onboarding prompt +
+        // system prompt draft + gathered data + epilogue
+        let subagent_prompt = {
+            let mut sp = build_subagent_preamble();
+            sp.push_str(&prompt);
+            if !system_prompt_draft.is_empty() {
+                sp.push_str("\n\n## System Prompt Draft\n\n");
+                sp.push_str(&system_prompt_draft);
+            }
+            if let Some(suggestion) = features_suggestion {
+                sp.push_str(&format!("\n\n> {suggestion}"));
+            }
+            // Append gathered data that the subagent needs
+            sp.push_str("\n\n## Gathered Data\n\n");
+            sp.push_str(&format!(
+                "**Hardware:** {}\n\n",
+                serde_json::to_string_pretty(&hw).unwrap_or_default()
+            ));
+            sp.push_str(&format!(
+                "**Model options:** {}\n\n",
+                serde_json::to_string_pretty(&model_options).unwrap_or_default()
+            ));
+            if !protected_memories.is_null() {
+                sp.push_str(&format!(
+                    "**Protected memories:** {}\n\n",
+                    serde_json::to_string_pretty(&protected_memories).unwrap_or_default()
+                ));
+            }
+            if workspace_mode {
+                if let Some(ref ppm) = per_project_protected {
+                    if !ppm.is_null() {
+                        sp.push_str(&format!(
+                            "**Per-project protected memories:** {}\n\n",
+                            serde_json::to_string_pretty(ppm).unwrap_or_default()
+                        ));
+                    }
+                }
+            }
+            sp.push_str(&build_subagent_epilogue());
+            sp
+        };
+
+        let main_agent_instructions = build_main_agent_instructions();
+
         Ok(json!({
             "languages": lang_list,
             "top_level": top_level,
@@ -1310,16 +1436,11 @@ impl Tool for Onboarding {
             "test_dirs": gathered.test_dirs,
             "ci_files": gathered.ci_files,
             "features_md": gathered.features_md,
-            "features_suggestion": features_suggestion,
             "index_status": index_status,
-            "instructions": prompt,
-            "system_prompt_draft": system_prompt_draft,
-            "hardware": serde_json::to_value(&hw).unwrap_or(serde_json::Value::Null),
-            "model_options": serde_json::to_value(&model_options).unwrap_or(serde_json::Value::Null),
-            "protected_memories": protected_memories,
             "workspace_mode": workspace_mode,
-            "per_project_protected_memories": per_project_protected.unwrap_or(json!(null)),
             "projects": discovered_projects,
+            "subagent_prompt": subagent_prompt,
+            "main_agent_instructions": main_agent_instructions,
         }))
     }
 
@@ -1338,35 +1459,23 @@ impl Tool for Onboarding {
             return Ok(vec![rmcp::model::Content::text(msg.to_string())]);
         }
 
-        // Full onboarding: always inline `instructions` and `system_prompt_draft`.
-        // The default call_content buffers large JSON and shows only format_compact,
-        // which drops these fields entirely — the LLM never sees what to do next.
+        // Full onboarding: two content blocks
+        // Block 1: compact metadata + main agent dispatch instructions
         let compact = format_onboarding(&val);
-        let instructions = val["instructions"].as_str().unwrap_or("");
-        let system_prompt_draft = val["system_prompt_draft"].as_str().unwrap_or("");
+        let instructions = val["main_agent_instructions"].as_str().unwrap_or("");
+        let block1 = format!("{}\n\n{}", compact, instructions);
 
-        let mut response = format!("{}\n\n{}", compact, instructions);
-        if !system_prompt_draft.is_empty() {
-            response.push_str(&format!(
-                "\n\n## System Prompt Draft\n\n```\n{}\n```",
-                system_prompt_draft
-            ));
-        }
-        if let Some(suggestion) = val["features_suggestion"].as_str() {
-            response.push_str(&format!("\n\n> {}", suggestion));
-        }
+        // Block 2: subagent prompt with delimiter (pass-through blob)
+        let subagent_prompt = val["subagent_prompt"].as_str().unwrap_or("");
+        let block2 = format!(
+            "--- ONBOARDING SUBAGENT PROMPT (pass as-is to subagent) ---\n\n{}",
+            subagent_prompt
+        );
 
-        // Surface per-project protected memory state in workspace mode
-        if val["workspace_mode"].as_bool().unwrap_or(false) {
-            if let Some(ppm) = val.get("per_project_protected_memories") {
-                if !ppm.is_null() {
-                    response.push_str("\n\n## Per-Project Protected Memories\n\n");
-                    response.push_str(&serde_json::to_string_pretty(ppm).unwrap_or_default());
-                }
-            }
-        }
-
-        Ok(vec![rmcp::model::Content::text(response)])
+        Ok(vec![
+            rmcp::model::Content::text(block1),
+            rmcp::model::Content::text(block2),
+        ])
     }
 
     fn format_compact(&self, result: &Value) -> Option<String> {
@@ -2486,6 +2595,65 @@ mod tests {
         assert!(draft.contains("web"), "should mention web project");
     }
 
+    #[test]
+    fn subagent_preamble_contains_activate_project() {
+        let preamble = build_subagent_preamble();
+        assert!(
+            preamble.contains("onboarding subagent"),
+            "preamble must identify the subagent role"
+        );
+        assert!(
+            preamble.contains("activate_project"),
+            "preamble must instruct subagent to activate project"
+        );
+        assert!(
+            preamble.contains("read_only: false"),
+            "preamble must request write access"
+        );
+    }
+
+    #[test]
+    fn subagent_epilogue_contains_return_contract() {
+        let epilogue = build_subagent_epilogue();
+        assert!(
+            epilogue.contains("Exploration Summary"),
+            "epilogue must define exploration summary format"
+        );
+        assert!(
+            epilogue.contains("Memories Written"),
+            "epilogue must request memory list"
+        );
+        assert!(
+            epilogue.contains("activate_project"),
+            "epilogue must instruct subagent to restore project state"
+        );
+    }
+
+    #[test]
+    fn main_agent_instructions_contains_dispatch_command() {
+        let instructions = build_main_agent_instructions();
+        assert!(
+            instructions.contains("subagent"),
+            "must mention subagent dispatch"
+        );
+        assert!(
+            instructions.contains("model=sonnet"),
+            "must specify sonnet model"
+        );
+        assert!(
+            instructions.contains("subagent_prompt"),
+            "must reference subagent_prompt field"
+        );
+        assert!(
+            instructions.contains("Do NOT"),
+            "must include anti-rationalization guard"
+        );
+        assert!(
+            instructions.contains("cannot spawn subagents"),
+            "must include fallback for non-subagent clients"
+        );
+    }
+
     use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::tempdir;
@@ -2605,10 +2773,67 @@ mod tests {
     async fn onboarding_returns_instruction_prompt() {
         let (_dir, ctx) = project_ctx().await;
         let result = Onboarding.call(json!({}), &ctx).await.unwrap();
-        let instructions = result["instructions"].as_str().unwrap();
-        assert!(instructions.contains("## Rules"));
-        assert!(instructions.contains("## Memories to Create"));
-        assert!(instructions.contains("rust")); // detected language
+        let prompt = result["subagent_prompt"].as_str().unwrap();
+        assert!(prompt.contains("## Rules"));
+        assert!(prompt.contains("## Memories to Create"));
+        assert!(prompt.contains("rust")); // detected language
+    }
+
+    #[tokio::test]
+    async fn onboarding_returns_subagent_prompt_and_instructions() {
+        let (_dir, ctx) = project_ctx().await;
+        let result = Onboarding.call(json!({}), &ctx).await.unwrap();
+
+        // New fields must exist
+        assert!(
+            result.get("subagent_prompt").is_some(),
+            "response must include subagent_prompt"
+        );
+        assert!(
+            result["subagent_prompt"].is_string(),
+            "subagent_prompt must be a string"
+        );
+        assert!(
+            result.get("main_agent_instructions").is_some(),
+            "response must include main_agent_instructions"
+        );
+        assert!(
+            result["main_agent_instructions"].is_string(),
+            "main_agent_instructions must be a string"
+        );
+
+        // Old fields must be gone
+        assert!(
+            result.get("instructions").is_none(),
+            "instructions field must be removed"
+        );
+        assert!(
+            result.get("system_prompt_draft").is_none(),
+            "system_prompt_draft must be removed"
+        );
+
+        // subagent_prompt must contain preamble, body, and epilogue
+        let prompt = result["subagent_prompt"].as_str().unwrap();
+        assert!(
+            prompt.contains("activate_project"),
+            "subagent_prompt must contain preamble"
+        );
+        assert!(
+            prompt.contains("## Return Contract"),
+            "subagent_prompt must contain epilogue"
+        );
+        assert!(
+            prompt.contains("Explore the Code") || prompt.contains("Memories to Create"),
+            "subagent_prompt must contain onboarding prompt body"
+        );
+        assert!(
+            prompt.contains("## System Prompt Draft"),
+            "subagent_prompt must contain system prompt draft section"
+        );
+
+        // Lightweight metadata still present
+        assert!(result.get("languages").is_some());
+        assert!(result.get("config_created").is_some());
     }
 
     #[tokio::test]
@@ -2747,15 +2972,72 @@ mod tests {
             .call_content(json!({ "force": true }), &ctx)
             .await
             .unwrap();
-        assert_eq!(content.len(), 1);
-        let text = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        assert_eq!(
+            content.len(),
+            2,
+            "call_content must return 2 blocks (instructions + subagent prompt)"
+        );
+
+        // Block 1: main agent dispatch instructions
+        let block1 = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
         assert!(
-            text.contains("## Rules") || text.contains("## Memories to Create"),
-            "force=true must deliver full onboarding instructions, got: {text:?}"
+            block1.contains("## Rules")
+                || block1.contains("## Memories to Create")
+                || block1.contains("subagent"),
+            "block 1 must contain dispatch instructions, got: {block1:?}"
         );
         assert!(
-            !text.contains("[?]"),
-            "call_content must not emit [?] placeholder, got: {text:?}"
+            !block1.contains("[?]"),
+            "call_content must not emit [?] placeholder, got: {block1:?}"
+        );
+
+        // Block 2: subagent prompt with delimiter
+        let block2 = content[1].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        assert!(
+            block2.contains("--- ONBOARDING SUBAGENT PROMPT"),
+            "block 2 must start with delimiter, got: {block2:?}"
+        );
+        assert!(
+            !block2.contains("[?]"),
+            "call_content must not emit [?] placeholder, got: {block2:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn onboarding_call_content_returns_two_blocks() {
+        let (_dir, ctx) = project_ctx().await;
+        let content = Onboarding
+            .call_content(json!({ "force": true }), &ctx)
+            .await
+            .unwrap();
+
+        // Must return exactly 2 content blocks
+        assert_eq!(
+            content.len(),
+            2,
+            "call_content must return 2 blocks (instructions + subagent prompt)"
+        );
+
+        // Block 1: main agent instructions
+        let block1 = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        assert!(
+            block1.contains("subagent"),
+            "block 1 must contain dispatch instructions"
+        );
+        assert!(
+            !block1.contains("## Return Contract"),
+            "block 1 must NOT contain the subagent prompt content"
+        );
+
+        // Block 2: subagent prompt with delimiter
+        let block2 = content[1].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        assert!(
+            block2.contains("--- ONBOARDING SUBAGENT PROMPT"),
+            "block 2 must start with delimiter"
+        );
+        assert!(
+            block2.contains("## Return Contract"),
+            "block 2 must contain the epilogue"
         );
     }
 
@@ -2943,13 +3225,16 @@ mod tests {
             .unwrap()
             .iter()
             .any(|v| v == "tests"));
-        // Verify the instructions reference key files (paths, not embedded content)
-        let instructions = result["instructions"].as_str().unwrap();
-        assert!(instructions.contains("README.md"));
+        // Verify the subagent_prompt and main_agent_instructions are present
+        assert!(result.get("subagent_prompt").is_some());
+        assert!(result.get("main_agent_instructions").is_some());
+        // Verify the subagent_prompt references key files (paths, not embedded content)
+        let prompt = result["subagent_prompt"].as_str().unwrap();
+        assert!(prompt.contains("README.md"));
     }
 
     #[tokio::test]
-    async fn onboarding_includes_system_prompt_draft_field() {
+    async fn onboarding_includes_system_prompt_draft_in_subagent_prompt() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("README.md"), "# Test Project\nA test.").unwrap();
         std::fs::write(dir.path().join("main.py"), "print('hello')").unwrap();
@@ -2966,17 +3251,17 @@ mod tests {
         };
         let result = Onboarding.call(json!({}), &ctx).await.unwrap();
 
-        // system_prompt_draft should be present and be a string
+        // system_prompt_draft should NOT be a top-level field
         assert!(
-            result.get("system_prompt_draft").is_some(),
-            "onboarding output should include system_prompt_draft"
+            result.get("system_prompt_draft").is_none(),
+            "system_prompt_draft must not be a top-level field"
         );
+        // It should be embedded in subagent_prompt
+        let prompt = result["subagent_prompt"].as_str().unwrap();
         assert!(
-            result["system_prompt_draft"].is_string(),
-            "system_prompt_draft should be a string"
+            prompt.contains("## System Prompt Draft"),
+            "subagent_prompt should contain system prompt draft section"
         );
-        let draft = result["system_prompt_draft"].as_str().unwrap();
-        assert!(!draft.is_empty(), "system_prompt_draft should not be empty");
     }
 
     #[tokio::test]
@@ -4133,10 +4418,11 @@ mod tests {
             projects_arr.len()
         );
 
-        let draft = result["system_prompt_draft"].as_str().unwrap();
+        // System prompt draft is now inside subagent_prompt
+        let prompt = result["subagent_prompt"].as_str().unwrap();
         assert!(
-            draft.contains("mcp-server"),
-            "draft should mention mcp-server"
+            prompt.contains("mcp-server"),
+            "subagent_prompt should mention mcp-server"
         );
     }
 
@@ -4577,18 +4863,24 @@ mod tests {
         let (_dir, ctx) = project_ctx().await;
         let result = Onboarding.call(json!({}), &ctx).await.unwrap();
 
-        // hardware field is present with positive cpu_cores
-        let cores = result["hardware"]["cpu_cores"].as_u64().unwrap();
-        assert!(cores > 0, "expected cpu_cores > 0, got {cores}");
-
-        // model_options is a 3-element array with exactly one recommended entry
-        let opts = result["model_options"].as_array().unwrap();
-        assert_eq!(opts.len(), 3);
-        let recommended = opts
-            .iter()
-            .filter(|o| o["recommended"].as_bool().unwrap_or(false))
-            .count();
-        assert_eq!(recommended, 1);
+        // hardware and model_options are now inside subagent_prompt
+        let prompt = result["subagent_prompt"].as_str().unwrap();
+        assert!(
+            prompt.contains("**Hardware:**"),
+            "subagent_prompt must contain hardware data"
+        );
+        assert!(
+            prompt.contains("cpu_cores"),
+            "subagent_prompt must contain cpu_cores"
+        );
+        assert!(
+            prompt.contains("**Model options:**"),
+            "subagent_prompt must contain model options"
+        );
+        assert!(
+            prompt.contains("recommended"),
+            "subagent_prompt must contain recommended model info"
+        );
     }
 
     #[tokio::test]
@@ -4600,11 +4892,17 @@ mod tests {
         let result = Onboarding.call(json!({}), &ctx).await.unwrap();
 
         let toml = std::fs::read_to_string(dir.path().join(".codescout/project.toml")).unwrap();
-        // In test env, Ollama is not running, so recommended is Jina
-        let recommended_id = result["model_options"][0]["id"].as_str().unwrap();
+        // model_options are now inside subagent_prompt; verify the config was written
+        // with the recommended model by checking subagent_prompt contains the model
+        // and the config contains a model setting
+        let prompt = result["subagent_prompt"].as_str().unwrap();
         assert!(
-            toml.contains(recommended_id),
-            "project.toml should contain '{recommended_id}'\ntoml:\n{toml}"
+            prompt.contains("**Model options:**"),
+            "subagent_prompt must contain model options"
+        );
+        assert!(
+            toml.contains("model = "),
+            "project.toml should contain a model setting\ntoml:\n{toml}"
         );
         // Should NOT contain the old hardcoded default
         assert!(
@@ -4640,11 +4938,21 @@ mod tests {
             .await
             .unwrap();
 
-        let pm = &result["protected_memories"]["gotchas"];
-        assert_eq!(pm["exists"], true);
-        assert!(pm["content"].as_str().unwrap().contains("# Gotchas"));
-        // No anchors file → untracked
-        assert_eq!(pm["staleness"]["untracked"], true);
+        // protected_memories is no longer top-level — it's inside subagent_prompt
+        assert!(result.get("protected_memories").is_none());
+        let prompt = result["subagent_prompt"].as_str().unwrap();
+        assert!(
+            prompt.contains("**Protected memories:**"),
+            "subagent_prompt must contain protected memories"
+        );
+        assert!(
+            prompt.contains("gotchas"),
+            "subagent_prompt must mention gotchas topic"
+        );
+        assert!(
+            prompt.contains("# Gotchas"),
+            "subagent_prompt must contain gotchas content"
+        );
     }
 
     #[tokio::test]
@@ -4664,9 +4972,11 @@ mod tests {
             .await
             .unwrap();
 
-        let pm = &result["protected_memories"]["gotchas"];
-        assert_eq!(pm["exists"], false);
-        assert!(pm.get("content").is_none());
+        // protected_memories now inside subagent_prompt
+        let prompt = result["subagent_prompt"].as_str().unwrap();
+        assert!(prompt.contains("**Protected memories:**"));
+        // The missing topic should show exists: false in the serialized JSON
+        assert!(prompt.contains("\"exists\": false"));
     }
 
     #[tokio::test]
@@ -4685,12 +4995,23 @@ mod tests {
             .await
             .unwrap();
 
-        let pm = &result["protected_memories"];
-        // Programmatic topics excluded
-        assert!(pm.get("onboarding").is_none());
-        assert!(pm.get("language-patterns").is_none());
+        // protected_memories now inside subagent_prompt as serialized JSON
+        let prompt = result["subagent_prompt"].as_str().unwrap();
+        assert!(prompt.contains("**Protected memories:**"));
+        // Programmatic topics excluded — should not appear as keys in the serialized JSON
+        assert!(
+            !prompt.contains("\"onboarding\":"),
+            "onboarding should be excluded from protected memories"
+        );
+        assert!(
+            !prompt.contains("\"language-patterns\":"),
+            "language-patterns should be excluded from protected memories"
+        );
         // Non-programmatic topic still present
-        assert!(pm.get("gotchas").is_some());
+        assert!(
+            prompt.contains("\"gotchas\":"),
+            "gotchas should be present in protected memories"
+        );
     }
 
     #[tokio::test]
@@ -4718,9 +5039,9 @@ mod tests {
             .await
             .unwrap();
 
-        let staleness = &result["protected_memories"]["gotchas"]["staleness"];
-        assert_eq!(staleness["untracked"], true);
-        assert_eq!(staleness["stale_files"].as_array().unwrap().len(), 0);
+        // Staleness info is now serialized inside subagent_prompt
+        let prompt = result["subagent_prompt"].as_str().unwrap();
+        assert!(prompt.contains("\"untracked\": true"));
     }
 
     #[tokio::test]
@@ -4770,12 +5091,11 @@ mod tests {
             .await
             .unwrap();
 
-        let staleness = &result["protected_memories"]["gotchas"]["staleness"];
-        assert_eq!(staleness["untracked"], false);
-        let stale_files = staleness["stale_files"].as_array().unwrap();
-        assert_eq!(stale_files.len(), 1);
-        assert_eq!(stale_files[0]["path"], "main.rs");
-        assert_eq!(stale_files[0]["status"], "changed");
+        // Staleness info is now serialized inside subagent_prompt
+        let prompt = result["subagent_prompt"].as_str().unwrap();
+        assert!(prompt.contains("\"untracked\": false"));
+        assert!(prompt.contains("\"status\": \"changed\""));
+        assert!(prompt.contains("\"path\": \"main.rs\""));
     }
 
     #[tokio::test]
@@ -4824,9 +5144,11 @@ mod tests {
             .await
             .unwrap();
 
-        let staleness = &result["protected_memories"]["gotchas"]["staleness"];
-        assert_eq!(staleness["untracked"], false);
-        assert_eq!(staleness["stale_files"].as_array().unwrap().len(), 0);
+        // Staleness info is now serialized inside subagent_prompt
+        let prompt = result["subagent_prompt"].as_str().unwrap();
+        assert!(prompt.contains("\"untracked\": false"));
+        // Fresh = no stale files, so stale_files should be empty array
+        assert!(prompt.contains("\"stale_files\": []"));
     }
 
     #[tokio::test]
@@ -4850,19 +5172,19 @@ mod tests {
             .await
             .unwrap();
 
-        // Should have both standard fields and protected_memories
+        // Should have standard fields plus subagent_prompt and main_agent_instructions
         assert!(result.get("languages").is_some());
-        assert!(result.get("instructions").is_some());
-        assert!(result.get("protected_memories").is_some());
+        assert!(result.get("subagent_prompt").is_some());
+        assert!(result.get("main_agent_instructions").is_some());
+        // Old fields removed
+        assert!(result.get("instructions").is_none());
+        assert!(result.get("protected_memories").is_none());
 
-        let pm = &result["protected_memories"]["gotchas"];
-        assert_eq!(pm["exists"], true);
-        assert!(pm["content"]
-            .as_str()
-            .unwrap()
-            .contains("custom user gotcha"));
+        // Protected memories are now inside subagent_prompt
+        let prompt = result["subagent_prompt"].as_str().unwrap();
+        assert!(prompt.contains("custom user gotcha"));
         // No anchor sidecar was created, so staleness should be untracked
-        assert_eq!(pm["staleness"]["untracked"], true);
+        assert!(prompt.contains("\"untracked\": true"));
     }
 
     #[tokio::test]
@@ -4953,12 +5275,12 @@ mod tests {
 
         // Single project: no workspace_mode field or it's false
         assert!(result.get("workspace_mode").is_none() || result["workspace_mode"] == false);
-        // Instructions should contain the standard Phase 1/Phase 2, not workspace phases
-        let instructions = result["instructions"].as_str().unwrap_or("");
-        assert!(instructions.contains("Phase 1: Explore the Code"));
-        assert!(instructions.contains("Phase 2: Write the Memories"));
-        assert!(!instructions.contains("Phase 1A"));
-        assert!(!instructions.contains("Workspace Survey"));
+        // subagent_prompt should contain the standard Phase 1/Phase 2, not workspace phases
+        let prompt = result["subagent_prompt"].as_str().unwrap_or("");
+        assert!(prompt.contains("Phase 1: Explore the Code"));
+        assert!(prompt.contains("Phase 2: Write the Memories"));
+        assert!(!prompt.contains("Phase 1A"));
+        assert!(!prompt.contains("Workspace Survey"));
     }
 
     #[tokio::test]
@@ -4969,21 +5291,35 @@ mod tests {
 
         let ctx = project_ctx_at(root).await;
         let content = Onboarding.call_content(json!({}), &ctx).await.unwrap();
-        let text = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        assert_eq!(
+            content.len(),
+            2,
+            "call_content must return 2 blocks (instructions + subagent prompt)"
+        );
 
+        // Block 1: dispatch instructions — should mention workspace
+        let block1 = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
         assert!(
-            text.contains("workspace") || text.contains("Workspace"),
-            "call_content should mention workspace mode, got: {}",
-            &text[..text.len().min(200)]
+            block1.contains("workspace") || block1.contains("Workspace"),
+            "block 1 should mention workspace mode, got: {}",
+            &block1[..block1.len().min(200)]
+        );
+
+        // Block 2: subagent prompt — contains workspace instructions and per-project protected memories
+        let block2 = content[1].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        assert!(
+            block2.contains("--- ONBOARDING SUBAGENT PROMPT"),
+            "block 2 must start with delimiter"
         );
         assert!(
-            text.contains("Phase 1A") || text.contains("Workspace Survey"),
-            "call_content should include workspace instructions"
+            block2.contains("Phase 1A") || block2.contains("Workspace Survey"),
+            "block 2 should include workspace instructions"
         );
-        // Per-project protected memories should be surfaced
+        // Per-project protected memories should be surfaced inside subagent_prompt
         assert!(
-            text.contains("per_project_protected") || text.contains("Per-Project Protected"),
-            "call_content should surface per-project protected memory state"
+            block2.contains("Per-project protected memories")
+                || block2.contains("per_project_protected"),
+            "block 2 should surface per-project protected memory state"
         );
     }
 
@@ -4997,11 +5333,16 @@ mod tests {
         let result = Onboarding.call(json!({}), &ctx).await.unwrap();
 
         assert_eq!(result["workspace_mode"], true);
-        assert!(result["per_project_protected_memories"].is_object());
-        // Each discovered project should have an entry
-        let ppm = &result["per_project_protected_memories"];
-        assert!(ppm["api"].is_object(), "api protected state missing");
-        assert!(ppm["web"].is_object(), "web protected state missing");
+        // per_project_protected_memories is now inside subagent_prompt
+        assert!(result.get("per_project_protected_memories").is_none());
+        let prompt = result["subagent_prompt"].as_str().unwrap();
+        // Each discovered project should have an entry in the serialized protected memories
+        assert!(
+            prompt.contains("**Per-project protected memories:**"),
+            "subagent_prompt must contain per-project protected memories"
+        );
+        assert!(prompt.contains("api"), "api project must be mentioned");
+        assert!(prompt.contains("web"), "web project must be mentioned");
     }
 
     #[tokio::test]
@@ -5060,30 +5401,33 @@ mod tests {
         // workspace.toml created
         assert!(crate::config::workspace::workspace_config_path(&root).exists());
 
-        // Instructions contain workspace sections
-        let instructions = result["instructions"].as_str().unwrap();
+        // subagent_prompt contains workspace sections and system prompt draft
+        let prompt = result["subagent_prompt"].as_str().unwrap();
         assert!(
-            instructions.contains("Workspace"),
-            "instructions should contain workspace content"
+            prompt.contains("Workspace"),
+            "subagent_prompt should contain workspace content"
         );
         assert!(
-            instructions.contains("Phase 1A"),
-            "instructions should contain Phase 1A"
+            prompt.contains("Phase 1A"),
+            "subagent_prompt should contain Phase 1A"
         );
 
-        // System prompt draft references per-project memories
-        let draft = result["system_prompt_draft"].as_str().unwrap();
-        assert!(draft.contains("api"));
-        assert!(draft.contains("web"));
-        assert!(draft.contains("memory(project:"));
+        // System prompt draft is inside subagent_prompt
+        assert!(prompt.contains("## System Prompt Draft"));
+        assert!(prompt.contains("api"));
+        assert!(prompt.contains("web"));
+        assert!(prompt.contains("memory(project:"));
 
-        // call_content delivers workspace content
+        // call_content delivers workspace content in two blocks
         let content = Onboarding
             .call_content(json!({ "force": true }), &ctx)
             .await
             .unwrap();
-        let text = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
-        assert!(text.contains("workspace") || text.contains("Workspace"));
+        assert_eq!(content.len(), 2, "call_content must return 2 blocks");
+        let block1 = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        assert!(block1.contains("workspace") || block1.contains("Workspace"));
+        let block2 = content[1].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        assert!(block2.contains("--- ONBOARDING SUBAGENT PROMPT"));
 
         // format_compact shows workspace info
         let compact = Onboarding.format_compact(&result).unwrap_or_default();
