@@ -93,3 +93,27 @@
   symbol that will be used in the very next commit. Use `#[allow]` for intentional
   temporary suppressions; use `#[expect]` only when the lint is active today and you
   want a compile-time reminder to remove the suppression once the code is cleaned up.
+
+
+## MCP Array Parameters (Live vs Unit Tests)
+
+- **Array-typed tool params are silently ignored through the live MCP interface**: When
+  Claude Code calls a tool with an array parameter (e.g. `headings=["A","B"]` or
+  `edits=[{...}]`), the value arrives at the server as a JSON string rather than a JSON
+  array. `input["headings"].as_array()` returns `None`, the branch is skipped, and the
+  tool silently falls through to a different code path without error.
+
+- **Unit tests never catch this** — they construct `json!({"headings": ["A","B"]})` in
+  Rust, which is always `Value::Array`. The divergence only surfaces when testing through
+  the actual MCP protocol.
+
+- **Affected params (as of 2026-03-23):** `headings` on `read_file`, `edits` on
+  `edit_file`. Scalar string params (`heading`, `mode`, `action`, etc.) work fine.
+
+- **Workaround:** Call the tool multiple times with the scalar equivalent instead of
+  the array param. `read_file(heading="A")` then `read_file(heading="B")` in place of
+  `headings=["A","B"]`.
+
+- **Defensive fix:** Before using `.as_array()`, attempt to parse the value as a JSON
+  string fallback — `serde_json::from_str::<Value>(s)` on a string-valued field, then
+  call `.as_array()` on the parsed result.

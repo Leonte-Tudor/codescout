@@ -6,6 +6,8 @@ use std::sync::Arc;
 use crate::lsp::{LspManager, LspProvider};
 
 use anyhow::Result;
+#[cfg(feature = "http")]
+use axum::response::IntoResponse;
 use rmcp::{
     model::{
         CallToolRequestParams, CallToolResult, Content, ListToolsResult, PaginatedRequestParams,
@@ -502,18 +504,110 @@ pub async fn run(
             tracing::info!("All LSP servers shut down");
             Ok(())
         }
+        #[cfg(feature = "http")]
         "http" => {
-            // SSE/HTTP transport was removed in rmcp 1.x (transport-sse-server feature).
-            // rmcp 1.x offers transport-streamable-http-server as a replacement, but it
-            // requires additional dependencies (tower, axum integration) and a different
-            // session model. For now, return a clear error. The stdio transport covers
-            // all current use cases (Claude Code, CLI).
+            use rmcp::transport::streamable_http_server::{
+                session::local::LocalSessionManager, StreamableHttpServerConfig,
+                StreamableHttpService,
+            };
+
+            // Build the server once (async), then clone per session.
+            let server = CodeScoutServer::from_parts(agent, lsp.clone()).await;
+
+            let ct = tokio_util::sync::CancellationToken::new();
+            let service = StreamableHttpService::new(
+                move || Ok(server.clone()),
+                LocalSessionManager::default().into(),
+                StreamableHttpServerConfig {
+                    cancellation_token: ct.child_token(),
+                    ..Default::default()
+                },
+            );
+
+            // Bearer token auth middleware
+            let token = auth_token.unwrap_or_else(|| {
+                let mut buf = [0u8; 32];
+                // /dev/urandom is always available on Linux/macOS — no crate needed.
+                if let Ok(bytes) = std::fs::read("/dev/urandom") {
+                    for (i, b) in bytes.iter().take(32).enumerate() {
+                        buf[i] = *b;
+                    }
+                } else {
+                    // Fallback: hash of pid + timestamp (not cryptographic, but usable)
+                    let seed = std::process::id() as u64
+                        ^ std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos() as u64;
+                    for (i, b) in seed.to_le_bytes().iter().cycle().take(32).enumerate() {
+                        buf[i] = b.wrapping_add(i as u8);
+                    }
+                }
+                let generated: String = buf
+                    .iter()
+                    .map(|b| {
+                        let idx = b % 62;
+                        match idx {
+                            0..=9 => (b'0' + idx) as char,
+                            10..=35 => (b'a' + idx - 10) as char,
+                            _ => (b'A' + idx - 36) as char,
+                        }
+                    })
+                    .collect();
+                eprintln!("Generated auth token: {generated}");
+                generated
+            });
+
+            let router =
+                axum::Router::new()
+                    .nest_service("/mcp", service)
+                    .layer(axum::middleware::from_fn(
+                        move |req: axum::extract::Request, next: axum::middleware::Next| {
+                            let expected = format!("Bearer {token}");
+                            async move {
+                                match req.headers().get("authorization") {
+                                    Some(v) if v == expected.as_str() => next.run(req).await,
+                                    _ => axum::http::StatusCode::UNAUTHORIZED.into_response(),
+                                }
+                            }
+                        },
+                    ));
+
+            let bind_addr = format!("{host}:{port}");
+            let tcp_listener = tokio::net::TcpListener::bind(&bind_addr)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to bind {bind_addr}: {e}"))?;
+
+            tracing::info!(
+                %bind_addr,
+                instance = %instance_tag,
+                "codescout MCP server ready (HTTP)"
+            );
+            eprintln!("codescout listening on http://{bind_addr}/mcp");
+
+            let ct_shutdown = ct.clone();
+            let instance_tag_http = instance_tag.to_owned();
+            axum::serve(tcp_listener, router)
+                .with_graceful_shutdown(async move {
+                    let reason = shutdown_signal().await;
+                    tracing::info!(instance = %instance_tag_http, reason, "service_exit");
+                    ct_shutdown.cancel();
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("HTTP server error: {e}"))?;
+
+            // Gracefully shut down all LSP servers
+            tracing::info!("Shutting down LSP servers...");
+            lsp.shutdown_all().await;
+            tracing::info!("All LSP servers shut down");
+            Ok(())
+        }
+        #[cfg(not(feature = "http"))]
+        "http" => {
             let _ = (host, port, auth_token);
             anyhow::bail!(
                 "HTTP transport is not available in this build. \
-                 The SSE transport (rmcp 0.x) was replaced by Streamable HTTP in rmcp 1.x. \
-                 Use 'stdio' transport instead, or build with the 'transport-streamable-http-server' \
-                 feature once migrated."
+                 Build with `--features http` to enable it."
             );
         }
         other => anyhow::bail!("Unknown transport '{}'. Use 'stdio' or 'http'.", other),

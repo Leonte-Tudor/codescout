@@ -351,7 +351,11 @@ impl LspManager {
                 true
             }
             Err(_) => {
-                tracing::info!("mux already running for {}, connecting to {:?}", language, socket_path);
+                tracing::info!(
+                    "mux already running for {}, connecting to {:?}",
+                    language,
+                    socket_path
+                );
                 false
             }
         };

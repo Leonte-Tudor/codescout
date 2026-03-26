@@ -22,42 +22,28 @@ Works with Claude Code, GitHub Copilot, Cursor, and any MCP-capable agent.
 | State lost between sessions | Persistent memory across sessions |
 | Re-reads same modules from different entry points | Symbol index built once, queried instantly |
 
-## Quick start
+## Quick Start
 
-```bash
-cargo install codescout
+```
+cargo build
+./target/debug/codescout start --project /path/to/code
 ```
 
-Then register as an MCP server. Example config:
+Add codescout as an MCP server in Claude Code `settings.json`:
 
 ```json
 {
-  "mcpServers": {
-    "codescout": {
+  "codeScoutServers": [
+    {
+      "name": "codescout",
       "command": "codescout",
-      "args": ["start"]
+      "args": ["start", "--project", "."]
     }
-  }
+  ]
 }
 ```
 
-Config file locations:
-- **Claude Code:** `~/.claude/settings.json`
-- **Cursor:** `.cursor/mcp.json` (uses `"mcpServers"` key)
-- **VS Code/Copilot:** `~/.config/Code/User/mcp.json` (uses `"servers"` key instead of `"mcpServers"`)
-
-→ [Full installation guide](docs/manual/src/getting-started/installation.md)
-
-## First run: onboarding
-
-After registering, **run onboarding once per project** — ask your agent:
-
-```
-Run codescout onboarding
-```
-
-This starts LSP servers, detects your languages and entry points, and generates the system prompt injected into every future session. **Without this step, codescout's tool guidance won't load and LSP tools will error.**
-
+Then use in Claude Code — it will route all file/symbol/search operations through codescout's tools.
 ## Agent integrations
 
 | Agent | Guide |

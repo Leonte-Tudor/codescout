@@ -30,4 +30,4 @@
 - `RecoverableError` for expected failures, `anyhow::bail!` for genuine bugs
 - Read `docs/PROGRESSIVE_DISCOVERABILITY.md` before adding any tool with variable-length output
 - When renaming tools: update all 3 prompt surfaces (see `CLAUDE.md § Prompt Surface Consistency`)
-- GitHub tools shell to `gh` CLI — not HTTP; `sqlite-vec` is present but NOT active (pure-Rust cosine)
+- GitHub tools shell to `gh` CLI — not HTTP; `sqlite-vec` is fully active (vec0 virtual tables with KNN search)
