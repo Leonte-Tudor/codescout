@@ -250,7 +250,23 @@ adding new error/fallback modes, or modifying response shapes. Ask yourself:
 "Does the LLM need to know about this change to use the tool correctly?" If yes,
 update all three surfaces in the same commit.
 
-## Server Instructions Design Rules
+### Onboarding Version
+
+When modifying system prompt surfaces, bump `ONBOARDING_VERSION` in
+`src/tools/workflow.rs`. This triggers automatic system prompt refresh for all
+projects onboarded with the previous version.
+
+Bump when the generated system prompt would reference tool names, parameters,
+or workflows that no longer exist:
+- Tool names change (rename, consolidate)
+- Tool parameter semantics change
+- Server instructions (`server_instructions.md`) change significantly
+- Onboarding prompt templates change in ways that affect the generated system prompt
+
+Do NOT bump for:
+- Bug fixes that don't change tool behavior
+- Internal refactors
+- Memory template changes (memories are re-read during refresh anyway)
 
 `src/prompts/server_instructions.md` is injected **once at MCP session start**,
 not per-request. Token cost is session-scoped, not per-call — invest in clarity

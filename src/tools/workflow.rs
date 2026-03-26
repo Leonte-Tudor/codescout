@@ -7,6 +7,23 @@ use serde_json::{json, Value};
 
 // ── Hardware detection ────────────────────────────────────────────────────────
 
+// ── Onboarding versioning ─────────────────────────────────────────────────────
+
+/// Bump this when system prompt surfaces change significantly.
+/// Missing or lower stored version triggers auto-refresh of the system prompt.
+/// See CLAUDE.md § "Onboarding Version" for when to bump.
+const ONBOARDING_VERSION: u32 = 1;
+
+/// Returns true if the stored onboarding version is stale (needs refresh).
+/// `None` means pre-versioning project — always stale.
+/// Stored > compiled (downgrade) is treated as current to avoid churn.
+fn onboarding_version_stale(stored: Option<u32>) -> bool {
+    match stored {
+        None => true,
+        Some(v) => v < ONBOARDING_VERSION,
+    }
+}
+
 /// System facts gathered at onboarding time for model selection.
 #[derive(Debug, serde::Serialize)]
 pub struct HardwareContext {
@@ -935,6 +952,66 @@ this will consume significant context."
         .to_string()
 }
 
+/// Build the subagent task prompt for refreshing the system prompt.
+///
+/// The subagent will re-read memories and regenerate system-prompt.md without
+/// re-exploring the codebase — memory already captured all the relevant knowledge.
+fn build_prompt_refresh_subagent_prompt(memory_topics: &[String]) -> String {
+    let memory_reads = memory_topics
+        .iter()
+        .map(|t| format!("  - memory(action=\"read\", topic=\"{t}\")"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        "\
+System prompt refresh — the stored onboarding version is behind the current codescout version.
+
+Steps:
+1. activate_project(\".\", read_only: false) — enable writes
+2. Read each project memory that contributes to the system prompt:
+{memory_reads}
+3. Read the current system-prompt.md (if it exists) to understand its structure
+4. Regenerate system-prompt.md using the standard template sections:
+   - ## Entry Points
+   - ## Key Abstractions
+   - ## Search Tips
+   - ## Navigation Strategy
+   - ## Project Rules
+5. Write the updated content to .codescout/system-prompt.md
+6. Do NOT re-explore the codebase — the memories already contain the relevant knowledge
+7. activate_project(\".\") — restore normal state
+
+When done, report: \"System prompt refreshed (vN → vM).\"",
+        memory_reads = memory_reads,
+    )
+}
+
+/// Build the short dispatch instructions for the main agent when a prompt refresh is needed.
+///
+/// Analogous to `build_main_agent_instructions` but for the refresh path.
+fn build_prompt_refresh_main_instructions(stored: Option<u32>, current: u32) -> String {
+    let stored_str = stored
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "pre-versioning".to_string());
+
+    format!(
+        "\
+System prompt outdated (v{stored_str} → v{current}) — a lightweight refresh is needed.
+
+Spawn a general-purpose subagent with model=sonnet to regenerate the system prompt. \
+Pass the content of the `subagent_prompt` field as the subagent's task prompt. \
+Do NOT read or summarize `subagent_prompt` yourself — pass it through as-is.
+
+The subagent will re-read memories and regenerate system-prompt.md without \
+re-exploring the codebase.
+
+When the subagent completes, continue with the user's original task.",
+        stored_str = stored_str,
+        current = current,
+    )
+}
+
 /// Gather staleness state for protected memory topics.
 /// Returns a JSON object keyed by topic name, suitable for inclusion
 /// in the onboarding result.
@@ -1017,6 +1094,10 @@ impl Tool for Onboarding {
                 "force": {
                     "type": "boolean",
                     "description": "Force full re-scan even if already onboarded (default: false)"
+                },
+                "refresh_prompt": {
+                    "type": "boolean",
+                    "description": "Regenerate system prompt from current templates without re-exploring (default: false)"
                 }
             }
         })
@@ -1024,6 +1105,72 @@ impl Tool for Onboarding {
     async fn call(&self, input: Value, ctx: &ToolContext) -> anyhow::Result<Value> {
         let root = ctx.agent.require_project_root().await?;
         let force = parse_bool_param(&input["force"]);
+        let refresh_prompt = parse_bool_param(&input["refresh_prompt"]);
+
+        // Explicit prompt refresh: regenerate system-prompt.md from memories without re-exploring.
+        // Takes effect only when not doing a full force re-scan.
+        if refresh_prompt && !force {
+            let status = ctx
+                .agent
+                .with_project(|p| {
+                    let has_config = p.root.join(".codescout").join("project.toml").exists();
+                    let memories = p.memory.list()?;
+                    let has_onboarding_memory = memories.iter().any(|m| m == "onboarding");
+                    Ok((has_config, has_onboarding_memory, memories))
+                })
+                .await?;
+            let (has_config, has_onboarding_memory, memories) = status;
+            if !has_config || !has_onboarding_memory {
+                return Err(super::RecoverableError::with_hint(
+                    "refresh_prompt requires a fully onboarded project",
+                    "Run onboarding() without any flags first to perform the initial onboarding.",
+                )
+                .into());
+            }
+
+            let (stored_version, config_languages) = ctx
+                .agent
+                .with_project(|p| {
+                    Ok((
+                        p.config.project.onboarding_version,
+                        p.config.project.languages.clone(),
+                    ))
+                })
+                .await?;
+
+            // Optimistic version write to disk so the refresh is not re-triggered
+            let config_path = ctx
+                .agent
+                .with_project(|p| {
+                    let config_path = p.root.join(".codescout").join("project.toml");
+                    if config_path.exists() {
+                        let mut config =
+                            crate::config::project::ProjectConfig::load_or_default(&p.root)?;
+                        config.project.onboarding_version = Some(ONBOARDING_VERSION);
+                        let toml_str = toml::to_string_pretty(&config)?;
+                        std::fs::write(&config_path, &toml_str)?;
+                    }
+                    Ok(config_path)
+                })
+                .await?;
+            ctx.agent.reload_config_if_project_toml(&config_path).await;
+
+            let subagent_prompt = build_prompt_refresh_subagent_prompt(&memories);
+            let main_agent_instructions =
+                build_prompt_refresh_main_instructions(stored_version, ONBOARDING_VERSION);
+
+            return Ok(json!({
+                "onboarded": true,
+                "version_stale": false,
+                "explicit_refresh": true,
+                "stored_version": stored_version,
+                "current_version": ONBOARDING_VERSION,
+                "languages": config_languages,
+                "config_created": false,
+                "subagent_prompt": subagent_prompt,
+                "main_agent_instructions": main_agent_instructions,
+            }));
+        }
 
         // If already onboarded and not forced, return status instead of re-scanning
         if !force {
@@ -1044,6 +1191,71 @@ impl Tool for Onboarding {
                 .await?;
             let (has_config, has_onboarding_memory, memories, private_memories) = status;
             if has_config && has_onboarding_memory {
+                // --- Version check: refresh system prompt if stale ---
+                let (stored_version, config_languages) = ctx
+                    .agent
+                    .with_project(|p| {
+                        Ok((
+                            p.config.project.onboarding_version,
+                            p.config.project.languages.clone(),
+                        ))
+                    })
+                    .await?;
+
+                // Log downgrade (no action)
+                if let Some(v) = stored_version {
+                    if v > ONBOARDING_VERSION {
+                        tracing::warn!(
+                            "stored onboarding version ({}) is newer than compiled ({}) — skipping refresh",
+                            v, ONBOARDING_VERSION
+                        );
+                    }
+                }
+
+                if onboarding_version_stale(stored_version) {
+                    tracing::info!(
+                        "onboarding version stale: stored={:?} current={}",
+                        stored_version,
+                        ONBOARDING_VERSION
+                    );
+
+                    // Optimistic version write to disk (prevents re-trigger across sessions)
+                    let config_path = ctx
+                        .agent
+                        .with_project(|p| {
+                            let config_path = p.root.join(".codescout").join("project.toml");
+                            if config_path.exists() {
+                                let mut config =
+                                    crate::config::project::ProjectConfig::load_or_default(
+                                        &p.root,
+                                    )?;
+                                config.project.onboarding_version = Some(ONBOARDING_VERSION);
+                                let toml_str = toml::to_string_pretty(&config)?;
+                                std::fs::write(&config_path, &toml_str)?;
+                            }
+                            Ok(config_path)
+                        })
+                        .await?;
+                    // Reload in-memory config so subsequent calls in the same session
+                    // see the updated version (prevents re-trigger within session)
+                    ctx.agent.reload_config_if_project_toml(&config_path).await;
+
+                    let subagent_prompt = build_prompt_refresh_subagent_prompt(&memories);
+                    let main_agent_instructions =
+                        build_prompt_refresh_main_instructions(stored_version, ONBOARDING_VERSION);
+
+                    return Ok(json!({
+                        "onboarded": true,
+                        "version_stale": true,
+                        "stored_version": stored_version,
+                        "current_version": ONBOARDING_VERSION,
+                        "languages": config_languages,
+                        "config_created": false,
+                        "subagent_prompt": subagent_prompt,
+                        "main_agent_instructions": main_agent_instructions,
+                    }));
+                }
+
                 let per_project_memories = ctx.agent.workspace_project_memories().await;
 
                 let mut message = format!(
@@ -1146,6 +1358,7 @@ impl Tool for Onboarding {
                     encoding: "utf-8".into(),
                     system_prompt: None,
                     tool_timeout_secs: 60,
+                    onboarding_version: Some(ONBOARDING_VERSION),
                 },
                 embeddings: crate::config::project::EmbeddingsSection {
                     model: recommended_model,
@@ -1158,6 +1371,8 @@ impl Tool for Onboarding {
             };
             let toml_str = toml::to_string_pretty(&config)?;
             std::fs::write(&config_path, &toml_str)?;
+            // Reload in-memory config so the version is visible within this session
+            ctx.agent.reload_config_if_project_toml(&config_path).await;
             true
         } else {
             false
@@ -1425,6 +1640,21 @@ impl Tool for Onboarding {
 
         let main_agent_instructions = build_main_agent_instructions();
 
+        // Optimistic version write for full onboarding (force=true on existing project)
+        ctx.agent
+            .with_project(|p| {
+                let config_path = p.root.join(".codescout").join("project.toml");
+                if config_path.exists() {
+                    let mut config =
+                        crate::config::project::ProjectConfig::load_or_default(&p.root)?;
+                    config.project.onboarding_version = Some(ONBOARDING_VERSION);
+                    let toml_str = toml::to_string_pretty(&config)?;
+                    std::fs::write(&config_path, &toml_str)?;
+                }
+                Ok(())
+            })
+            .await?;
+
         Ok(json!({
             "languages": lang_list,
             "top_level": top_level,
@@ -1451,31 +1681,39 @@ impl Tool for Onboarding {
     ) -> anyhow::Result<Vec<rmcp::model::Content>> {
         let val = self.call(input, ctx).await?;
 
-        // The "already onboarded" path returns a JSON object with "onboarded": true
-        // and a "message" field containing the memory listing and guidance.
+        // Two-block response: full onboarding, version refresh, or explicit refresh_prompt.
+        // Check for subagent_prompt FIRST — version refresh and explicit refresh both set
+        // `onboarded: true` AND `subagent_prompt`, so the onboarded check alone would send
+        // them down the single-block fast path and discard the subagent prompt.
+        if val.get("subagent_prompt").is_some() {
+            // Block 1: compact metadata + main agent dispatch instructions
+            let compact = format_onboarding(&val);
+            let instructions = val["main_agent_instructions"].as_str().unwrap_or("");
+            let block1 = format!("{}\n\n{}", compact, instructions);
+
+            // Block 2: subagent prompt with delimiter (pass-through blob)
+            let subagent_prompt = val["subagent_prompt"].as_str().unwrap_or("");
+            let block2 = format!(
+                "--- ONBOARDING SUBAGENT PROMPT (pass as-is to subagent) ---\n\n{}",
+                subagent_prompt
+            );
+
+            return Ok(vec![
+                rmcp::model::Content::text(block1),
+                rmcp::model::Content::text(block2),
+            ]);
+        }
+
+        // Single-block fast path: already-onboarded status with memory listing.
         // (The previous `val.as_str()` guard was stale — call() never returns a bare string.)
         if val["onboarded"].as_bool().unwrap_or(false) {
             let msg = val["message"].as_str().unwrap_or("Already onboarded.");
             return Ok(vec![rmcp::model::Content::text(msg.to_string())]);
         }
 
-        // Full onboarding: two content blocks
-        // Block 1: compact metadata + main agent dispatch instructions
+        // Fallback: shouldn't normally be reached, but handle gracefully.
         let compact = format_onboarding(&val);
-        let instructions = val["main_agent_instructions"].as_str().unwrap_or("");
-        let block1 = format!("{}\n\n{}", compact, instructions);
-
-        // Block 2: subagent prompt with delimiter (pass-through blob)
-        let subagent_prompt = val["subagent_prompt"].as_str().unwrap_or("");
-        let block2 = format!(
-            "--- ONBOARDING SUBAGENT PROMPT (pass as-is to subagent) ---\n\n{}",
-            subagent_prompt
-        );
-
-        Ok(vec![
-            rmcp::model::Content::text(block1),
-            rmcp::model::Content::text(block2),
-        ])
+        Ok(vec![rmcp::model::Content::text(compact)])
     }
 
     fn format_compact(&self, result: &Value) -> Option<String> {
@@ -2654,6 +2892,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn version_needs_refresh_when_none() {
+        assert!(onboarding_version_stale(None));
+    }
+
+    #[test]
+    fn version_needs_refresh_when_old() {
+        assert!(onboarding_version_stale(Some(0)));
+    }
+
+    #[test]
+    fn version_current_when_equal() {
+        assert!(!onboarding_version_stale(Some(ONBOARDING_VERSION)));
+    }
+
+    #[test]
+    fn version_current_when_newer_than_compiled() {
+        assert!(!onboarding_version_stale(Some(ONBOARDING_VERSION + 1)));
+    }
+
+    #[test]
+    fn prompt_refresh_subagent_prompt_contains_memory_reads() {
+        let topics = vec!["architecture".to_string(), "conventions".to_string()];
+        let prompt = build_prompt_refresh_subagent_prompt(&topics);
+        assert!(prompt.contains("activate_project"));
+        assert!(prompt.contains("architecture"));
+        assert!(prompt.contains("conventions"));
+        assert!(prompt.contains("system-prompt.md"));
+        assert!(prompt.contains("Do NOT re-explore"));
+    }
+
+    #[test]
+    fn prompt_refresh_main_instructions_contains_version_info() {
+        let instructions = build_prompt_refresh_main_instructions(Some(1), 2);
+        assert!(instructions.contains("subagent"));
+        assert!(instructions.contains("model=sonnet"));
+        assert!(instructions.contains("subagent_prompt"));
+        assert!(instructions.contains("v1"));
+    }
+
     use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::tempdir;
@@ -3038,6 +3316,156 @@ mod tests {
         assert!(
             block2.contains("## Return Contract"),
             "block 2 must contain the epilogue"
+        );
+    }
+
+    // ---- Task 5 tests: refresh_prompt parameter ----
+
+    /// Helper: build a fully onboarded project context (config + onboarding memory written).
+    /// `project_ctx()` creates an empty project — we need to run full onboarding first so
+    /// the fast-path checks (has_config && has_onboarding_memory) pass.
+    async fn onboarded_project_ctx() -> (tempfile::TempDir, ToolContext) {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+        std::fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        let ctx = ToolContext {
+            agent,
+            lsp: lsp(),
+            output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
+            progress: None,
+            peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
+        };
+        // Run full onboarding to write config + onboarding memory
+        Onboarding.call(json!({}), &ctx).await.unwrap();
+        (dir, ctx)
+    }
+
+    #[tokio::test]
+    async fn refresh_prompt_on_onboarded_project_returns_refresh_response() {
+        let (_dir, ctx) = onboarded_project_ctx().await;
+
+        // refresh_prompt=true must trigger the refresh path even when version is current
+        let result = Onboarding
+            .call(json!({ "refresh_prompt": true }), &ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result["onboarded"].as_bool().unwrap_or(false),
+            true,
+            "onboarded must be true"
+        );
+        assert_eq!(
+            result["explicit_refresh"].as_bool().unwrap_or(false),
+            true,
+            "explicit_refresh flag must be set"
+        );
+        assert!(
+            result.get("subagent_prompt").is_some(),
+            "must include subagent_prompt"
+        );
+        assert!(
+            result["subagent_prompt"]
+                .as_str()
+                .unwrap()
+                .contains("activate_project"),
+            "subagent_prompt must contain activate_project"
+        );
+        assert!(
+            result.get("main_agent_instructions").is_some(),
+            "must include main_agent_instructions"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_prompt_on_unonboarded_project_returns_error() {
+        // No config, no memories — project_ctx() gives us a bare project dir
+        let (_dir, ctx) = project_ctx().await;
+
+        let err = Onboarding
+            .call(json!({ "refresh_prompt": true }), &ctx)
+            .await
+            .unwrap_err();
+
+        let recoverable = err
+            .downcast::<crate::tools::RecoverableError>()
+            .expect("expected RecoverableError for refresh_prompt on unonboarded project");
+        assert!(
+            recoverable.message.contains("fully onboarded"),
+            "error message must mention fully onboarded, got: {:?}",
+            recoverable.message
+        );
+    }
+
+    #[tokio::test]
+    async fn force_takes_priority_over_refresh_prompt() {
+        // force=true + refresh_prompt=true must do a full re-scan, not a lightweight refresh.
+        // project_ctx() is fine: force=true bypasses the onboarding check entirely.
+        let (_dir, ctx) = project_ctx().await;
+
+        let result = Onboarding
+            .call(json!({ "force": true, "refresh_prompt": true }), &ctx)
+            .await
+            .unwrap();
+
+        // Full onboarding result must NOT have explicit_refresh
+        assert!(
+            result.get("explicit_refresh").is_none(),
+            "explicit_refresh must not be set on force path"
+        );
+        // Full onboarding result has languages, subagent_prompt with "Explore the Code"
+        let prompt = result["subagent_prompt"].as_str().unwrap_or("");
+        assert!(
+            prompt.contains("Explore the Code") || prompt.contains("Memories to Create"),
+            "full onboarding subagent_prompt must contain onboarding body, got: {prompt:?}"
+        );
+    }
+
+    // ---- Task 6 test: call_content routing for version refresh ----
+
+    #[tokio::test]
+    async fn onboarding_call_content_returns_two_blocks_for_version_refresh() {
+        let (_dir, ctx) = onboarded_project_ctx().await;
+
+        // Manually write a stale (version=None) config to disk, then reload so the
+        // agent's in-memory config reflects the stale state.
+        let config_path = ctx
+            .agent
+            .with_project(|p| {
+                let config_path = p.root.join(".codescout").join("project.toml");
+                let mut config = crate::config::project::ProjectConfig::load_or_default(&p.root)?;
+                config.project.onboarding_version = None;
+                let toml_str = toml::to_string_pretty(&config)?;
+                std::fs::write(&config_path, &toml_str)?;
+                Ok(config_path)
+            })
+            .await
+            .unwrap();
+        ctx.agent.reload_config_if_project_toml(&config_path).await;
+
+        let content = Onboarding.call_content(json!({}), &ctx).await.unwrap();
+
+        assert_eq!(
+            content.len(),
+            2,
+            "version refresh must return 2 blocks, got {}",
+            content.len()
+        );
+
+        let block1 = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        assert!(
+            block1.contains("v") || block1.contains("outdated") || block1.contains("refresh"),
+            "block 1 must contain version info, got: {block1:?}"
+        );
+
+        let block2 = content[1].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        assert!(
+            block2.contains("--- ONBOARDING SUBAGENT PROMPT"),
+            "block 2 must start with delimiter, got: {block2:?}"
         );
     }
 
@@ -5554,5 +5982,110 @@ mod tests {
         let (secs, hint) = parse_timeout_input(&input);
         assert_eq!(secs, 120);
         assert!(hint.is_some());
+    }
+
+    #[tokio::test]
+    async fn onboarding_triggers_refresh_when_version_stale() {
+        let dir = tempdir().unwrap();
+        let config_dir = dir.path().join(".codescout");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let config = crate::config::project::ProjectConfig {
+            project: crate::config::project::ProjectSection {
+                name: "test".into(),
+                languages: vec!["rust".into()],
+                encoding: "utf-8".into(),
+                system_prompt: None,
+                tool_timeout_secs: 60,
+                onboarding_version: None, // pre-versioning → stale
+            },
+            embeddings: Default::default(),
+            ignored_paths: Default::default(),
+            security: Default::default(),
+            memory: Default::default(),
+            libraries: Default::default(),
+        };
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        std::fs::write(config_dir.join("project.toml"), &toml_str).unwrap();
+
+        let mem_dir = config_dir.join("memories");
+        std::fs::create_dir_all(&mem_dir).unwrap();
+        std::fs::write(mem_dir.join("onboarding.md"), "Languages: rust").unwrap();
+
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        let ctx = ToolContext {
+            agent,
+            lsp: lsp(),
+            output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
+            progress: None,
+            peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
+        };
+
+        let result = Onboarding.call(json!({}), &ctx).await.unwrap();
+
+        assert!(
+            result.get("subagent_prompt").is_some(),
+            "stale version must trigger refresh"
+        );
+        assert_eq!(result["version_stale"].as_bool(), Some(true));
+        let prompt = result["subagent_prompt"].as_str().unwrap();
+        assert!(
+            prompt.contains("Do NOT re-explore"),
+            "must be lightweight refresh"
+        );
+    }
+
+    #[tokio::test]
+    async fn onboarding_fast_path_when_version_current() {
+        let dir = tempdir().unwrap();
+        let config_dir = dir.path().join(".codescout");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let config = crate::config::project::ProjectConfig {
+            project: crate::config::project::ProjectSection {
+                name: "test".into(),
+                languages: vec!["rust".into()],
+                encoding: "utf-8".into(),
+                system_prompt: None,
+                tool_timeout_secs: 60,
+                onboarding_version: Some(ONBOARDING_VERSION),
+            },
+            embeddings: Default::default(),
+            ignored_paths: Default::default(),
+            security: Default::default(),
+            memory: Default::default(),
+            libraries: Default::default(),
+        };
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        std::fs::write(config_dir.join("project.toml"), &toml_str).unwrap();
+
+        let mem_dir = config_dir.join("memories");
+        std::fs::create_dir_all(&mem_dir).unwrap();
+        std::fs::write(mem_dir.join("onboarding.md"), "Languages: rust").unwrap();
+
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        let ctx = ToolContext {
+            agent,
+            lsp: lsp(),
+            output_buffer: std::sync::Arc::new(crate::tools::output_buffer::OutputBuffer::new(20)),
+            progress: None,
+            peer: None,
+            section_coverage: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::tools::section_coverage::SectionCoverage::new(),
+            )),
+        };
+
+        let result = Onboarding.call(json!({}), &ctx).await.unwrap();
+
+        assert_eq!(result["onboarded"].as_bool(), Some(true));
+        assert!(
+            result.get("subagent_prompt").is_none(),
+            "current version must not trigger refresh"
+        );
     }
 }

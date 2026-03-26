@@ -32,6 +32,10 @@ pub struct ProjectSection {
     /// This field is still read as a fallback if the file doesn't exist.
     #[serde(default)]
     pub system_prompt: Option<String>,
+    /// Tracks which ONBOARDING_VERSION was used to generate the system prompt.
+    /// `None` means pre-versioning — treated as stale.
+    #[serde(default)]
+    pub onboarding_version: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -315,6 +319,7 @@ impl ProjectConfig {
                 encoding: default_encoding(),
                 tool_timeout_secs: default_timeout(),
                 system_prompt: None,
+                onboarding_version: None,
             },
             embeddings: EmbeddingsSection::default(),
             ignored_paths: IgnoredPathsSection::default(),
@@ -497,5 +502,26 @@ fetch_timeout_secs = 120
             config.security.profile,
             crate::util::path_security::SecurityProfile::Default
         );
+    }
+
+    #[test]
+    fn project_section_deserializes_onboarding_version() {
+        let toml_with = r#"
+            name = "test"
+            languages = ["rust"]
+            onboarding_version = 2
+        "#;
+        let section: ProjectSection = toml::from_str(toml_with).unwrap();
+        assert_eq!(section.onboarding_version, Some(2));
+    }
+
+    #[test]
+    fn project_section_deserializes_without_onboarding_version() {
+        let toml_without = r#"
+            name = "test"
+            languages = ["rust"]
+        "#;
+        let section: ProjectSection = toml::from_str(toml_without).unwrap();
+        assert_eq!(section.onboarding_version, None);
     }
 }
