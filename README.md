@@ -62,13 +62,36 @@ Then use in Claude Code — it will route all file/symbol/search operations thro
 
 > codescout's design is informed by research on compound error in multi-agent systems — research and empirical evidence confirm failure rates of 41–87% in production pipelines. This finding drove the choice of single-session skill-based workflows over agent orchestration chains. [Read the analysis →](docs/research/multi-agent-context-loss.md)
 
+
+## Kotlin
+
+codescout has first-class Kotlin support built around the reality that Kotlin
+projects are expensive to boot and JetBrains' kotlin-lsp allows only one LSP
+process per workspace.
+
+- **LSP multiplexer** — a detached `codescout mux` process shares a single
+  kotlin-lsp JVM across all codescout instances. No configuration needed.
+  Cold-start (8–15s JVM boot) happens once; subsequent sessions connect
+  instantly.
+- **Concurrent instance safety** — each instance gets an isolated system path
+  to prevent IntelliJ platform lock contention, with a circuit-breaker that
+  fails fast instead of timing out.
+- **Gradle isolation** — per-instance `GRADLE_USER_HOME` eliminates daemon
+  lock contention between parallel sessions.
+
+| Metric | Without mux | With mux |
+|--------|-------------|----------|
+| kotlin-lsp JVMs per machine | 1 per session (~2GB each) | 1 shared (~2GB total) |
+| Cold start on 2nd session | 8–15s | ~0s (mux already warm) |
+| Typical LSP response | 120s+ timeout | 30–270ms |
+
+→ [Kotlin LSP Multiplexer docs](docs/manual/src/concepts/kotlin-lsp-multiplexer.md)
+
 ## Tools (29)
 
 `Symbol navigation (9)` · `File operations (6)` · `Semantic search (3)` · `Memory (1)` · `Library navigation (1)` · `Workflow (2)` · `Config (2)` · `GitHub (5)`
 
 Supported languages: Rust, Python, TypeScript/JavaScript, Go, Java, Kotlin, C/C++, C#, Ruby.
-
-**Kotlin users:** codescout includes a built-in [LSP multiplexer](docs/manual/src/concepts/kotlin-lsp-multiplexer.md) that shares a single kotlin-lsp JVM across all instances — no configuration needed. This eliminates the 120s+ timeouts and 3-4GB RAM duplication that occur when multiple sessions target the same Kotlin project.
 
 → [Tool reference](docs/manual/src/tools/overview.md)
 
