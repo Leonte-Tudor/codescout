@@ -1776,8 +1776,8 @@ impl Tool for EditFile {
                 }
             }
 
-            // All edits passed — write once.
-            std::fs::write(&resolved, &content)?;
+            // All edits passed — write once (atomic to prevent corruption on crash).
+            crate::util::fs::atomic_write(&resolved, &content)?;
             ctx.agent.reload_config_if_project_toml(&resolved).await;
             ctx.lsp.notify_file_changed(&resolved).await;
             ctx.agent.mark_file_dirty(resolved).await;
@@ -1801,7 +1801,7 @@ impl Tool for EditFile {
                     .into())
                 }
             };
-            std::fs::write(&resolved, &new_content)?;
+            crate::util::fs::atomic_write(&resolved, &new_content)?;
             ctx.lsp.notify_file_changed(&resolved).await;
             ctx.agent.mark_file_dirty(resolved).await;
             return Ok(json!("ok"));
@@ -1882,7 +1882,7 @@ async fn perform_edit(
     }
 
     let new_content = content.replace(old_string, new_string);
-    std::fs::write(&resolved, &new_content)?;
+    crate::util::fs::atomic_write(&resolved, &new_content)?;
     ctx.agent.reload_config_if_project_toml(&resolved).await;
     ctx.lsp.notify_file_changed(&resolved).await;
     ctx.agent.mark_file_dirty(resolved.clone()).await;

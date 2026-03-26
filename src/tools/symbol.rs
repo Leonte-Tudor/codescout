@@ -2814,14 +2814,7 @@ fn write_lines(
     if had_trailing_newline && !out.is_empty() {
         out.push('\n');
     }
-    // Atomic write: write to a sibling .tmp file then rename so a crash or
-    // disk-full condition mid-write can't leave the file in a corrupt state.
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, &out)?;
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        e
-    })
+    crate::util::fs::atomic_write(path, &out)
 }
 
 /// Walk the symbol tree to find a symbol by name_path (e.g. "MyStruct/my_method").

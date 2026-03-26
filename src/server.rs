@@ -524,21 +524,38 @@ pub async fn run(
             // Bearer token auth middleware
             let token = auth_token.unwrap_or_else(|| {
                 let mut buf = [0u8; 32];
-                // /dev/urandom is always available on Linux/macOS — no crate needed.
-                if let Ok(bytes) = std::fs::read("/dev/urandom") {
-                    for (i, b) in bytes.iter().take(32).enumerate() {
-                        buf[i] = *b;
-                    }
-                } else {
-                    // Fallback: hash of pid + timestamp (not cryptographic, but usable)
-                    let seed = std::process::id() as u64
-                        ^ std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_nanos() as u64;
-                    for (i, b) in seed.to_le_bytes().iter().cycle().take(32).enumerate() {
-                        buf[i] = b.wrapping_add(i as u8);
-                    }
+                // Read exactly 32 bytes from /dev/urandom.  Must use File::open +
+                // read_exact — std::fs::read tries to read the entire "file" which
+                // is undefined for device nodes.
+                use std::io::Read;
+                let ok = std::fs::File::open("/dev/urandom")
+                    .and_then(|mut f| f.read_exact(&mut buf))
+                    .is_ok();
+                if !ok {
+                    // Fallback: mix pid, thread id, timestamp, and address-space
+                    // entropy.  Not cryptographic, but unpredictable enough for a
+                    // local-only convenience token.
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    std::process::id().hash(&mut hasher);
+                    std::thread::current().id().hash(&mut hasher);
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                        .hash(&mut hasher);
+                    // Hash twice with different seeds to fill 32 bytes.
+                    let h1 = hasher.finish().to_le_bytes();
+                    h1[0].hash(&mut hasher);
+                    let h2 = hasher.finish().to_le_bytes();
+                    buf[..8].copy_from_slice(&h1);
+                    buf[8..16].copy_from_slice(&h2);
+                    h2[0].hash(&mut hasher);
+                    let h3 = hasher.finish().to_le_bytes();
+                    h3[0].hash(&mut hasher);
+                    let h4 = hasher.finish().to_le_bytes();
+                    buf[16..24].copy_from_slice(&h3);
+                    buf[24..32].copy_from_slice(&h4);
                 }
                 let generated: String = buf
                     .iter()

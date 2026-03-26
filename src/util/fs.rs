@@ -42,12 +42,25 @@ pub fn read_utf8(path: &Path) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))
 }
 
+/// Atomic write: write to a sibling `.tmp` file then rename, so a crash or
+/// disk-full condition mid-write can't leave the target in a corrupt state.
+/// The target file must have a parent directory (true for all real paths).
+pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, content)?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e
+    })
+}
+
 /// Write UTF-8 content to a file, creating parent directories as needed.
+/// Uses atomic write-then-rename to prevent corruption on crash.
 pub fn write_utf8(path: &Path, content: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, content)
+    atomic_write(path, content)
         .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", path.display(), e))
 }
 

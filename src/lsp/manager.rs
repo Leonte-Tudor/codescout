@@ -230,27 +230,36 @@ impl LspManager {
         }
 
         // LRU eviction: if at capacity, shut down the least-recently-used client.
-        // Check + find + remove all happen under one lock acquisition to prevent TOCTOU.
+        // Lock ordering: never nest clients → last_used.  Check capacity first,
+        // find the oldest under last_used alone, then re-acquire clients to remove.
         let evict_info: Option<(LspKey, Option<Arc<LspClient>>)> = {
-            let mut clients = self.clients.lock().await;
-            if clients.len() >= self.max_clients {
-                let last_used = self.last_used.lock().await;
-                if let Some(oldest_key) = last_used
-                    .iter()
-                    .min_by_key(|(_, t)| *t)
-                    .map(|(k, _)| k.clone())
-                {
-                    drop(last_used);
-                    self.pending_reason
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .insert(oldest_key.clone(), "lru_evicted".to_string());
-                    self.pending_first_response
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .remove(&oldest_key);
-                    let evict_client = clients.remove(&oldest_key);
-                    Some((oldest_key, evict_client))
+            let at_capacity = self.clients.lock().await.len() >= self.max_clients;
+            if at_capacity {
+                // Find the LRU key under last_used lock alone.
+                let oldest_key = {
+                    let last_used = self.last_used.lock().await;
+                    last_used
+                        .iter()
+                        .min_by_key(|(_, t)| *t)
+                        .map(|(k, _)| k.clone())
+                };
+                if let Some(oldest_key) = oldest_key {
+                    let mut clients = self.clients.lock().await;
+                    // Re-check: another task may have evicted between locks.
+                    if clients.len() >= self.max_clients {
+                        self.pending_reason
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(oldest_key.clone(), "lru_evicted".to_string());
+                        self.pending_first_response
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&oldest_key);
+                        let evict_client = clients.remove(&oldest_key);
+                        Some((oldest_key, evict_client))
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }

@@ -640,6 +640,8 @@ pub struct MemoryResult {
 
 /// Insert a new memory and its embedding into both `memories` and `vec_memories`.
 ///
+/// Uses a savepoint to ensure both tables are written atomically.
+/// Safe to call inside or outside an existing transaction.
 /// Returns the row id of the newly inserted memory.
 pub fn insert_memory(
     conn: &Connection,
@@ -649,21 +651,33 @@ pub fn insert_memory(
     embedding: &[f32],
 ) -> Result<i64> {
     let now = utc_now_display();
-    conn.execute(
-        "INSERT INTO memories (bucket, title, content, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![bucket, title, content, now, now],
-    )?;
-    let row_id = conn.last_insert_rowid();
+    conn.execute_batch("SAVEPOINT sp_insert_memory")?;
 
-    // Serialize embedding as little-endian f32 bytes (sqlite-vec format)
-    let blob: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
-    conn.execute(
-        "INSERT INTO vec_memories (rowid, embedding) VALUES (?1, ?2)",
-        params![row_id, blob],
-    )?;
+    let result = (|| -> Result<i64> {
+        conn.execute(
+            "INSERT INTO memories (bucket, title, content, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![bucket, title, content, now, now],
+        )?;
+        let row_id = conn.last_insert_rowid();
 
-    Ok(row_id)
+        // Serialize embedding as little-endian f32 bytes (sqlite-vec format)
+        let blob: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+        conn.execute(
+            "INSERT INTO vec_memories (rowid, embedding) VALUES (?1, ?2)",
+            params![row_id, blob],
+        )?;
+        Ok(row_id)
+    })();
+
+    match &result {
+        Ok(_) => conn.execute_batch("RELEASE sp_insert_memory")?,
+        Err(_) => {
+            let _ = conn.execute_batch("ROLLBACK TO sp_insert_memory");
+            let _ = conn.execute_batch("RELEASE sp_insert_memory");
+        }
+    }
+    result
 }
 
 /// Search memories by embedding similarity, optionally filtered by bucket.
@@ -813,31 +827,46 @@ pub fn file_mtime(path: &Path) -> Result<i64> {
 }
 
 /// Insert a chunk and its embedding into the database.
+///
+/// Uses a savepoint to ensure both tables are written atomically.
+/// Safe to call inside or outside an existing transaction.
 pub fn insert_chunk(conn: &Connection, chunk: &CodeChunk, embedding: &[f32]) -> Result<i64> {
-    conn.execute(
-        "INSERT INTO chunks (file_path, language, content, start_line, end_line, file_hash, source, project_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            chunk.file_path,
-            chunk.language,
-            chunk.content,
-            chunk.start_line as i64,
-            chunk.end_line as i64,
-            chunk.file_hash,
-            chunk.source,
-            chunk.project_id,
-        ],
-    )?;
-    let row_id = conn.last_insert_rowid();
+    conn.execute_batch("SAVEPOINT sp_insert_chunk")?;
 
-    // Serialize embedding as little-endian f32 bytes (sqlite-vec format)
-    let blob: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
-    conn.execute(
-        "INSERT INTO chunk_embeddings (rowid, embedding) VALUES (?1, ?2)",
-        params![row_id, blob],
-    )?;
+    let result = (|| -> Result<i64> {
+        conn.execute(
+            "INSERT INTO chunks (file_path, language, content, start_line, end_line, file_hash, source, project_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                chunk.file_path,
+                chunk.language,
+                chunk.content,
+                chunk.start_line as i64,
+                chunk.end_line as i64,
+                chunk.file_hash,
+                chunk.source,
+                chunk.project_id,
+            ],
+        )?;
+        let row_id = conn.last_insert_rowid();
 
-    Ok(row_id)
+        // Serialize embedding as little-endian f32 bytes (sqlite-vec format)
+        let blob: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+        conn.execute(
+            "INSERT INTO chunk_embeddings (rowid, embedding) VALUES (?1, ?2)",
+            params![row_id, blob],
+        )?;
+        Ok(row_id)
+    })();
+
+    match &result {
+        Ok(_) => conn.execute_batch("RELEASE sp_insert_chunk")?,
+        Err(_) => {
+            let _ = conn.execute_batch("ROLLBACK TO sp_insert_chunk");
+            let _ = conn.execute_batch("RELEASE sp_insert_chunk");
+        }
+    }
+    result
 }
 
 /// Remove all chunks for a given file path.
@@ -948,36 +977,24 @@ pub fn search(
 }
 // Returns true when `chunk_embeddings` is a vec0 virtual table.
 // Checked via sqlite_master DDL — O(1) index lookup.
+//
+// No global cache: this process may use multiple databases (project DB +
+// per-library DBs), each at a different migration stage.  Caching `true`
+// globally would incorrectly take the vec0 SQL path for unmigrated DBs.
+// The sqlite_master query is fast and runs only once per search call.
 fn is_vec0_active(conn: &Connection) -> bool {
     use rusqlite::OptionalExtension;
-    use std::sync::atomic::{AtomicBool, Ordering};
 
-    // vec0 activation is monotonic: the DB transitions from plain → vec0 exactly
-    // once and never reverts. We cache the `true` result globally so the
-    // sqlite_master query runs at most once per process lifetime.
-    static VEC0_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-    if VEC0_ACTIVE.load(Ordering::Relaxed) {
-        return true;
-    }
-
-    let active = conn
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='chunk_embeddings'",
-            [],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()
-        .ok()
-        .flatten()
-        .map(|sql| sql.contains("USING vec0"))
-        .unwrap_or(false);
-
-    if active {
-        VEC0_ACTIVE.store(true, Ordering::Relaxed);
-    }
-
-    active
+    conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='chunk_embeddings'",
+        [],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .map(|sql| sql.contains("USING vec0"))
+    .unwrap_or(false)
 }
 
 pub fn search_scoped(

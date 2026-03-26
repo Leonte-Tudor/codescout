@@ -672,7 +672,7 @@ impl Tool for EditMarkdown {
             }
         };
 
-        std::fs::write(&resolved, &new_content)?;
+        crate::util::fs::atomic_write(&resolved, &new_content)?;
 
         if let Ok(mut cov) = ctx.section_coverage.lock() {
             cov.update_mtime(&resolved);

@@ -128,10 +128,23 @@ impl LibraryRegistry {
     }
 
     /// Resolve a relative path within a library's root directory.
+    ///
+    /// Rejects paths containing `..` components to prevent traversal outside
+    /// the library root.
     pub fn resolve_path(&self, name: &str, relative: &str) -> Result<PathBuf> {
         let entry = self
             .lookup(name)
             .ok_or_else(|| anyhow::anyhow!("Unknown library: {}", name))?;
+        // Reject directory traversal attempts.
+        let rel = std::path::Path::new(relative);
+        for component in rel.components() {
+            if matches!(component, std::path::Component::ParentDir) {
+                anyhow::bail!(
+                    "Path traversal rejected: '{}' contains '..' component",
+                    relative
+                );
+            }
+        }
         Ok(entry.path.join(relative))
     }
 

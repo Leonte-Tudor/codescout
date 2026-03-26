@@ -261,13 +261,16 @@ impl Agent {
 
         let ws = Workspace::new(root.clone(), projects);
 
-        let mut inner = self.inner.write().await;
-        if inner.home_root.is_none() {
-            inner.home_root = Some(root);
+        {
+            let mut inner = self.inner.write().await;
+            if inner.home_root.is_none() {
+                inner.home_root = Some(root);
+            }
+            inner.workspace = Some(ws);
+            inner.project_explicitly_activated = true;
         }
-        inner.workspace = Some(ws);
-        inner.project_explicitly_activated = true;
-        // Clear cached embedder — new project may use a different model
+        // Clear cached embedder — new project may use a different model.
+        // Done after dropping inner write guard to avoid nested lock acquisition.
         *self.cached_embedder.lock().await = None;
         Ok(())
     }
