@@ -44,6 +44,12 @@ Add codescout as an MCP server in Claude Code `settings.json`:
 ```
 
 Then use in Claude Code — it will route all file/symbol/search operations through codescout's tools.
+
+> **Onboarding is essential.** Before starting work on a new project, run
+> `onboarding()` — it discovers languages, reads key project files, and
+> generates a project-specific system prompt and memory files. Without it,
+> the agent has no project context and will navigate the codebase blind.
+> See the [Claude Code integration guide](docs/agents/claude-code.md) for details.
 ## Agent integrations
 
 | Agent | Guide |
@@ -61,6 +67,8 @@ Then use in Claude Code — it will route all file/symbol/search operations thro
 `Symbol navigation (9)` · `File operations (6)` · `Semantic search (3)` · `Memory (1)` · `Library navigation (1)` · `Workflow (2)` · `Config (2)` · `GitHub (5)`
 
 Supported languages: Rust, Python, TypeScript/JavaScript, Go, Java, Kotlin, C/C++, C#, Ruby.
+
+**Kotlin users:** codescout includes a built-in [LSP multiplexer](docs/manual/src/concepts/kotlin-lsp-multiplexer.md) that shares a single kotlin-lsp JVM across all instances — no configuration needed. This eliminates the 120s+ timeouts and 3-4GB RAM duplication that occur when multiple sessions target the same Kotlin project.
 
 → [Tool reference](docs/manual/src/tools/overview.md)
 

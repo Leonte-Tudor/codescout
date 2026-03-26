@@ -53,14 +53,19 @@
   - [Embedding Backends](configuration/embedding-backends.md)
 
 - [Language Support](language-support.md)
+  - [Kotlin LSP Multiplexer](concepts/kotlin-lsp-multiplexer.md)
 
 # Tool Reference
 
 - [Tools Overview](tools/overview.md)
+  - [API Naming Reference](tools/api-redesign.md)
   - [Symbol Navigation](tools/symbol-navigation.md)
   - [File Operations](tools/file-operations.md)
+    - [grep: Literal Fallback](tools/search-pattern-literal-fallback.md)
   - [Editing](tools/editing.md)
     - [Structural Edit Gate](tools/edit-file-structural-gate.md)
+    - [Document Section Editing](tools/document-section-editing.md)
+    - [Markdown Tools](tools/markdown-tools.md)
   - [Semantic Search](tools/semantic-search.md)
   - [Library Navigation](tools/library-navigation.md)
   - [Git](tools/git.md)
@@ -68,6 +73,8 @@
   - [Memory](tools/memory.md)
   - [Workflow & Config](tools/workflow-and-config.md)
     - [Read-Only `activate_project`](tools/activate-project-read-only.md)
+    - [Tool Workflows](tools/tool-workflows.md)
+    - [Onboarding Improvements](concepts/onboarding-improvements.md)
   - [GitHub](tools/github.md)
 
 # Development

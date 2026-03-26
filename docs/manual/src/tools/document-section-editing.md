@@ -1,7 +1,5 @@
 # Document Section Editing
 
-> ⚠ Experimental — may change without notice.
-
 Structured markdown operations: read, edit, and manage document sections by
 heading instead of line numbers or string matching.
 

@@ -1,7 +1,5 @@
 # Kotlin LSP Multiplexer
 
-> ⚠ Experimental — may change without notice.
-
 ## Problem
 
 Multiple codescout instances targeting the same Kotlin project cause severe
@@ -31,6 +29,16 @@ share it via a Unix socket.
           │  (single JVM)      │
           └────────────────────┘
 ```
+
+
+## Activation
+
+**The multiplexer is automatic — no configuration required.** When codescout
+detects that a project uses Kotlin, it starts or connects to a mux process
+transparently. No flags, no `project.toml` changes.
+
+The `codescout mux` sub-command runs the mux process directly (for debugging),
+but in normal use it is spawned by codescout itself.
 
 ## How It Works
 

@@ -1,7 +1,5 @@
 # search_pattern: Literal Fallback
 
-> ⚠ Experimental — may change without notice.
-
 When `search_pattern` receives a pattern that fails regex compilation,
 it now checks whether the input looks like intended regex syntax before
 returning an error.
