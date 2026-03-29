@@ -99,7 +99,7 @@ pub fn add(a: i32, b: i32) -> i32 {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "add",
+                "symbol": "add",
                 "new_body": new_body
             }),
             &ctx,
@@ -159,7 +159,7 @@ def sub(a: int, b: int) -> int:
         .call(
             json!({
                 "path": "lib.py",
-                "name_path": "add",
+                "symbol": "add",
                 "new_body": new_body
             }),
             &ctx,
@@ -224,7 +224,7 @@ export function add(a: number, b: number): number {
         .call(
             json!({
                 "path": "src/lib.ts",
-                "name_path": "add",
+                "symbol": "add",
                 "new_body": new_body
             }),
             &ctx,
@@ -288,7 +288,7 @@ func Add(a, b int) int {
         .call(
             json!({
                 "path": "math.go",
-                "name_path": "Add",
+                "symbol": "Add",
                 "new_body": new_body
             }),
             &ctx,
@@ -367,7 +367,7 @@ mod tests {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "tests/test_add_positive",
+                "symbol": "tests/test_add_positive",
                 "code": new_test,
                 "position": "after"
             }),
@@ -430,7 +430,7 @@ export function second(): number {
         .call(
             json!({
                 "path": "src/lib.ts",
-                "name_path": "first",
+                "symbol": "first",
                 "code": new_fn,
                 "position": "after"
             }),
@@ -501,7 +501,7 @@ pub fn process(items: &[i32]) -> Vec<i32> {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "Filter"
+                "symbol": "Filter"
             }),
             &ctx,
         )
@@ -524,7 +524,7 @@ pub fn process(items: &[i32]) -> Vec<i32> {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "impl Filter"
+                "symbol": "impl Filter"
             }),
             &ctx,
         )
@@ -584,7 +584,7 @@ def helper() -> str:
 
     // Remove the class
     RemoveSymbol
-        .call(json!({ "path": "lib.py", "name_path": "Filter" }), &ctx)
+        .call(json!({ "path": "lib.py", "symbol": "Filter" }), &ctx)
         .await
         .unwrap();
 
@@ -600,7 +600,7 @@ def helper() -> str:
 
     // Remove process — uses positions that may be stale
     let result = RemoveSymbol
-        .call(json!({ "path": "lib.py", "name_path": "process" }), &ctx)
+        .call(json!({ "path": "lib.py", "symbol": "process" }), &ctx)
         .await;
 
     match result {

@@ -152,7 +152,7 @@ async fn run_single(ctx: &ToolContext, exp: &LangExpectation, tool: &str) -> Res
 async fn run_symbols_overview(ctx: &ToolContext, exp: &LangExpectation) -> Result<(), String> {
     let path = exp.path.as_deref().ok_or("Missing 'path'")?;
     let result = ListSymbols
-        .call(json!({ "relative_path": path }), ctx)
+        .call(json!({ "path": path }), ctx)
         .await
         .map_err(|e| format!("Tool error: {e}"))?;
 
@@ -164,10 +164,10 @@ async fn run_symbols_overview(ctx: &ToolContext, exp: &LangExpectation) -> Resul
 
 async fn run_find_symbol(ctx: &ToolContext, exp: &LangExpectation) -> Result<(), String> {
     let symbol = exp.symbol.as_deref().ok_or("Missing 'symbol'")?;
-    let mut params = json!({ "pattern": symbol });
+    let mut params = json!({ "query": symbol });
 
     if let Some(path) = &exp.path {
-        params["relative_path"] = json!(path);
+        params["path"] = json!(path);
     }
 
     if exp.body_contains.is_some() {
@@ -216,7 +216,7 @@ async fn run_find_references(ctx: &ToolContext, exp: &LangExpectation) -> Result
             tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
         }
         match FindReferences
-            .call(json!({ "name_path": symbol, "relative_path": file }), ctx)
+            .call(json!({ "symbol": symbol, "path": file }), ctx)
             .await
         {
             Ok(result) => {

@@ -73,7 +73,7 @@ async fn rename(
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
     // Phase 2: Attempt the rename with retry for transient errors
-    let input = json!({ "name_path": name_path, "path": path, "new_name": new_name });
+    let input = json!({ "symbol": name_path, "path": path, "new_name": new_name });
     for attempt in 0u32..10 {
         match RenameSymbol.call(input.clone(), ctx).await {
             Ok(v) => return v,

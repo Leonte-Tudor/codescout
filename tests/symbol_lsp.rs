@@ -120,7 +120,7 @@ async fn replace_symbol_trusts_lsp_start_line() {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "target",
+                "symbol": "target",
                 "new_body": "    fn target() {\n        new_body();\n    }"
             }),
             &ctx,
@@ -168,7 +168,7 @@ async fn replace_symbol_trusts_lsp_start_with_paren_close() {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "target",
+                "symbol": "target",
                 "new_body": "    fn target() {\n        new_body();\n    }"
             }),
             &ctx,
@@ -207,7 +207,7 @@ async fn replace_symbol_clean_start_line() {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "foo",
+                "symbol": "foo",
                 "new_body": "fn foo() {\n    new();\n}"
             }),
             &ctx,
@@ -256,7 +256,7 @@ async fn replace_symbol_rejects_truncated_end_line() {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "target",
+                "symbol": "target",
                 "new_body": "fn target() {\n    new_body();\n}"
             }),
             &ctx,
@@ -305,7 +305,7 @@ async fn replace_symbol_round_trip_preserves_attributes() {
     let find_result = FindSymbol
         .call(
             json!({
-                "name_path": "target",
+                "symbol": "target",
                 "path": "src/lib.rs",
                 "include_body": true
             }),
@@ -329,7 +329,7 @@ async fn replace_symbol_round_trip_preserves_attributes() {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "target",
+                "symbol": "target",
                 "new_body": new_body
             }),
             &ctx,
@@ -375,7 +375,7 @@ async fn replace_symbol_round_trip_preserves_python_decorator() {
     let find_result = FindSymbol
         .call(
             json!({
-                "name_path": "target",
+                "symbol": "target",
                 "path": "src/lib.py",
                 "include_body": true
             }),
@@ -396,7 +396,7 @@ async fn replace_symbol_round_trip_preserves_python_decorator() {
         .call(
             json!({
                 "path": "src/lib.py",
-                "name_path": "target",
+                "symbol": "target",
                 "new_body": new_body
             }),
             &ctx,
@@ -436,7 +436,7 @@ async fn replace_symbol_round_trip_preserves_java_annotation() {
     let find_result = FindSymbol
         .call(
             json!({
-                "name_path": "target",
+                "symbol": "target",
                 "path": "src/Main.java",
                 "include_body": true
             }),
@@ -461,7 +461,7 @@ async fn replace_symbol_round_trip_preserves_java_annotation() {
         .call(
             json!({
                 "path": "src/Main.java",
-                "name_path": "target",
+                "symbol": "target",
                 "new_body": new_body
             }),
             &ctx,
@@ -502,7 +502,7 @@ async fn replace_symbol_round_trip_no_attributes() {
     let find_result = FindSymbol
         .call(
             json!({
-                "name_path": "target",
+                "symbol": "target",
                 "path": "src/lib.rs",
                 "include_body": true
             }),
@@ -518,7 +518,7 @@ async fn replace_symbol_round_trip_no_attributes() {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "target",
+                "symbol": "target",
                 "new_body": new_body
             }),
             &ctx,
@@ -554,7 +554,7 @@ async fn replace_symbol_round_trip_agent_changes_attribute() {
     let find_result = FindSymbol
         .call(
             json!({
-                "name_path": "target",
+                "symbol": "target",
                 "path": "src/lib.rs",
                 "include_body": true
             }),
@@ -575,7 +575,7 @@ async fn replace_symbol_round_trip_agent_changes_attribute() {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "target",
+                "symbol": "target",
                 "new_body": new_body
             }),
             &ctx,
@@ -613,7 +613,7 @@ async fn replace_symbol_round_trip_agent_changes_doc_comment() {
     let find_result = FindSymbol
         .call(
             json!({
-                "name_path": "target",
+                "symbol": "target",
                 "path": "src/lib.rs",
                 "include_body": true
             }),
@@ -634,7 +634,7 @@ async fn replace_symbol_round_trip_agent_changes_doc_comment() {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "target",
+                "symbol": "target",
                 "new_body": new_body
             }),
             &ctx,
@@ -681,7 +681,7 @@ async fn insert_code_before_with_range_start_line_inserts_above_attribute() {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "target",
+                "symbol": "target",
                 "position": "before",
                 "code": "// inserted above"
             }),
@@ -726,7 +726,7 @@ async fn find_symbol_body_start_line_field_with_attributes() {
     let result = FindSymbol
         .call(
             json!({
-                "name_path": "target",
+                "symbol": "target",
                 "path": "src/lib.rs",
                 "include_body": true
             }),
@@ -771,7 +771,7 @@ async fn find_symbol_no_body_start_line_without_include_body() {
     let result = FindSymbol
         .call(
             json!({
-                "name_path": "target",
+                "symbol": "target",
                 "path": "src/lib.rs"
             }),
             &ctx,
@@ -818,7 +818,7 @@ async fn insert_code_before_walks_past_attributes_and_doc_comments() {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "Foo",
+                "symbol": "Foo",
                 "position": "before",
                 "code": "const BEFORE: u32 = 1;\n"
             }),
@@ -869,7 +869,7 @@ async fn insert_code_before_trusts_lsp_start() {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "target",
+                "symbol": "target",
                 "position": "before",
                 "code": "    // inserted\n"
             }),
@@ -907,7 +907,7 @@ async fn insert_code_after_lands_past_symbol() {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "foo",
+                "symbol": "foo",
                 "position": "after",
                 "code": "fn bar() {}\n"
             }),
@@ -958,7 +958,7 @@ async fn insert_code_after_caps_overextended_lsp_end() {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "target",
+                "symbol": "target",
                 "position": "after",
                 "code": "// inserted\n"
             }),
@@ -1035,7 +1035,7 @@ async fn insert_code_after_rejects_truncated_end_in_nested_fn() {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "tests/target_test",
+                "symbol": "tests/target_test",
                 "position": "after",
                 "code": "    #[test]\n    fn new_test() {}\n"
             }),
@@ -1077,7 +1077,7 @@ async fn remove_symbol_caps_overextended_lsp_end() {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "target"
+                "symbol": "target"
             }),
             &ctx,
         )
@@ -1123,7 +1123,7 @@ async fn remove_symbol_uses_range_start_line_to_include_doc_comment() {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "TARGET"
+                "symbol": "TARGET"
             }),
             &ctx,
         )
@@ -1171,7 +1171,7 @@ async fn remove_symbol_heuristic_fallback_includes_doc_comment() {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "TARGET"
+                "symbol": "TARGET"
             }),
             &ctx,
         )
@@ -1216,7 +1216,7 @@ async fn remove_symbol_range_start_line_excludes_doc_comment() {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "TARGET"
+                "symbol": "TARGET"
             }),
             &ctx,
         )
@@ -1283,7 +1283,7 @@ async fn find_symbol_name_path_does_not_return_local_variable_children() {
     let result = FindSymbol
         .call(
             json!({
-                "name_path": "my_fn",
+                "symbol": "my_fn",
                 "path": "src/lib.rs"
             }),
             &ctx,
@@ -1394,7 +1394,7 @@ async fn replace_symbol_works_for_python() {
 
     ReplaceSymbol
         .call(
-            json!({ "path": "greet.py", "name_path": "greet",
+            json!({ "path": "greet.py", "symbol": "greet",
                     "new_body": "def greet():\n    return 'new'" }),
             &ctx,
         )
@@ -1427,7 +1427,7 @@ async fn replace_symbol_works_for_typescript() {
 
     ReplaceSymbol
         .call(
-            json!({ "path": "greet.ts", "name_path": "greet",
+            json!({ "path": "greet.ts", "symbol": "greet",
                     "new_body": "function greet(): string {\n    return 'new';\n}" }),
             &ctx,
         )
@@ -1457,7 +1457,7 @@ async fn replace_symbol_works_for_javascript() {
 
     ReplaceSymbol
         .call(
-            json!({ "path": "greet.js", "name_path": "greet",
+            json!({ "path": "greet.js", "symbol": "greet",
                     "new_body": "function greet() {\n    return 'new';\n}" }),
             &ctx,
         )
@@ -1487,7 +1487,7 @@ async fn replace_symbol_works_for_go() {
 
     ReplaceSymbol
         .call(
-            json!({ "path": "greet.go", "name_path": "Greet",
+            json!({ "path": "greet.go", "symbol": "Greet",
                     "new_body": "func Greet() string {\n\treturn \"new\"\n}" }),
             &ctx,
         )
@@ -1518,7 +1518,7 @@ async fn replace_symbol_works_for_java() {
 
     ReplaceSymbol
         .call(
-            json!({ "path": "Greet.java", "name_path": "greet",
+            json!({ "path": "Greet.java", "symbol": "greet",
                     "new_body": "public String greet() {\n    return \"new\";\n}" }),
             &ctx,
         )
@@ -1548,7 +1548,7 @@ async fn replace_symbol_works_for_kotlin() {
 
     ReplaceSymbol
         .call(
-            json!({ "path": "Greet.kt", "name_path": "greet",
+            json!({ "path": "Greet.kt", "symbol": "greet",
                     "new_body": "fun greet(): String {\n    return \"new\"\n}" }),
             &ctx,
         )
@@ -1578,7 +1578,7 @@ async fn replace_symbol_works_for_c() {
 
     ReplaceSymbol
         .call(
-            json!({ "path": "greet.c", "name_path": "greet",
+            json!({ "path": "greet.c", "symbol": "greet",
                     "new_body": "int greet() {\n    return 1;\n}" }),
             &ctx,
         )
@@ -1608,7 +1608,7 @@ async fn replace_symbol_works_for_cpp() {
 
     ReplaceSymbol
         .call(
-            json!({ "path": "greet.cpp", "name_path": "greet",
+            json!({ "path": "greet.cpp", "symbol": "greet",
                     "new_body": "std::string greet() {\n    return \"new\";\n}" }),
             &ctx,
         )
@@ -1642,7 +1642,7 @@ async fn replace_symbol_works_for_ruby() {
 
     ReplaceSymbol
         .call(
-            json!({ "path": "greet.rb", "name_path": "greet",
+            json!({ "path": "greet.rb", "symbol": "greet",
                     "new_body": "def greet\n  'new'\nend" }),
             &ctx,
         )
@@ -1684,7 +1684,7 @@ async fn replace_symbol_caps_overextended_lsp_end() {
         .call(
             json!({
                 "path": "src/lib.rs",
-                "name_path": "target",
+                "symbol": "target",
                 "new_body": "fn target() {\n    new_body();\n}"
             }),
             &ctx,
