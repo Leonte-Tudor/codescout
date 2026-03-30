@@ -2071,12 +2071,103 @@ impl Tool for Onboarding {
                     build_buffered_onboarding_instructions(rel_path, subagent)
                 };
 
-            let response = serde_json::json!({
-                "prompt_path": rel_path,
-                "summary": compact,
-                "sections": sections,
-                "instructions": instructions,
-            });
+            // For workspaces, also write per-project and synthesis prompt files.
+            let workspace_fields = if val["workspace_mode"].as_bool().unwrap_or(false) {
+                let projects_val = val["projects"].as_array();
+                if let Some(projects) = projects_val {
+                    let mut project_prompts = Vec::new();
+                    let all_projects: Vec<(String, Vec<String>)> = projects
+                        .iter()
+                        .filter_map(|p| {
+                            let id = p["id"].as_str()?.to_string();
+                            let langs: Vec<String> = p["languages"]
+                                .as_array()?
+                                .iter()
+                                .filter_map(|l| l.as_str().map(String::from))
+                                .collect();
+                            Some((id, langs))
+                        })
+                        .collect();
+
+                    for p in projects {
+                        let id = p["id"].as_str().unwrap_or("unknown");
+                        let project = crate::workspace::DiscoveredProject {
+                            id: id.to_string(),
+                            relative_root: std::path::PathBuf::from(
+                                p["root"].as_str().unwrap_or("."),
+                            ),
+                            languages: p["languages"]
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|l| l.as_str().map(String::from))
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                            manifest: p["manifest"].as_str().map(String::from),
+                        };
+                        let siblings: Vec<(String, Vec<String>)> = all_projects
+                            .iter()
+                            .filter(|(sid, _)| sid != id)
+                            .cloned()
+                            .collect();
+
+                        let prompt_content = build_per_project_prompt(&project, &siblings);
+                        let file_name = format!("onboarding-project-{}.md", id);
+                        let file_path = tmp_dir.join(&file_name);
+                        std::fs::write(&file_path, &prompt_content)?;
+
+                        let rel = format!(".codescout/tmp/{}", file_name);
+                        project_prompts.push((id.to_string(), rel));
+                    }
+
+                    // Write synthesis prompt
+                    let synthesis_content = build_synthesis_prompt(&all_projects);
+                    let synthesis_file = tmp_dir.join("onboarding-workspace-synthesis.md");
+                    std::fs::write(&synthesis_file, &synthesis_content)?;
+                    let synthesis_rel =
+                        ".codescout/tmp/onboarding-workspace-synthesis.md".to_string();
+
+                    // Build workspace-specific instructions (overrides the single-project ones)
+                    let ws_instructions = build_workspace_instructions(
+                        rel_path,
+                        &project_prompts,
+                        &synthesis_rel,
+                        subagent,
+                    );
+
+                    Some((project_prompts, synthesis_rel, ws_instructions))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let response = if let Some((project_prompts, synthesis_path, ws_instructions)) =
+                workspace_fields
+            {
+                let pp_json: Vec<Value> = project_prompts
+                    .iter()
+                    .map(|(id, path)| serde_json::json!({ "id": id, "path": path }))
+                    .collect();
+
+                serde_json::json!({
+                    "prompt_path": rel_path,
+                    "summary": compact,
+                    "sections": sections,
+                    "project_prompts": pp_json,
+                    "synthesis_prompt_path": synthesis_path,
+                    "instructions": ws_instructions,
+                })
+            } else {
+                serde_json::json!({
+                    "prompt_path": rel_path,
+                    "summary": compact,
+                    "sections": sections,
+                    "instructions": instructions,
+                })
+            };
 
             return Ok(vec![rmcp::model::Content::text(
                 serde_json::to_string_pretty(&response)
@@ -6452,6 +6543,64 @@ mod tests {
         assert!(
             file_content.contains("Workspace Survey"),
             "file content should include workspace instructions"
+        );
+    }
+
+    #[tokio::test]
+    async fn onboarding_call_content_workspace_writes_per_project_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        setup_workspace_dirs(root);
+
+        let ctx = project_ctx_at(root).await;
+        let content = Onboarding
+            .call_content(json!({ "force": true }), &ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(content.len(), 1);
+        let text = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        let parsed: serde_json::Value = serde_json::from_str(text).expect("must be JSON");
+
+        // Must have project_prompts array
+        let project_prompts = parsed["project_prompts"]
+            .as_array()
+            .expect("workspace must have project_prompts");
+        assert!(
+            project_prompts.len() >= 2,
+            "must have at least 2 project prompts"
+        );
+
+        // Each entry must have id and path
+        for pp in project_prompts {
+            let id = pp["id"].as_str().expect("must have id");
+            let path = pp["path"].as_str().expect("must have path");
+            assert!(
+                path.contains("onboarding-project-"),
+                "path must contain project prefix"
+            );
+            // File must exist
+            assert!(
+                root.join(path).exists(),
+                "prompt file must exist for {}",
+                id
+            );
+        }
+
+        // Must have synthesis_prompt_path
+        let synthesis_path = parsed["synthesis_prompt_path"]
+            .as_str()
+            .expect("must have synthesis_prompt_path");
+        assert!(
+            root.join(synthesis_path).exists(),
+            "synthesis file must exist"
+        );
+
+        // Instructions must mention read_markdown
+        let instructions = parsed["instructions"].as_str().unwrap_or("");
+        assert!(
+            instructions.contains("read_markdown"),
+            "instructions must reference read_markdown"
         );
     }
 
