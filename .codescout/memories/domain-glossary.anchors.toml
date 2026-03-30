@@ -3,7 +3,7 @@
 
 [[anchors]]
 path = "src/tools/output.rs"
-hash = "e2919dd4da190482be369fe972f3666cfc58aa1f329ce78451e85df9d6f4a2f8"
+hash = "3780a914063ee4973c233c17fd9299424725ea08cd775e0e4d2415e4d414a88a"
 
 [[anchors]]
 path = "docs/PROGRESSIVE_DISCOVERABILITY.md"
@@ -11,39 +11,55 @@ hash = "c7b155b764d3154e145d819c9b0b38d50ffe168ec37eb1f24c3c6c6273bc7b9f"
 
 [[anchors]]
 path = "src/tools/mod.rs"
-hash = "aeb8e462af9460d96e2af2180baa982f3d1b354f293a758050157006e554d74f"
+hash = "c8a520ca89b95465e9c474029b884082dd79550c677e83d7e6537467ad756220"
 
 [[anchors]]
 path = "CLAUDE.md"
-hash = "60ef5cea410c1f47f87d513462f0b65c32966a72d48b6d162ac20aa9a043cdf9"
+hash = "15250c4921a4a5605a97723011126ec74a0d7b1af6a2c5456718f4ba8cef52c3"
 
 [[anchors]]
 path = "src/tools/output_buffer.rs"
-hash = "ef5ae3d19c9ed66b84de0ca3f24e4a5c1d233ff4c26d86695a0a7c4939b8f797"
+hash = "feda57465e6be6a2acdecc32f57fd6d5dbdf30b8af7f6033a174995d8c7782f2"
 
 [[anchors]]
 path = "src/lsp/ops.rs"
-hash = "8529c3cd07b4f443526fe631ad66c0754c264a21a7096bf78e9b7852c5ecdc7d"
-
-[[anchors]]
-path = ".codescout/project.toml"
-hash = "3ad83f60b3f8098255e9572014c5e9c374f420563b72d32391c3c0a76d99c154"
+hash = "5575da8872318189dd02bee674bd3ba8e841ea7e01261dc5abfd0c956b8f1b8f"
 
 [[anchors]]
 path = "src/tools/github.rs"
-hash = "157dc687e59d69ee1b4d131412facd775d34f7d65df6e7c75a21b809c3103361"
+hash = "7d02dab1e417c5a31bd316debc6cb1f2ee88c21fc417bd832baf80f182f7476f"
+
+[[anchors]]
+path = "src/tools/section_coverage.rs"
+hash = "2c06d7198e7678c5c941b4a97586593e2e89ed4b71d5d7fb37278a6671a1d538"
+
+[[anchors]]
+path = "src/library/auto_register.rs"
+hash = "f61d7a29eb11ee9f50a852d4a11ebdcef4c3ef2fc713e354d0c4a8ba506e57af"
+
+[[anchors]]
+path = "Cargo.toml"
+hash = "47e214538bc553377ed684268b9ea69bc4ee8d75dabe93835431467340cab686"
 
 [[anchors]]
 path = "src/memory/classify.rs"
 hash = "30ff0aa1b4aa14154992e63220a0a03ad18894c3c6931324377def53676877bf"
 
 [[anchors]]
+path = "src/workspace.rs"
+hash = "90870d7ac4e66e096c5da227fef429d944d2c98e6ebbe2d30bc9cdc30987e0bc"
+
+[[anchors]]
+path = ".codescout/project.toml"
+hash = "fa9ecb6aa7911613fe388edd99ecf043e3def8ff159074b2945a93c7f3056834"
+
+[[anchors]]
 path = "src/tools/workflow.rs"
-hash = "378c0ecdcbdd80d251bdc620c1e6b1e45c89c76d3c1d0ffc521f4d488aa77fbd"
+hash = "e685306015a85b8754f4cc47376d3b8bb930539824cc8e3f2f77ffac57033419"
 
 [[anchors]]
 path = "src/agent.rs"
-hash = "933e2d576f61d6f6d42eb085ff09c351f201fa720bc89d73b3fdf2239bcb63c3"
+hash = "d3c7c3877dd051354a4029cf47ce80bc45a9105b9144b1e757f6d71bf7e9f399"
 
 [[anchors]]
 path = "src/library/scope.rs"
@@ -55,8 +71,8 @@ hash = "72cb96da5382cf70741ed8a61914e9eed3691497ffb101f2a9b85d91d5eefb86"
 
 [[anchors]]
 path = "src/server.rs"
-hash = "30c287ff0735328b415309e3d75971a8b59fc3bcd6b2c89776b93d8b5d108947"
+hash = "8aa94e587e83bcca72606eaae5618a4ecbc9307b866ad5cd802cd4001dacd4d8"
 
 [[anchors]]
 path = "src/memory/anchors.rs"
-hash = "f62d493066a19f8a593739e90038c7780224f93c7e9248864fcbc7409f01e6c4"
+hash = "9f3cb6c2d04ba577551d61c0243faeb06f1e4715d6ab7b9fa223667d46d11ad4"

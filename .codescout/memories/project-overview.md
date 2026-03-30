@@ -2,15 +2,15 @@
 
 ## Purpose
 Rust MCP server giving LLMs IDE-grade code intelligence: symbol navigation via LSP,
-semantic search via embeddings, file ops, git integration, persistent memory, and GitHub
-integration. Designed for use with Claude Code; a companion routing plugin (in
-`../claude-plugins/code-explorer-routing/`) enforces that LLMs use codescout tools
-rather than raw shell reads on source files.
+semantic search via embeddings, file ops, markdown editing, git integration, persistent
+memory, and shell command execution. Designed for use with Claude Code; a companion
+routing plugin (`../claude-plugins/code-explorer-routing/`) enforces that LLMs use
+codescout tools rather than raw shell reads on source files.
 
 ## Tech Stack
 - **Language:** Rust 1.75+ (MSRV enforced in CI)
-- **MCP SDK:** `rmcp 0.1` (stdio + SSE transports)
-- **LSP:** JSON-RPC clients for 9 languages via `lsp-types 0.97`
+- **MCP SDK:** `rmcp 1.3` (stdio + SSE + streamable-HTTP transports; elicitation support)
+- **LSP:** JSON-RPC clients for 9 languages via `lsp-types 0.97`; Unix socket mux for multi-client LSP sharing
 - **AST:** `tree-sitter` with grammars for Rust/Python/TypeScript/Go/Java/Kotlin
 - **Embeddings:** SQLite via `rusqlite` (bundled); `remote-embed` (reqwest, Ollama/OpenAI-compatible) or `local-embed` (fastembed ONNX) — feature flags
 - **GitHub:** shells to `gh` CLI subprocess — requires `gh` installed and authenticated
@@ -20,13 +20,14 @@ rather than raw shell reads on source files.
 - Rust stable ≥ 1.75
 - An LSP server per language used (rust-analyzer, pyright, typescript-language-server, etc.)
 - For semantic search: Ollama or compatible embedding API (or `local-embed` feature)
-- For GitHub tools: `gh` CLI installed and authenticated (`gh auth login`)
+- For GitHub tools: `gh` CLI installed and authenticated (`gh auth login`); `github_enabled = true` in project.toml
 - No required env vars — all config is per-project in `.codescout/project.toml`
 
 ## Key Feature Flags
-- `default`: remote-embed + dashboard
+- `default`: remote-embed + dashboard + http
 - `local-embed`: ONNX-based local embeddings (downloads model ~20–300MB on first use)
+- `http`: streamable HTTP transport for multi-session MCP
 - `e2e-*`: integration tests requiring real LSP servers installed
 
 ## Current Version
-v0.2.2 (see `Cargo.toml`). Published to crates.io from `master` branch only.
+v0.7.2 (see `Cargo.toml`). Published to crates.io from `master` branch only.

@@ -14,6 +14,9 @@ cargo test -- --nocapture
 # Run integration tests only
 cargo test --test integration
 
+# Run bug regression tests (requires real LSP servers)
+cargo test --test bug_regression -- --ignored
+
 # Run LSP e2e tests (requires real LSP servers installed)
 cargo test --features e2e-rust --test symbol_lsp
 cargo test --features e2e-rust --test rename_symbol
@@ -23,6 +26,9 @@ cargo build --features local-embed --no-default-features
 
 # Run with no optional features (minimal build)
 cargo build --no-default-features
+
+# Run with HTTP transport (multi-session MCP)
+cargo build --features http
 
 # Check MSRV compatibility (Rust 1.75)
 rustup run 1.75 cargo check

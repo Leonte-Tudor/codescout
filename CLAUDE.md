@@ -6,15 +6,7 @@ You are a proficient Rust developer. You follow all known good/scalable patterns
 
 ## Development Commands
 
-```bash
-cargo build                        # Build (dev)
-cargo build --release              # Build release binary (required before testing via MCP)
-cargo test                         # Run tests
-cargo clippy -- -D warnings        # Lint
-cargo fmt                          # Format
-cargo run -- start --project .     # Run MCP server (stdio)
-cargo run -- index --project .     # Build embedding index
-```
+See codescout memory `development-commands` for the full command reference.
 
 **Always run `cargo fmt`, `cargo clippy`, and `cargo test` before completing any task.**
 
@@ -206,6 +198,9 @@ Cursor, custom agents). In particular:
 
 ## Testing Patterns
 
+See codescout memory `conventions` (Testing Patterns section) for test file locations,
+helpers, and mock patterns.
+
 **Cache-invalidation tests use a three-query sandwich** — not two. The structure is:
 1. Query → record baseline state
 2. Mutate the underlying data (disk, cache, external system) without going through the normal notification path
@@ -219,19 +214,14 @@ See `did_change_refreshes_stale_symbol_positions` in `src/lsp/client.rs` for the
 
 ## Key Patterns
 
-**Tool trait** (`src/tools/mod.rs`): Each tool is a struct implementing `name()`, `description()`, `input_schema()`, `async call(Value, &ToolContext) -> Result<Value>`. 29 tools registered. All use `#[async_trait]`.
+See codescout memory `architecture` for the full tool dispatch pipeline, ToolContext
+fields, LSP lifecycle, embedding pipeline, and output routing.
 
-**Tool↔MCP bridge** (`src/server.rs`): Tools registered as `Vec<Arc<dyn Tool>>`, dispatched dynamically in `call_tool`. Errors are routed through `route_tool_error`:
-- `RecoverableError` (`src/tools/mod.rs`) → `isError: false` with JSON `{"error":"…","hint":"…"}` — LLM sees the problem and a corrective hint, **sibling parallel calls are not aborted by Claude Code**.
-- Any other `anyhow::Error` → `isError: true` (fatal; something truly broke).
-
-Use `RecoverableError` for expected, input-driven failures (path not found, unsupported file type, empty glob). Use plain `anyhow::bail!` for genuine tool failures (LSP crash, security violation, programming error).
-
-**`ToolContext`** fields: `agent` (project state + config access), `lsp` (LSP client pool), `output_buffer` (session-scoped `@cmd_*`/`@file_*` handle store), `progress` (MCP progress reporter).
-
-**Config** (`.codescout/project.toml`): Per-project settings including embedding model, chunk size, ignored paths. `ProjectConfig::load_or_default()` handles missing config gracefully.
-
-**Embedding pipeline**: `chunker::split()` → `RemoteEmbedder::embed()` → `index::insert_chunk()` → `index::search()` (cosine similarity). All stored in `.codescout/embeddings.db`. Incremental updates via `find_changed_files()`: git diff → mtime → SHA-256 fallback chain. `semantic_search` warns when the index is behind HEAD.
+Key rules (not just facts):
+- `RecoverableError` for expected, input-driven failures → `isError: false` (sibling calls survive)
+- `anyhow::bail!` for genuine tool failures → `isError: true` (fatal)
+- Write tools return `json!("ok")` — never echo content back
+- `call_content()` is the MCP entry point, NOT `call()` — it handles buffer routing
 
 ## Prompt Surface Consistency
 
@@ -327,20 +317,8 @@ See codescout memory `language-patterns` (Rust section) for anti-patterns and id
 
 ## Language-Specific LSP Issues
 
-### Kotlin (kotlin-lsp, JetBrains)
-
-**Single workspace session:** kotlin-lsp allows only one LSP process per project
-directory. A second instance fails with *"Multiple editing sessions for one
-workspace are not supported yet"*. codescout detects this on stderr and fails
-fast instead of retrying for 120s.
-
-**Cold start:** JVM bootstrap + Gradle import takes 8–15s. codescout retries the
-LSP initialize handshake (5 × 3s backoff = ~30s window) to handle -32800
-(RequestCancelled) during this phase.
-
-**Per-instance isolation:** Each codescout process passes
-`--system-path=/tmp/codescout-<PID>-kotlin-lsp` to avoid IntelliJ platform
-`.app.lock` contention between instances.
+See codescout memory `gotchas` (LSP section) for Kotlin multi-instance conflicts,
+cold start behavior, circuit breaker, and LSP mux details.
 
 **Tracking:** `docs/issues/2026-03-24-kotlin-lsp-concurrent-instances.md`
 

@@ -7,9 +7,9 @@ This supplements with naming tables and testing patterns discovered in code.
 
 | Entity | Convention | Example |
 |---|---|---|
-| Tool struct | PascalCase noun | `FindSymbol`, `ListSymbols`, `EditFile` |
-| Tool name (MCP) | snake_case verb_noun | `"find_symbol"`, `"list_symbols"`, `"edit_file"` |
-| Tool file | category noun | `symbol.rs`, `file.rs`, `memory.rs`, `github.rs` |
+| Tool struct | PascalCase noun | `FindSymbol`, `ListSymbols`, `EditFile`, `EditMarkdown` |
+| Tool name (MCP) | snake_case verb_noun | `"find_symbol"`, `"edit_markdown"`, `"read_markdown"` |
+| Tool file | category noun | `symbol.rs`, `file.rs`, `memory.rs`, `markdown.rs` |
 | LSP ops trait | `*Ops` suffix | `LspClientOps` |
 | LSP provider | `*Provider` suffix | `LspProvider` |
 | Mock types | `Mock*` prefix | `MockLspClient`, `MockLspProvider` |
@@ -34,7 +34,10 @@ The `hint` field appears in the JSON response body — give actionable next step
 
 - **Unit tests**: inline `#[cfg(test)] mod tests` at bottom of each file
 - **Integration tests**: `tests/integration.rs` — multi-tool workflows via `project_with_files()`
-  helper that creates a `TempDir` + `ToolContext` with real `Agent` + `LspManager`
+  helper that creates a `TempDir` + `ToolContext` with real `Agent` + `LspManager::new_arc()`
+  and `SectionCoverage::new()`. `ToolContext` now requires `section_coverage` field.
+- **Bug regression tests**: `tests/bug_regression.rs` — `#[ignore]` tests requiring real LSP
+  servers; run with `cargo test --test bug_regression -- --ignored`
 - **LSP tests**: `tests/symbol_lsp.rs` and `tests/rename_symbol.rs` — behind `e2e-*` features;
   use `MockLspClient` with pre-programmed symbol responses via `ctx_with_mock()` helper
 - **Cache-invalidation tests**: three-query sandwich (see `CLAUDE.md § Testing Patterns`)
@@ -51,6 +54,25 @@ Adding a new tool requires 6 locations (see `MEMORY.md § New Tool Checklist`):
 4. If write tool: add to `check_tool_access` match arm in `src/util/path_security.rs`
 5. If write tool: add to corresponding `*_disabled_blocks_*` security test
 6. Tool description in `src/prompts/server_instructions.md`
+
+Current write tools gated by `file_write_enabled`:
+`create_file`, `edit_file`, `replace_symbol`, `insert_code`, `rename_symbol`,
+`remove_symbol`, `register_library`, `edit_markdown`
+
+## ToolContext Construction
+
+`ToolContext` now has 6 fields (added `peer` and `section_coverage` since earlier versions):
+```rust
+ToolContext {
+    agent,
+    lsp: LspManager::new_arc(),
+    output_buffer: Arc::new(OutputBuffer::new(20)),
+    progress: None,
+    peer: None,
+    section_coverage: Arc::new(Mutex::new(SectionCoverage::new())),
+}
+```
+Omitting either new field will cause a compile error in tests.
 
 ## Code Quality
 
