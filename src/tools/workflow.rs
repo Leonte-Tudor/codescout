@@ -919,21 +919,78 @@ project state is unchanged.",
     s
 }
 
-/// Build the short dispatch instructions for the main agent.
-/// This is the only part the main agent needs to read — ~200 tokens.
-fn build_main_agent_instructions() -> String {
-    "\
+// ── Client detection ──────────────────────────────────────────────────────────
+
+/// Extract the MCP client name from the peer info (set during initialize handshake).
+fn client_name(ctx: &ToolContext) -> Option<String> {
+    ctx.peer
+        .as_ref()
+        .and_then(|p| p.peer_info())
+        .map(|info| info.client_info.name.clone())
+}
+
+/// Returns true if the client is known to support subagent spawning.
+/// Conservative: only Claude Code for now. Add others as they gain support.
+fn is_subagent_capable(name: Option<&str>) -> bool {
+    name.is_some_and(|n| n.to_lowercase().contains("claude"))
+}
+
+/// Extract level-2 headings from markdown content with numbered line counts.
+fn build_heading_map(prompt: &str) -> Vec<String> {
+    let lines: Vec<&str> = prompt.lines().collect();
+    let mut headings: Vec<(String, usize)> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if line.starts_with("## ") {
+            headings.push((line.to_string(), i));
+        }
+    }
+    headings
+        .iter()
+        .enumerate()
+        .map(|(idx, (heading, start))| {
+            let end = headings
+                .get(idx + 1)
+                .map(|(_, s)| *s)
+                .unwrap_or(lines.len());
+            format!("{}. {} ({} lines)", idx + 1, heading, end - start)
+        })
+        .collect()
+}
+
+/// Build dispatch instructions for full onboarding, adapted to client capability.
+fn build_buffered_onboarding_instructions(prompt_path: &str, subagent_capable: bool) -> String {
+    let p = prompt_path;
+    let checklist = format!(
+        "\
+Read these phases in order — complete each before moving to the next:
+
+  1. read_markdown(\"{p}\", heading=\"## THE IRON LAW\")
+  2. read_markdown(\"{p}\", headings=[\"## Phase 0: Embedding Model Selection\", \"## Phase 1: Semantic Index Check\"])
+  3. read_markdown(\"{p}\", heading=\"## Phase 2: Explore the Code\")
+     → Execute ALL exploration steps before continuing
+  4. read_markdown(\"{p}\", headings=[\"## Red Flags — STOP and Return to Phase 2\", \"## Common Rationalizations\"])
+  5. read_markdown(\"{p}\", heading=\"## Phase 3: Write the Memories (Single-Project Mode)\")
+     → Write all memories before continuing
+  6. read_markdown(\"{p}\", headings=[\"## After Everything Is Created\", \"## Gathered Project Data\", \"## Return Contract\"])
+
+For workspace mode, read these after step 2 (before step 3):
+  read_markdown(\"{p}\", headings=[\"## Workspace Survey — Breadth-First\", \"## Workspace Deep Dives — Subagent Per-Project\"])
+And after step 4 (before step 5):
+  read_markdown(\"{p}\", heading=\"## Workspace Memory Synthesis\")"
+    );
+
+    if subagent_capable {
+        format!(
+            "\
 Onboarding required — this project has not been explored yet.
 
 Spawn a general-purpose subagent with model=sonnet to perform the exploration and \
-memory writing. Pass the content of the `subagent_prompt` field as the subagent's \
-task prompt. Do NOT read or summarize `subagent_prompt` yourself — pass it through \
-as-is.
+memory writing. The subagent must read the onboarding prompt by phase — \
+copy-paste these exact commands:
 
-The subagent will:
-1. Explore the codebase thoroughly (symbol surveys, code reading, data flow tracing)
-2. Write project memories (architecture, conventions, gotchas, etc.)
-3. Return an exploration summary and list of memories written
+{checklist}
+
+Do NOT read the onboarding prompt yourself — let the subagent handle it.
 
 When the subagent completes, report its summary to the user. Then read whichever \
 memories are relevant to the user's current task via memory(action=\"read\", topic=...).
@@ -941,15 +998,56 @@ memories are relevant to the user's current task via memory(action=\"read\", top
 Wait for the subagent to complete before continuing — onboarding is a prerequisite \
 for all subsequent work.
 
-Do NOT attempt to perform the exploration yourself — it will exhaust your context \
-window. The subagent handles it in isolation.
+If you cannot spawn subagents, follow the checklist yourself."
+        )
+    } else {
+        format!(
+            "\
+Onboarding required — this project has not been explored yet.
 
-If the subagent fails, report the error to the user. Do NOT fall back to exploring \
-inline — suggest the user re-run onboarding or check the MCP server status.
+{checklist}
 
-If you cannot spawn subagents, execute the subagent prompt directly — but be aware \
-this will consume significant context."
-        .to_string()
+Follow each phase's instructions to explore the codebase and write project memories."
+        )
+    }
+}
+
+/// Build dispatch instructions for version refresh, adapted to client capability.
+fn build_buffered_refresh_instructions(
+    prompt_path: &str,
+    stored: Option<u32>,
+    current: u32,
+    subagent_capable: bool,
+) -> String {
+    let stored_str = stored
+        .map(|v| format!("v{v}"))
+        .unwrap_or_else(|| "pre-versioning".to_string());
+
+    if subagent_capable {
+        format!(
+            "\
+System prompt outdated ({stored_str} → v{current}) — a lightweight refresh is needed.
+
+Spawn a general-purpose subagent with model=sonnet to regenerate the system prompt. \
+The subagent must:
+  read_markdown(\"{prompt_path}\")  — read the full refresh prompt (it's short)
+
+The subagent will re-read memories and regenerate system-prompt.md without \
+re-exploring the codebase.
+
+When the subagent completes, continue with the user's original task."
+        )
+    } else {
+        format!(
+            "\
+System prompt outdated ({stored_str} → v{current}) — a lightweight refresh is needed.
+
+Read the refresh prompt:
+  read_markdown(\"{prompt_path}\")
+
+Follow it to re-read memories and regenerate system-prompt.md."
+        )
+    }
 }
 
 /// Build the subagent task prompt for refreshing the system prompt.
@@ -984,31 +1082,6 @@ Steps:
 
 When done, report: \"System prompt refreshed (vN → vM).\"",
         memory_reads = memory_reads,
-    )
-}
-
-/// Build the short dispatch instructions for the main agent when a prompt refresh is needed.
-///
-/// Analogous to `build_main_agent_instructions` but for the refresh path.
-fn build_prompt_refresh_main_instructions(stored: Option<u32>, current: u32) -> String {
-    let stored_str = stored
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "pre-versioning".to_string());
-
-    format!(
-        "\
-System prompt outdated (v{stored_str} → v{current}) — a lightweight refresh is needed.
-
-Spawn a general-purpose subagent with model=sonnet to regenerate the system prompt. \
-Pass the content of the `subagent_prompt` field as the subagent's task prompt. \
-Do NOT read or summarize `subagent_prompt` yourself — pass it through as-is.
-
-The subagent will re-read memories and regenerate system-prompt.md without \
-re-exploring the codebase.
-
-When the subagent completes, continue with the user's original task.",
-        stored_str = stored_str,
-        current = current,
     )
 }
 
@@ -1156,8 +1229,6 @@ impl Tool for Onboarding {
             ctx.agent.reload_config_if_project_toml(&config_path).await;
 
             let subagent_prompt = build_prompt_refresh_subagent_prompt(&memories);
-            let main_agent_instructions =
-                build_prompt_refresh_main_instructions(stored_version, ONBOARDING_VERSION);
 
             return Ok(json!({
                 "onboarded": true,
@@ -1168,7 +1239,6 @@ impl Tool for Onboarding {
                 "languages": config_languages,
                 "config_created": false,
                 "subagent_prompt": subagent_prompt,
-                "main_agent_instructions": main_agent_instructions,
             }));
         }
 
@@ -1241,8 +1311,6 @@ impl Tool for Onboarding {
                     ctx.agent.reload_config_if_project_toml(&config_path).await;
 
                     let subagent_prompt = build_prompt_refresh_subagent_prompt(&memories);
-                    let main_agent_instructions =
-                        build_prompt_refresh_main_instructions(stored_version, ONBOARDING_VERSION);
 
                     return Ok(json!({
                         "onboarded": true,
@@ -1252,7 +1320,6 @@ impl Tool for Onboarding {
                         "languages": config_languages,
                         "config_created": false,
                         "subagent_prompt": subagent_prompt,
-                        "main_agent_instructions": main_agent_instructions,
                     }));
                 }
 
@@ -1638,8 +1705,6 @@ impl Tool for Onboarding {
             sp
         };
 
-        let main_agent_instructions = build_main_agent_instructions();
-
         // Optimistic version write for full onboarding (force=true on existing project)
         ctx.agent
             .with_project(|p| {
@@ -1670,7 +1735,6 @@ impl Tool for Onboarding {
             "workspace_mode": workspace_mode,
             "projects": discovered_projects,
             "subagent_prompt": subagent_prompt,
-            "main_agent_instructions": main_agent_instructions,
         }))
     }
 
@@ -1681,37 +1745,53 @@ impl Tool for Onboarding {
     ) -> anyhow::Result<Vec<rmcp::model::Content>> {
         let val = self.call(input, ctx).await?;
 
-        // Two-block response: full onboarding, version refresh, or explicit refresh_prompt.
-        // Check for subagent_prompt FIRST — version refresh and explicit refresh both set
-        // `onboarded: true` AND `subagent_prompt`, so the onboarded check alone would send
-        // them down the single-block fast path and discard the subagent prompt.
-        if val.get("subagent_prompt").is_some() {
-            // Block 1: compact metadata + main agent dispatch instructions
+        // If there's a subagent prompt, write it to a temp markdown file and return
+        // compact instructions with heading navigation.
+        if let Some(prompt) = val["subagent_prompt"].as_str() {
             let compact = format_onboarding(&val);
-            let instructions = val["main_agent_instructions"].as_str().unwrap_or("");
-            let block1 = format!("{}\n\n{}", compact, instructions);
 
-            // Block 2: subagent prompt with delimiter (pass-through blob)
-            let subagent_prompt = val["subagent_prompt"].as_str().unwrap_or("");
-            let block2 = format!(
-                "--- ONBOARDING SUBAGENT PROMPT (pass as-is to subagent) ---\n\n{}",
-                subagent_prompt
-            );
+            let root = ctx.agent.require_project_root().await?;
+            let tmp_dir = root.join(".codescout").join("tmp");
+            std::fs::create_dir_all(&tmp_dir)?;
+            let prompt_path = tmp_dir.join("onboarding-prompt.md");
+            std::fs::write(&prompt_path, prompt)?;
+            let rel_path = ".codescout/tmp/onboarding-prompt.md";
+            let sections = build_heading_map(prompt);
 
-            return Ok(vec![
-                rmcp::model::Content::text(block1),
-                rmcp::model::Content::text(block2),
-            ]);
+            let name = client_name(ctx);
+            let subagent = is_subagent_capable(name.as_deref());
+
+            // Determine which instruction builder based on whether this is a
+            // version refresh (has stored_version) or full onboarding.
+            let instructions =
+                if val.get("version_stale").is_some() || val.get("explicit_refresh").is_some() {
+                    let stored = val["stored_version"].as_u64().map(|v| v as u32);
+                    let current = val["current_version"].as_u64().unwrap_or(0) as u32;
+                    build_buffered_refresh_instructions(rel_path, stored, current, subagent)
+                } else {
+                    build_buffered_onboarding_instructions(rel_path, subagent)
+                };
+
+            let response = serde_json::json!({
+                "prompt_path": rel_path,
+                "summary": compact,
+                "sections": sections,
+                "instructions": instructions,
+            });
+
+            return Ok(vec![rmcp::model::Content::text(
+                serde_json::to_string_pretty(&response)
+                    .unwrap_or_else(|_| format!("{{\"prompt_path\":\"{rel_path}\"}}")),
+            )]);
         }
 
-        // Single-block fast path: already-onboarded status with memory listing.
-        // (The previous `val.as_str()` guard was stale — call() never returns a bare string.)
+        // Single-block fast path: already-onboarded status.
         if val["onboarded"].as_bool().unwrap_or(false) {
             let msg = val["message"].as_str().unwrap_or("Already onboarded.");
             return Ok(vec![rmcp::model::Content::text(msg.to_string())]);
         }
 
-        // Fallback: shouldn't normally be reached, but handle gracefully.
+        // Fallback
         let compact = format_onboarding(&val);
         Ok(vec![rmcp::model::Content::text(compact)])
     }
@@ -2868,31 +2948,6 @@ mod tests {
     }
 
     #[test]
-    fn main_agent_instructions_contains_dispatch_command() {
-        let instructions = build_main_agent_instructions();
-        assert!(
-            instructions.contains("subagent"),
-            "must mention subagent dispatch"
-        );
-        assert!(
-            instructions.contains("model=sonnet"),
-            "must specify sonnet model"
-        );
-        assert!(
-            instructions.contains("subagent_prompt"),
-            "must reference subagent_prompt field"
-        );
-        assert!(
-            instructions.contains("Do NOT"),
-            "must include anti-rationalization guard"
-        );
-        assert!(
-            instructions.contains("cannot spawn subagents"),
-            "must include fallback for non-subagent clients"
-        );
-    }
-
-    #[test]
     fn version_needs_refresh_when_none() {
         assert!(onboarding_version_stale(None));
     }
@@ -2924,12 +2979,110 @@ mod tests {
     }
 
     #[test]
-    fn prompt_refresh_main_instructions_contains_version_info() {
-        let instructions = build_prompt_refresh_main_instructions(Some(1), 2);
-        assert!(instructions.contains("subagent"));
-        assert!(instructions.contains("model=sonnet"));
-        assert!(instructions.contains("subagent_prompt"));
+    fn is_subagent_capable_detects_claude() {
+        assert!(is_subagent_capable(Some("claude-code")));
+        assert!(is_subagent_capable(Some("Claude Code")));
+        assert!(is_subagent_capable(Some("claude-code-ide")));
+        assert!(!is_subagent_capable(Some("cursor")));
+        assert!(!is_subagent_capable(Some("copilot")));
+        assert!(!is_subagent_capable(Some("windsurf")));
+        assert!(!is_subagent_capable(None));
+    }
+
+    #[test]
+    fn build_heading_map_extracts_level2_headings() {
+        let prompt = "# Title\n\nIntro text.\n\n## Phase 1: Explore\nStep 1.\nStep 2.\nMore.\n\n## Phase 2: Write\nA.\nB.\n\n## After\nFinal.\n";
+        let sections = build_heading_map(prompt);
+        assert_eq!(sections.len(), 3);
+        assert!(sections[0].starts_with("1. ## Phase 1: Explore"));
+        assert!(sections[0].contains("lines)"));
+        assert!(sections[1].starts_with("2. ## Phase 2: Write"));
+        assert!(sections[2].starts_with("3. ## After"));
+    }
+
+    #[test]
+    fn build_buffered_onboarding_instructions_claude() {
+        let instructions =
+            build_buffered_onboarding_instructions(".codescout/tmp/onboarding-prompt.md", true);
+        assert!(
+            instructions.contains(".codescout/tmp/onboarding-prompt.md"),
+            "must contain the prompt path"
+        );
+        assert!(
+            instructions.contains("subagent"),
+            "Claude instructions must mention subagent"
+        );
+        assert!(
+            instructions.contains("read_markdown"),
+            "must tell how to read via read_markdown"
+        );
+        // Must have numbered checklist
+        assert!(
+            instructions.contains("1. read_markdown"),
+            "must have numbered phase checklist"
+        );
+        assert!(
+            instructions.contains("## THE IRON LAW"),
+            "checklist must start with THE IRON LAW"
+        );
+        assert!(
+            instructions.contains("## Return Contract"),
+            "checklist must end with Return Contract"
+        );
+    }
+
+    #[test]
+    fn build_buffered_onboarding_instructions_generic() {
+        let instructions =
+            build_buffered_onboarding_instructions(".codescout/tmp/onboarding-prompt.md", false);
+        assert!(
+            instructions.contains(".codescout/tmp/onboarding-prompt.md"),
+            "must contain the prompt path"
+        );
+        assert!(
+            !instructions.contains("subagent"),
+            "generic instructions must NOT mention subagent"
+        );
+        assert!(
+            instructions.contains("read_markdown"),
+            "must tell how to read via read_markdown"
+        );
+        // Must have numbered checklist
+        assert!(
+            instructions.contains("1. read_markdown"),
+            "must have numbered phase checklist"
+        );
+    }
+
+    #[test]
+    fn build_buffered_refresh_instructions_claude() {
+        let instructions = build_buffered_refresh_instructions(
+            ".codescout/tmp/onboarding-prompt.md",
+            Some(1),
+            2,
+            true,
+        );
+        assert!(instructions.contains(".codescout/tmp/onboarding-prompt.md"));
         assert!(instructions.contains("v1"));
+        assert!(instructions.contains("v2"));
+        assert!(instructions.contains("subagent"));
+        assert!(instructions.contains("read_markdown"));
+        assert!(!instructions.contains("read_file"));
+    }
+
+    #[test]
+    fn build_buffered_refresh_instructions_generic() {
+        let instructions = build_buffered_refresh_instructions(
+            ".codescout/tmp/onboarding-prompt.md",
+            None,
+            2,
+            false,
+        );
+        assert!(instructions.contains(".codescout/tmp/onboarding-prompt.md"));
+        assert!(instructions.contains("pre-versioning"));
+        assert!(!instructions.contains("subagent"));
+        assert!(instructions.contains("read_markdown"));
+        assert!(!instructions.contains("read_file"));
     }
 
     use std::path::PathBuf;
@@ -3071,15 +3224,6 @@ mod tests {
             result["subagent_prompt"].is_string(),
             "subagent_prompt must be a string"
         );
-        assert!(
-            result.get("main_agent_instructions").is_some(),
-            "response must include main_agent_instructions"
-        );
-        assert!(
-            result["main_agent_instructions"].is_string(),
-            "main_agent_instructions must be a string"
-        );
-
         // Old fields must be gone
         assert!(
             result.get("instructions").is_none(),
@@ -3204,6 +3348,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn onboarding_call_content_writes_prompt_file() {
+        let (_dir, ctx) = project_ctx().await;
+        let content = Onboarding
+            .call_content(json!({ "force": true }), &ctx)
+            .await
+            .unwrap();
+
+        // Must return exactly 1 block
+        assert_eq!(
+            content.len(),
+            1,
+            "call_content must return 1 structured block, got {}",
+            content.len()
+        );
+
+        let text = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        let parsed: serde_json::Value =
+            serde_json::from_str(text).expect("block must be valid JSON");
+
+        // Must have prompt_path pointing at the markdown file
+        let prompt_path = parsed["prompt_path"].as_str().unwrap_or("");
+        assert!(
+            prompt_path.contains("onboarding-prompt.md"),
+            "response must contain prompt_path with onboarding-prompt.md, got: {}",
+            &text[..text.len().min(200)]
+        );
+
+        // Must contain read_markdown instructions
+        let instructions = parsed["instructions"].as_str().unwrap_or("");
+        assert!(
+            instructions.contains("read_markdown"),
+            "response must contain read_markdown instructions"
+        );
+        assert!(
+            !instructions.contains("read_file"),
+            "response must NOT contain read_file instructions"
+        );
+
+        // Must NOT contain output_id (@tool_ ref)
+        assert!(
+            parsed.get("output_id").is_none(),
+            "response must NOT have output_id"
+        );
+
+        // Must NOT contain raw prompt body content (heading names in sections[] are ok)
+        assert!(
+            !text.contains("REQUIRED_KEYS") && !text.contains("subagent_prompt"),
+            "response must NOT contain raw prompt body content (should be in file)"
+        );
+    }
+
+    #[tokio::test]
+    async fn onboarding_call_content_writes_markdown_file() {
+        let (_dir, ctx) = project_ctx().await;
+        let content = Onboarding
+            .call_content(json!({ "force": true }), &ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(content.len(), 1);
+        let text = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        let parsed: serde_json::Value = serde_json::from_str(text).expect("must be JSON");
+
+        let prompt_path = parsed["prompt_path"]
+            .as_str()
+            .expect("must have prompt_path");
+        assert!(prompt_path.contains("onboarding-prompt.md"));
+        assert!(parsed.get("output_id").is_none(), "must NOT have output_id");
+
+        let root = ctx.agent.project_root().await.unwrap();
+        let full_path = root.join(prompt_path);
+        assert!(full_path.exists());
+
+        let sections = parsed["sections"].as_array().expect("must have sections");
+        assert!(!sections.is_empty());
+
+        let instructions = parsed["instructions"].as_str().unwrap_or("");
+        assert!(instructions.contains("read_markdown"));
+    }
+
+    #[tokio::test]
     async fn onboarding_status_includes_per_project_memories_for_workspace() {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
@@ -3252,70 +3477,83 @@ mod tests {
             .unwrap();
         assert_eq!(
             content.len(),
-            2,
-            "call_content must return 2 blocks (instructions + subagent prompt)"
+            1,
+            "call_content must return 1 structured block, got {}",
+            content.len()
         );
 
-        // Block 1: main agent dispatch instructions
-        let block1 = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        let text = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
         assert!(
-            block1.contains("## Rules")
-                || block1.contains("## Memories to Create")
-                || block1.contains("subagent"),
-            "block 1 must contain dispatch instructions, got: {block1:?}"
-        );
-        assert!(
-            !block1.contains("[?]"),
-            "call_content must not emit [?] placeholder, got: {block1:?}"
+            !text.contains("[?]"),
+            "call_content must not emit [?] placeholder, got: {text:?}"
         );
 
-        // Block 2: subagent prompt with delimiter
-        let block2 = content[1].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        // Must be valid JSON with prompt_path and instructions
+        let parsed: serde_json::Value =
+            serde_json::from_str(text).expect("call_content block must be valid JSON");
         assert!(
-            block2.contains("--- ONBOARDING SUBAGENT PROMPT"),
-            "block 2 must start with delimiter, got: {block2:?}"
+            parsed["prompt_path"]
+                .as_str()
+                .is_some_and(|s| s.contains("onboarding-prompt.md")),
+            "must have prompt_path pointing to onboarding-prompt.md, got: {:?}",
+            parsed["prompt_path"]
+        );
+        let instructions = parsed["instructions"].as_str().unwrap_or("");
+        assert!(
+            instructions.contains("read_markdown") || instructions.contains("subagent"),
+            "instructions must guide the agent, got: {instructions:?}"
         );
         assert!(
-            !block2.contains("[?]"),
-            "call_content must not emit [?] placeholder, got: {block2:?}"
+            !instructions.contains("read_file"),
+            "instructions must NOT reference read_file, got: {instructions:?}"
         );
     }
 
     #[tokio::test]
     async fn onboarding_call_content_returns_two_blocks() {
+        // Test name kept for history; new contract is 1 structured JSON block.
         let (_dir, ctx) = project_ctx().await;
         let content = Onboarding
             .call_content(json!({ "force": true }), &ctx)
             .await
             .unwrap();
 
-        // Must return exactly 2 content blocks
+        // Must return exactly 1 content block (file path)
         assert_eq!(
             content.len(),
-            2,
-            "call_content must return 2 blocks (instructions + subagent prompt)"
+            1,
+            "call_content must return 1 structured block, got {}",
+            content.len()
         );
 
-        // Block 1: main agent instructions
-        let block1 = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        let text = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        let parsed: serde_json::Value =
+            serde_json::from_str(text).expect("block must be valid JSON");
+
+        // prompt_path must point to the markdown file
+        let prompt_path = parsed["prompt_path"].as_str().unwrap_or("");
         assert!(
-            block1.contains("subagent"),
-            "block 1 must contain dispatch instructions"
-        );
-        assert!(
-            !block1.contains("## Return Contract"),
-            "block 1 must NOT contain the subagent prompt content"
+            prompt_path.contains("onboarding-prompt.md"),
+            "prompt_path must contain onboarding-prompt.md, got: {prompt_path:?}"
         );
 
-        // Block 2: subagent prompt with delimiter
-        let block2 = content[1].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        // sections must be present and non-empty
+        let empty = vec![];
+        let sections = parsed["sections"].as_array().unwrap_or(&empty);
+        assert!(!sections.is_empty(), "sections must be non-empty");
+
+        // instructions must not contain raw subagent prompt body (long prose),
+        // but may reference heading names in the checklist.
+        let instructions = parsed["instructions"].as_str().unwrap_or("");
         assert!(
-            block2.contains("--- ONBOARDING SUBAGENT PROMPT"),
-            "block 2 must start with delimiter"
+            !instructions.contains("NO MEMORIES WRITTEN WITHOUT COMPLETING"),
+            "instructions must NOT contain raw prompt body (should be in file)"
         );
+
+        // instructions must reference read_markdown
         assert!(
-            block2.contains("## Return Contract"),
-            "block 2 must contain the epilogue"
+            instructions.contains("read_markdown"),
+            "instructions must reference read_markdown"
         );
     }
 
@@ -3375,10 +3613,6 @@ mod tests {
                 .contains("activate_project"),
             "subagent_prompt must contain activate_project"
         );
-        assert!(
-            result.get("main_agent_instructions").is_some(),
-            "must include main_agent_instructions"
-        );
     }
 
     #[tokio::test]
@@ -3429,6 +3663,7 @@ mod tests {
 
     #[tokio::test]
     async fn onboarding_call_content_returns_two_blocks_for_version_refresh() {
+        // Test name kept for history; new contract is 1 structured JSON block.
         let (_dir, ctx) = onboarded_project_ctx().await;
 
         // Manually write a stale (version=None) config to disk, then reload so the
@@ -3451,21 +3686,40 @@ mod tests {
 
         assert_eq!(
             content.len(),
-            2,
-            "version refresh must return 2 blocks, got {}",
+            1,
+            "version refresh must return 1 structured block, got {}",
             content.len()
         );
 
-        let block1 = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        let text = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        let parsed: serde_json::Value =
+            serde_json::from_str(text).expect("block must be valid JSON");
+
+        // Must have a prompt_path
         assert!(
-            block1.contains("v") || block1.contains("outdated") || block1.contains("refresh"),
-            "block 1 must contain version info, got: {block1:?}"
+            parsed["prompt_path"]
+                .as_str()
+                .is_some_and(|s| s.contains("onboarding-prompt.md")),
+            "must have prompt_path, got: {:?}",
+            parsed["prompt_path"]
         );
 
-        let block2 = content[1].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        // Must NOT have output_id
+        assert!(parsed.get("output_id").is_none(), "must NOT have output_id");
+
+        // instructions must contain version info
+        let instructions = parsed["instructions"].as_str().unwrap_or("");
         assert!(
-            block2.contains("--- ONBOARDING SUBAGENT PROMPT"),
-            "block 2 must start with delimiter, got: {block2:?}"
+            instructions.contains("v2")
+                || instructions.contains("outdated")
+                || instructions.contains("refresh"),
+            "instructions must contain version info, got: {instructions:?}"
+        );
+
+        // instructions must reference read_markdown
+        assert!(
+            instructions.contains("read_markdown"),
+            "instructions must reference read_markdown, got: {instructions:?}"
         );
     }
 
@@ -3653,9 +3907,8 @@ mod tests {
             .unwrap()
             .iter()
             .any(|v| v == "tests"));
-        // Verify the subagent_prompt and main_agent_instructions are present
+        // Verify the subagent_prompt is present
         assert!(result.get("subagent_prompt").is_some());
-        assert!(result.get("main_agent_instructions").is_some());
         // Verify the subagent_prompt references key files (paths, not embedded content)
         let prompt = result["subagent_prompt"].as_str().unwrap();
         assert!(prompt.contains("README.md"));
@@ -5600,10 +5853,9 @@ mod tests {
             .await
             .unwrap();
 
-        // Should have standard fields plus subagent_prompt and main_agent_instructions
+        // Should have standard fields plus subagent_prompt
         assert!(result.get("languages").is_some());
         assert!(result.get("subagent_prompt").is_some());
-        assert!(result.get("main_agent_instructions").is_some());
         // Old fields removed
         assert!(result.get("instructions").is_none());
         assert!(result.get("protected_memories").is_none());
@@ -5705,9 +5957,9 @@ mod tests {
         assert!(result.get("workspace_mode").is_none() || result["workspace_mode"] == false);
         // subagent_prompt should contain the standard Phase 1/Phase 2, not workspace phases
         let prompt = result["subagent_prompt"].as_str().unwrap_or("");
-        assert!(prompt.contains("Phase 1: Explore the Code"));
-        assert!(prompt.contains("Phase 2: Write the Memories"));
-        assert!(!prompt.contains("Phase 1A"));
+        assert!(prompt.contains("Phase 2: Explore the Code"));
+        assert!(prompt.contains("Phase 3: Write the Memories"));
+        assert!(!prompt.contains("Workspace Survey"));
         assert!(!prompt.contains("Workspace Survey"));
     }
 
@@ -5721,33 +5973,45 @@ mod tests {
         let content = Onboarding.call_content(json!({}), &ctx).await.unwrap();
         assert_eq!(
             content.len(),
-            2,
-            "call_content must return 2 blocks (instructions + subagent prompt)"
+            1,
+            "call_content must return 1 structured block, got {}",
+            content.len()
         );
 
-        // Block 1: dispatch instructions — should mention workspace
-        let block1 = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        let text = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        let parsed: serde_json::Value =
+            serde_json::from_str(text).expect("block must be valid JSON");
+
+        // summary should mention workspace
+        let summary = parsed["summary"].as_str().unwrap_or("");
         assert!(
-            block1.contains("workspace") || block1.contains("Workspace"),
-            "block 1 should mention workspace mode, got: {}",
-            &block1[..block1.len().min(200)]
+            summary.contains("workspace") || summary.contains("project"),
+            "summary should mention workspace mode, got: {summary}"
         );
 
-        // Block 2: subagent prompt — contains workspace instructions and per-project protected memories
-        let block2 = content[1].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        // prompt_path must point at the markdown file
+        let prompt_path = parsed["prompt_path"].as_str().unwrap_or("");
         assert!(
-            block2.contains("--- ONBOARDING SUBAGENT PROMPT"),
-            "block 2 must start with delimiter"
+            prompt_path.contains("onboarding-prompt.md"),
+            "must have prompt_path pointing to onboarding-prompt.md, got: {prompt_path:?}"
         );
+
+        // Must NOT have output_id
         assert!(
-            block2.contains("Phase 1A") || block2.contains("Workspace Survey"),
-            "block 2 should include workspace instructions"
+            parsed.get("output_id").is_none(),
+            "must NOT have output_id (old buffer pattern removed)"
         );
-        // Per-project protected memories should be surfaced inside subagent_prompt
+
+        // The file content itself should contain workspace instructions.
+        let full_path = root.join(prompt_path);
         assert!(
-            block2.contains("Per-project protected memories")
-                || block2.contains("per_project_protected"),
-            "block 2 should surface per-project protected memory state"
+            full_path.exists(),
+            "onboarding-prompt.md must exist on disk"
+        );
+        let file_content = std::fs::read_to_string(&full_path).unwrap();
+        assert!(
+            file_content.contains("Workspace Survey"),
+            "file content should include workspace instructions"
         );
     }
 
@@ -5836,7 +6100,7 @@ mod tests {
             "subagent_prompt should contain workspace content"
         );
         assert!(
-            prompt.contains("Phase 1A"),
+            prompt.contains("Workspace Survey"),
             "subagent_prompt should contain Phase 1A"
         );
 
@@ -5846,16 +6110,51 @@ mod tests {
         assert!(prompt.contains("web"));
         assert!(prompt.contains("memory(project:"));
 
-        // call_content delivers workspace content in two blocks
+        // call_content delivers 1 structured JSON block with prompt_path
         let content = Onboarding
             .call_content(json!({ "force": true }), &ctx)
             .await
             .unwrap();
-        assert_eq!(content.len(), 2, "call_content must return 2 blocks");
-        let block1 = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
-        assert!(block1.contains("workspace") || block1.contains("Workspace"));
-        let block2 = content[1].as_text().map(|t| t.text.as_str()).unwrap_or("");
-        assert!(block2.contains("--- ONBOARDING SUBAGENT PROMPT"));
+        assert_eq!(
+            content.len(),
+            1,
+            "call_content must return 1 structured block"
+        );
+        let text = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        let parsed: serde_json::Value =
+            serde_json::from_str(text).expect("block must be valid JSON");
+
+        // prompt_path must point to the markdown file
+        let prompt_path = parsed["prompt_path"].as_str().unwrap_or("");
+        assert!(
+            prompt_path.contains("onboarding-prompt.md"),
+            "must have prompt_path pointing to onboarding-prompt.md, got: {prompt_path:?}"
+        );
+
+        // Must NOT have output_id
+        assert!(
+            parsed.get("output_id").is_none(),
+            "must NOT have output_id (old buffer pattern removed)"
+        );
+
+        // summary should contain workspace info
+        let summary = parsed["summary"].as_str().unwrap_or("");
+        assert!(
+            summary.contains("workspace") || summary.contains("project"),
+            "summary should mention workspace, got: {summary}"
+        );
+
+        // The file on disk has workspace content
+        let full_path = root.join(prompt_path);
+        assert!(
+            full_path.exists(),
+            "onboarding-prompt.md must exist on disk"
+        );
+        let file_content = std::fs::read_to_string(&full_path).unwrap();
+        assert!(
+            file_content.contains("Workspace Survey"),
+            "file content must contain workspace content"
+        );
 
         // format_compact shows workspace info
         let compact = Onboarding.format_compact(&result).unwrap_or_default();

@@ -285,7 +285,7 @@ mod tests {
         assert!(ONBOARDING_PROMPT.contains("gotchas"));
         assert!(ONBOARDING_PROMPT.contains("## Gathered Project Data"));
         // Verify enforcement sections exist
-        assert!(ONBOARDING_PROMPT.contains("## Phase 0: Semantic Index Check"));
+        assert!(ONBOARDING_PROMPT.contains("## Phase 1: Semantic Index Check"));
         assert!(ONBOARDING_PROMPT.contains("## THE IRON LAW"));
         assert!(ONBOARDING_PROMPT.contains("<HARD-GATE>"));
         assert!(ONBOARDING_PROMPT.contains("## Red Flags"));
@@ -294,8 +294,8 @@ mod tests {
 
     #[test]
     fn workspace_onboarding_prompt_contains_key_sections() {
-        assert!(WORKSPACE_ONBOARDING_PROMPT.contains("Phase 1A"));
-        assert!(WORKSPACE_ONBOARDING_PROMPT.contains("Phase 1B"));
+        assert!(WORKSPACE_ONBOARDING_PROMPT.contains("Workspace Survey"));
+        assert!(WORKSPACE_ONBOARDING_PROMPT.contains("Workspace Deep Dives"));
         assert!(WORKSPACE_ONBOARDING_PROMPT.contains("Phase 2"));
         assert!(WORKSPACE_ONBOARDING_PROMPT.contains("Subagent"));
         assert!(WORKSPACE_ONBOARDING_PROMPT.contains("HARD-GATE"));
@@ -568,7 +568,7 @@ mod tests {
         };
         let prompt = build_onboarding_prompt(&ctx);
         assert!(prompt.contains("Workspace"));
-        assert!(prompt.contains("Phase 1A"));
+        assert!(prompt.contains("Workspace Survey"));
         assert!(prompt.contains("api"));
         assert!(prompt.contains("frontend"));
     }

@@ -6,7 +6,7 @@ You are onboarding a **multi-project workspace**. The projects are listed in the
 
 ---
 
-## Phase 1A — Breadth-First Workspace Survey
+## Workspace Survey — Breadth-First
 
 Before deep-diving any single project, get a high-level understanding of ALL projects.
 
@@ -22,11 +22,11 @@ Before deep-diving any single project, get a high-level understanding of ALL pro
 - Shared infrastructure (CI, tooling, deployment)
 - Key cross-project patterns
 
-> <HARD-GATE>: Do NOT proceed to Phase 1B until you have written the Workspace Exploration Summary above. This summary is required input for the subagent prompts in Phase 1B.
+> <HARD-GATE>: Do NOT proceed to Workspace Deep Dives until you have written the Workspace Exploration Summary above. This summary is required input for the subagent prompts in Workspace Deep Dives.
 
 ---
 
-## Phase 1B — Subagent Deep Dives
+## Workspace Deep Dives — Subagent Per-Project
 
 Dispatch one Agent subagent per project using the template below. **Dispatch all subagents in a single parallel batch** — call all Agent tools in one response turn so they execute concurrently. Do NOT dispatch them sequentially.
 
@@ -91,9 +91,9 @@ Writing workspace memories from incomplete per-project data produces wrong memor
 
 ---
 
-## Phase 2 — Workspace Memory Synthesis
+## Workspace Memory Synthesis
 
-After all subagent deep dives complete and the Phase 1B gate is verified, read back per-project memories and write 5 workspace-level memories.
+After all subagent deep dives complete and the Workspace Deep Dives gate is verified, read back per-project memories and write 5 workspace-level memories.
 
 **Read per-project memories first:**
 - `memory(action: "read", project: "{id}", topic: "architecture")` for each project

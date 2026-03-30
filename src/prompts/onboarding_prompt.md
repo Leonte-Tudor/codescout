@@ -22,7 +22,7 @@ Be exhaustive. Read widely. When in doubt, read more.
 <HARD-GATE>
 Do NOT call `memory(action: "write", ...)` until you have:
 1. Completed ALL 7 exploration steps below
-2. Verified EVERY item in the Phase 1 Gate Checklist
+2. Verified EVERY item in the Phase 2 Gate Checklist
 3. Written the Exploration Summary in your response
 
 These gates are non-negotiable. There are no exceptions.
@@ -30,7 +30,7 @@ These gates are non-negotiable. There are no exceptions.
 
 ---
 
-## Phase 0.5: Embedding Model Selection
+## Phase 0: Embedding Model Selection
 
 The `onboarding` tool has already written a recommended model to `.codescout/project.toml`
 based on your system hardware. Present the options to the user now, before indexing starts.
@@ -57,20 +57,20 @@ Present this to the user:
 
 Wait for the user's response, then:
 
-- **User presses Enter or types 1:** The config is already correct — proceed to Phase 0.
+- **User presses Enter or types 1:** The config is already correct — proceed to Phase 1.
 - **User types 2:** Call `edit_file` on `.codescout/project.toml`.
   Change the line `model = "{model_options[0].id}"` to `model = "{model_options[1].id}"`.
-  Confirm the edit, then proceed to Phase 0.
+  Confirm the edit, then proceed to Phase 1.
 - **User types 3:** Same as above but use `model_options[2].id`.
   If `model_options[2].available` is false, remind the user how to enable it
   (e.g., "install Ollama and run `ollama serve`") before making the edit.
 - **User types a custom model string:** Use that string directly in the `edit_file` call.
 
-Then proceed to Phase 0 (Semantic Index Check).
+Then proceed to Phase 1 (Semantic Index Check).
 
 ---
 
-## Phase 0: Semantic Index Check
+## Phase 1: Semantic Index Check
 
 Check the **Semantic index** line in the Gathered Project Data below.
 
@@ -79,9 +79,9 @@ Check the **Semantic index** line in the Gathered Project Data below.
 Announce to the user:
 
 > "Semantic index is ready ({files} files, {chunks} chunks). I'll use
-> `semantic_search` for concept-level exploration in Phase 1."
+> `semantic_search` for concept-level exploration in Phase 2."
 
-Proceed to Phase 1.
+Proceed to Phase 2.
 
 ### If the index is NOT BUILT:
 
@@ -112,12 +112,12 @@ Wait for the user's choice before proceeding.
   seconds until the response shows completion or failure. If it fails, inform
   the user of the error and fall back to option 3.
 - **Option 2:** Stop and wait for the user to return.
-- **Option 3:** Proceed to Phase 1. Step 6 will use `grep` instead
+- **Option 3:** Proceed to Phase 2. Step 6 will use `grep` instead
   of `semantic_search`.
 
 ---
 
-## Phase 1: Explore the Code
+## Phase 2: Explore the Code
 
 The gathered data below (README, build config, CLAUDE.md) is a **starting point, not a
 substitute for exploration**. Memories written from documentation alone are shallow,
@@ -133,7 +133,7 @@ Gathered Project Data section below for project-specific paths detected during o
 - `list_dir` on EACH major directory found (src/, tests/, docs/, lib/, app/, etc.)
 - `read_file` on the build config fully (Cargo.toml / package.json / pyproject.toml / go.mod / pom.xml)
 - `read_file` on CI config if present (.github/workflows/, .gitlab-ci.yml, Makefile, etc.)
-- `read_file("README.md")` fully — even if you think you know what it says
+- `read_markdown("README.md")` fully — even if you think you know what it says
 
 ### Step 2: Full Symbol Survey — ALL Modules
 
@@ -163,12 +163,11 @@ Do not proceed from signatures alone. Signatures tell you *what*; bodies tell yo
 
 ### Step 4: Read ALL Architecture Documentation
 
-- `read_file("docs/ARCHITECTURE.md")` fully if it exists
-- `read_file` on any design docs, ADRs, or plans referenced in README or CLAUDE.md
-- `read_file` on any additional doc files under `docs/`
-- For plans: use `read_file(path, mode="complete")` to get the full file inline
-- For large docs: use `read_file(path, headings=["## Section A", "## Section B"])` to
-  read multiple sections in one call
+- `read_markdown("docs/ARCHITECTURE.md")` fully if it exists
+- `read_markdown` on any design docs, ADRs, or plans referenced in README or CLAUDE.md
+- `read_markdown` on any additional .md files under `docs/` (`read_file` for non-markdown)
+- For large docs: use `read_markdown(path, heading="## Section")` to navigate by heading
+- For multi-section reads: `read_markdown(path, headings=["## Section A", "## Section B"])`
 - Read completely — do not skim headings and move on
 
 **If there are no architecture docs:** explicitly note this in your exploration summary.
@@ -221,7 +220,7 @@ Note where the code diverges from what the documentation says.
 
 ---
 
-### Phase 1 Gate Checklist
+### Phase 2 Gate Checklist
 
 Before writing ANY memory, verify ALL of these are true. If any is unchecked, complete it first.
 
@@ -249,13 +248,13 @@ After completing all steps, write this summary **in your response, before callin
 > **What surprised you** — things the code does that documentation didn't mention
 
 If you cannot write this from what you've explored, you have not explored enough.
-Return to Phase 1.
+Return to Phase 2.
 
 ---
 
-## Red Flags — STOP and Return to Phase 1
+## Red Flags — STOP and Return to Phase 2
 
-If you notice any of these thoughts, STOP. Return to Phase 1 immediately.
+If you notice any of these thoughts, STOP. Return to Phase 2 immediately.
 
 - "I've read CLAUDE.md and the README — that's enough to write the memories"
 - "The architecture doc covers everything I need"
@@ -269,7 +268,7 @@ If you notice any of these thoughts, STOP. Return to Phase 1 immediately.
 - You have traced only one data flow
 - You have run fewer than 5 concept-level queries (semantic_search or grep)
 
-**ALL of these mean: STOP. Return to Phase 1.**
+**ALL of these mean: STOP. Return to Phase 2.**
 
 ## Common Rationalizations
 
@@ -286,12 +285,12 @@ If you notice any of these thoughts, STOP. Return to Phase 1 immediately.
 
 ---
 
-## Phase 2: Write the Memories (Single-Project Mode)
+## Phase 3: Write the Memories (Single-Project Mode)
 
 > **If you see a "WORKSPACE MODE" section below**, skip this section entirely and
 > follow the workspace flow instead. This section applies only to single-project repos.
 
-Now write the memories. Your Phase 1 exploration must inform every memory — especially
+Now write the memories. Your Phase 2 exploration must inform every memory — especially
 `architecture` and `conventions`, which cannot be written accurately from documentation alone.
 
 ### Rules
@@ -323,7 +322,7 @@ OR `staleness.stale_files` is non-empty):** Run the merge flow:
 2. For entries referencing files listed in `staleness.stale_files` (or all
    entries if `untracked`): use `find_symbol`, `read_file`, `grep`
    to verify whether each entry is still accurate.
-3. Identify new discoveries from your Phase 1 exploration that belong in
+3. Identify new discoveries from your Phase 2 exploration that belong in
    this memory.
 4. Present a diff-style summary to the user:
    - **Stale (recommend removing):** [entries no longer accurate, with reason]
