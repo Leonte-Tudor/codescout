@@ -6495,6 +6495,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn single_project_call_content_has_no_project_prompts() {
+        let (_dir, ctx) = project_ctx().await;
+        let content = Onboarding.call_content(json!({}), &ctx).await.unwrap();
+        assert_eq!(content.len(), 1);
+        let text = content[0].as_text().map(|t| t.text.as_str()).unwrap_or("");
+        let parsed: serde_json::Value = serde_json::from_str(text).expect("must be JSON");
+        assert!(
+            parsed.get("project_prompts").is_none(),
+            "single-project must NOT have project_prompts"
+        );
+        assert!(
+            parsed.get("synthesis_prompt_path").is_none(),
+            "single-project must NOT have synthesis_prompt_path"
+        );
+    }
+
+    #[tokio::test]
     async fn onboarding_call_content_includes_workspace_info() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -6543,6 +6560,22 @@ mod tests {
         assert!(
             file_content.contains("Workspace Survey"),
             "file content should include workspace instructions"
+        );
+
+        // Must have project_prompts array (workspace parallel dispatch)
+        let project_prompts = parsed["project_prompts"]
+            .as_array()
+            .expect("workspace call_content must have project_prompts");
+        assert!(
+            project_prompts.len() >= 2,
+            "workspace must have at least 2 project prompts, got {}",
+            project_prompts.len()
+        );
+
+        // Must have synthesis_prompt_path
+        assert!(
+            parsed["synthesis_prompt_path"].as_str().is_some(),
+            "workspace call_content must have synthesis_prompt_path"
         );
     }
 
@@ -6743,6 +6776,40 @@ mod tests {
         assert!(
             file_content.contains("Workspace Survey"),
             "file content must contain workspace content"
+        );
+
+        // Must have project_prompts (new parallel dispatch fields)
+        let project_prompts = parsed["project_prompts"]
+            .as_array()
+            .expect("workspace full flow must have project_prompts");
+        assert!(
+            project_prompts.len() >= 2,
+            "must have at least 2 project prompts"
+        );
+        for pp in project_prompts {
+            assert!(
+                pp["id"].as_str().is_some(),
+                "each project prompt must have id"
+            );
+            assert!(
+                pp["path"].as_str().is_some(),
+                "each project prompt must have path"
+            );
+            let pp_path = pp["path"].as_str().unwrap();
+            assert!(
+                root.join(pp_path).exists(),
+                "project prompt file must exist for {}",
+                pp["id"]
+            );
+        }
+
+        // Must have synthesis_prompt_path
+        let synthesis_path = parsed["synthesis_prompt_path"]
+            .as_str()
+            .expect("must have synthesis_prompt_path");
+        assert!(
+            root.join(synthesis_path).exists(),
+            "synthesis file must exist on disk"
         );
 
         // format_compact shows workspace info
