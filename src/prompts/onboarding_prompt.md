@@ -590,6 +590,23 @@ After confirming all 6 memories and the system prompt with the user, deliver thi
 
 ---
 
+### Refresh CLAUDE.md
+
+Read `read_markdown("CLAUDE.md")` to see its heading structure.
+
+Compare each section with the memories you just wrote. For sections that
+overlap with memory content, offer to replace the body with a memory reference:
+`See codescout memory 'architecture' (Key Patterns section).`
+
+**Preserve user-specific content:** personal preferences, code style rules,
+iron rules, git workflow specifics, private notes — anything not derivable
+from the codebase. Do NOT touch sections the user wrote for their own use.
+
+**Add memory discovery hints** if CLAUDE.md doesn't already list available
+memory topics so future agents know they exist.
+
+Present a summary of proposed changes and ask for approval before modifying.
+
 Finally, inform the user:
 
 > **Onboarding complete.** To activate the new project configuration in this session,
