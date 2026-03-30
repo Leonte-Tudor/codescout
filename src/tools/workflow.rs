@@ -1085,6 +1085,152 @@ When done, report: \"System prompt refreshed (vN → vM).\"",
     )
 }
 
+/// Build a self-contained onboarding prompt for one project in a workspace.
+///
+/// Each per-project subagent gets this prompt. It includes:
+/// - Iron Law, exploration steps, red flags (from the shared template)
+/// - Project-specific context (id, root, languages, siblings)
+/// - Per-project memory writing instructions (scoped with project= param)
+/// - Return contract
+#[allow(dead_code)]
+fn build_per_project_prompt(
+    project: &crate::workspace::DiscoveredProject,
+    siblings: &[(String, Vec<String>)],
+) -> String {
+    let mut prompt = String::new();
+
+    // Iron Law (from shared template)
+    prompt.push_str("## THE IRON LAW\n\n");
+    prompt.push_str(
+        "```\nNO MEMORIES WRITTEN WITHOUT COMPLETING ALL EXPLORATION STEPS FIRST\n```\n\n",
+    );
+    prompt.push_str("You may only call `memory(action: \"write\", ...)` after you have:\n");
+    prompt.push_str("1. Completed ALL exploration steps below\n");
+    prompt.push_str("2. Verified EVERY item in the Phase 2 Gate Checklist\n\n");
+    prompt.push_str("---\n\n");
+
+    // Project context
+    prompt.push_str("## Your Project\n\n");
+    prompt.push_str(&format!("- **ID:** {}\n", project.id));
+    prompt.push_str(&format!(
+        "- **Root:** {}\n",
+        project.relative_root.display()
+    ));
+    prompt.push_str(&format!(
+        "- **Languages:** {}\n",
+        project.languages.join(", ")
+    ));
+    if let Some(ref manifest) = project.manifest {
+        prompt.push_str(&format!("- **Manifest:** {}\n", manifest));
+    }
+
+    if !siblings.is_empty() {
+        prompt.push_str("\n**Sibling projects** (for context — Do NOT deep-dive these):\n");
+        for (id, langs) in siblings {
+            prompt.push_str(&format!("- {} ({})\n", id, langs.join(", ")));
+        }
+    }
+    prompt.push_str("\n---\n\n");
+
+    // Phase 2: Explore (scoped to this project)
+    prompt.push_str("## Phase 2: Explore the Code\n\n");
+    prompt.push_str("Explore ONLY your project root. Do NOT explore sibling projects.\n\n");
+    prompt.push_str(&format!(
+        "### Step 1: Map the Codebase Structure\n\n\
+         - `list_dir(\"{root}\")` — top-level structure\n\
+         - `list_dir` on each subdirectory\n\
+         - `read_file` on the build config\n\
+         - `read_markdown(\"README.md\")` if present\n\n",
+        root = project.relative_root.display()
+    ));
+    prompt.push_str(
+        "### Step 2: Full Symbol Survey\n\n\
+         - Run `list_symbols` on the main source directory\n\
+         - Run `list_symbols` on EACH subdirectory individually\n\
+         - Survey at least 5 distinct source files\n\n",
+    );
+    prompt.push_str(
+        "### Step 3: Read Core Implementations\n\n\
+         - Identify 5+ central types/functions from Step 2\n\
+         - `find_symbol(name, include_body=true)` for each\n\
+         - Read the FULL body, not just signatures\n\n",
+    );
+    prompt.push_str(
+        "### Step 4: Read Architecture Documentation\n\n\
+         - `read_markdown` on any docs found in the project\n\
+         - Read completely — do not skim\n\n",
+    );
+    prompt.push_str(
+        "### Step 5: Trace Two Data Flows\n\n\
+         - Trace the most representative operation end-to-end\n\
+         - Trace a second distinct path (error, write vs read, etc.)\n\n",
+    );
+    prompt.push_str(
+        "### Step 6: Concept-Level Search (5+ queries)\n\n\
+         - Error handling, data flow, testing, config, domain concept\n\
+         - Use `semantic_search` or `grep` as fallback\n\n",
+    );
+    prompt.push_str(
+        "### Step 7: Examine Tests\n\n\
+         - `list_symbols` on test directory\n\
+         - Read 2-3 test files for patterns\n\n",
+    );
+
+    // Phase 2 Gate Checklist
+    prompt.push_str(
+        "### Phase 2 Gate Checklist\n\n\
+         Before writing ANY memory, verify ALL true:\n\
+         - [ ] Listed structure AND ran list_dir on major subdirectories\n\
+         - [ ] Symbol survey on 5+ source files\n\
+         - [ ] Read full body of 5+ core implementations\n\
+         - [ ] Read all architecture docs\n\
+         - [ ] Traced two data flows\n\
+         - [ ] Ran 5+ concept queries\n\
+         - [ ] Read 2-3 test files\n\n\
+         ---\n\n",
+    );
+
+    // Red Flags
+    prompt.push_str(
+        "## Red Flags — STOP and Return to Phase 2\n\n\
+         If you notice any of these, STOP and go back:\n\
+         - \"I have a good enough picture\" — No, read the code.\n\
+         - \"The README covers this\" — READMEs lie. Verify in code.\n\
+         - \"This is similar to...\" — Explore anyway. Differences matter.\n\n\
+         ---\n\n",
+    );
+
+    // Phase 3: Write per-project memories
+    prompt.push_str("## Phase 3: Write the Memories\n\n");
+    prompt.push_str(&format!(
+        "Write these memories using `memory(action=\"write\", project=\"{id}\", topic=\"...\", content=\"...\")`.\n\n",
+        id = project.id
+    ));
+    prompt.push_str(
+        "### 1. `project-overview`\n\
+         Purpose, tech stack, key dependencies, runtime requirements. 15-30 lines.\n\n\
+         ### 2. `architecture`\n\
+         Module structure, key abstractions, data flow, design patterns. 20-40 lines.\n\
+         Include 3-5 good `semantic_search(query, project=\"{id}\")` examples.\n\n\
+         ### 3. `conventions`\n\
+         Language/framework patterns, naming, testing approach. 15-30 lines.\n\n",
+    );
+
+    // Return contract
+    prompt.push_str("---\n\n");
+    prompt.push_str(
+        "## Return Contract\n\n\
+         Return a summary with:\n\
+         - What this project does (your own words)\n\
+         - 3-5 most important types/modules\n\
+         - How a typical operation flows\n\
+         - Memories written (list topics)\n\
+         - Any issues encountered\n",
+    );
+
+    prompt
+}
+
 /// Gather staleness state for protected memory topics.
 /// Returns a JSON object keyed by topic name, suitable for inclusion
 /// in the onboarding result.
@@ -3083,6 +3229,68 @@ mod tests {
         assert!(!instructions.contains("subagent"));
         assert!(instructions.contains("read_markdown"));
         assert!(!instructions.contains("read_file"));
+    }
+
+    #[test]
+    fn build_per_project_prompt_contains_project_context() {
+        let project = crate::workspace::DiscoveredProject {
+            id: "backend".to_string(),
+            relative_root: std::path::PathBuf::from("."),
+            languages: vec!["kotlin".to_string(), "java".to_string()],
+            manifest: Some("build.gradle.kts".to_string()),
+        };
+        let siblings = vec![
+            ("mcp-server".to_string(), vec!["rust".to_string()]),
+            ("python-svc".to_string(), vec!["python".to_string()]),
+        ];
+        let prompt = build_per_project_prompt(&project, &siblings);
+
+        // Must contain project identity
+        assert!(prompt.contains("backend"), "must contain project id");
+        assert!(prompt.contains("kotlin"), "must contain languages");
+        assert!(prompt.contains("build.gradle.kts"), "must contain manifest");
+
+        // Must contain sibling info (for context, not deep-diving)
+        assert!(prompt.contains("mcp-server"), "must mention siblings");
+        assert!(
+            prompt.contains("Do NOT deep-dive"),
+            "must warn against sibling deep-dives"
+        );
+
+        // Must contain exploration steps
+        assert!(
+            prompt.contains("## Phase 2: Explore"),
+            "must contain exploration phase"
+        );
+        assert!(
+            prompt.contains("list_symbols"),
+            "must contain exploration instructions"
+        );
+
+        // Must contain memory writing instructions
+        assert!(
+            prompt.contains("## Phase 3: Write"),
+            "must contain memory phase"
+        );
+        assert!(
+            prompt.contains("project=\"backend\""),
+            "must scope memories to project"
+        );
+
+        // Must contain iron law
+        assert!(prompt.contains("IRON LAW"), "must contain iron law");
+
+        // Must contain return contract
+        assert!(
+            prompt.contains("## Return Contract"),
+            "must contain return contract"
+        );
+
+        // Must NOT contain workspace synthesis instructions
+        assert!(
+            !prompt.contains("Workspace Memory Synthesis"),
+            "must NOT contain workspace synthesis"
+        );
     }
 
     use std::path::PathBuf;
