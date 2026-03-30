@@ -196,6 +196,61 @@ New code needed:
 - `build_synthesis_prompt(projects)` — assembles the workspace synthesis .md file
 - Updated `call_content()` — detects workspace, writes N+1 files, returns the dispatch response
 
+## Post-Onboarding: CLAUDE.md Refresh
+
+After all memories are written (both per-project and workspace-level), the main
+agent offers to update CLAUDE.md so that memory content is discoverable and
+CLAUDE.md doesn't duplicate or contradict what's now in memories.
+
+### Rules
+
+1. **Replace overlapping sections with memory references.** If CLAUDE.md has a
+   "## Key Patterns" section and the `architecture` memory now covers the same
+   content, replace the section body with:
+   `See codescout memory 'architecture' (Key Patterns section).`
+
+2. **Preserve user-specific content.** Sections that contain personal preferences,
+   code style rules, private notes, workflow instructions, or anything not
+   derivable from the codebase MUST be kept as-is. The agent should not touch
+   content it didn't create.
+
+3. **Ask before modifying.** The main agent presents a diff-like summary:
+   - "These sections overlap with memories and can be replaced with references: ..."
+   - "These sections appear to be user-specific and will be preserved: ..."
+   - "Approve?"
+
+4. **Add memory discovery hints.** If CLAUDE.md doesn't already reference the
+   new memories, add a brief section listing available memory topics so future
+   agents know they exist.
+
+### What gets replaced (examples)
+
+| CLAUDE.md section | Memory | Action |
+|---|---|---|
+| ## Key Patterns | `architecture` | Replace body with memory ref |
+| ## Testing Patterns | `conventions` | Replace body with memory ref |
+| ## Development Commands | `development-commands` | Replace body with memory ref |
+| ## Rust Coding Standards | `language-patterns` | Replace body with memory ref |
+| ## Language-Specific LSP Issues | `gotchas` | Replace body with memory ref |
+
+### What gets preserved (examples)
+
+- Personal code style preferences ("I prefer X over Y")
+- Private workflow notes ("When deploying, remember to...")
+- Iron Rules / personal instructions
+- Git workflow specifics the user defined
+- Any section not covered by a memory topic
+
+### Implementation
+
+This is a **main-agent responsibility**, not a server feature. The synthesis
+prompt (`.codescout/tmp/onboarding-workspace-synthesis.md`) and the single-project
+"After Everything Is Created" section should include these CLAUDE.md refresh
+instructions. The agent uses `read_markdown("CLAUDE.md")` to get the heading map,
+compares with memory topics, and proposes replacements.
+
+---
+
 ## Testing
 
 1. **Unit test**: Single-project onboarding returns no `project_prompts` field
