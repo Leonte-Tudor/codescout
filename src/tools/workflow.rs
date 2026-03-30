@@ -1316,6 +1316,74 @@ fn build_synthesis_prompt(projects: &[(String, Vec<String>)]) -> String {
     prompt
 }
 
+/// Build dispatch instructions for workspace onboarding.
+#[allow(dead_code)]
+fn build_workspace_instructions(
+    main_prompt_path: &str,
+    project_prompts: &[(String, String)],
+    synthesis_path: &str,
+    subagent_capable: bool,
+) -> String {
+    let p = main_prompt_path;
+
+    if subagent_capable {
+        let mut instructions = format!(
+            "\
+Onboarding required — this is a workspace with {} projects.
+
+Step 1: Read prerequisites from the main prompt:
+  read_markdown(\"{p}\", headings=[\"## Phase 0: Embedding Model Selection\", \"## Phase 1: Semantic Index Check\"])
+
+Step 2: Spawn {} subagents IN PARALLEL — one per project:",
+            project_prompts.len(),
+            project_prompts.len(),
+        );
+
+        for (id, path) in project_prompts {
+            instructions.push_str(&format!(
+                "\n  - {id}: read_markdown(\"{path}\") and follow all instructions",
+            ));
+        }
+
+        instructions.push_str(&format!(
+            "\n\n\
+Step 3: Wait for ALL subagents to complete.\n\n\
+Step 4: Read the synthesis prompt and write workspace memories:\n\
+  read_markdown(\"{synthesis_path}\")\n\n\
+Follow the synthesis instructions to read back per-project memories,\n\
+write workspace-level memories, generate the system prompt, and\n\
+offer to refresh CLAUDE.md."
+        ));
+
+        instructions
+    } else {
+        let mut instructions = format!(
+            "\
+Onboarding required — this is a workspace with {} projects.
+
+Step 1: Read prerequisites:
+  read_markdown(\"{p}\", headings=[\"## Phase 0: Embedding Model Selection\", \"## Phase 1: Semantic Index Check\"])
+
+Step 2: Explore each project one at a time:",
+            project_prompts.len(),
+        );
+
+        for (id, path) in project_prompts {
+            instructions.push_str(&format!(
+                "\n  - {id}: read_markdown(\"{path}\") and follow all instructions",
+            ));
+        }
+
+        instructions.push_str(&format!(
+            "\n\n\
+Step 3: Read the synthesis prompt and write workspace memories:\n\
+  read_markdown(\"{synthesis_path}\")"
+        ));
+
+        instructions
+    }
+}
+
 /// Gather staleness state for protected memory topics.
 /// Returns a JSON object keyed by topic name, suitable for inclusion
 /// in the onboarding result.
@@ -3409,6 +3477,52 @@ mod tests {
 
         // Must contain system prompt generation
         assert!(prompt.contains("system-prompt"));
+    }
+
+    #[test]
+    fn build_workspace_instructions_claude_contains_parallel_dispatch() {
+        let project_prompts = vec![
+            (
+                "backend".to_string(),
+                ".codescout/tmp/onboarding-project-backend.md".to_string(),
+            ),
+            (
+                "mcp".to_string(),
+                ".codescout/tmp/onboarding-project-mcp.md".to_string(),
+            ),
+        ];
+        let synthesis_path = ".codescout/tmp/onboarding-workspace-synthesis.md";
+        let main_prompt_path = ".codescout/tmp/onboarding-prompt.md";
+        let instructions =
+            build_workspace_instructions(main_prompt_path, &project_prompts, synthesis_path, true);
+
+        // Must mention parallel dispatch
+        assert!(instructions.contains("parallel") || instructions.contains("PARALLEL"));
+        // Must reference each project prompt
+        assert!(instructions.contains("onboarding-project-backend.md"));
+        assert!(instructions.contains("onboarding-project-mcp.md"));
+        // Must reference synthesis prompt
+        assert!(instructions.contains("onboarding-workspace-synthesis.md"));
+        // Must reference Phase 0-1 from main prompt
+        assert!(instructions.contains("Phase 0") || instructions.contains("Phase 1"));
+        // Must mention subagent
+        assert!(instructions.contains("subagent"));
+    }
+
+    #[test]
+    fn build_workspace_instructions_generic_is_sequential() {
+        let project_prompts = vec![(
+            "backend".to_string(),
+            ".codescout/tmp/onboarding-project-backend.md".to_string(),
+        )];
+        let synthesis_path = ".codescout/tmp/onboarding-workspace-synthesis.md";
+        let main_prompt_path = ".codescout/tmp/onboarding-prompt.md";
+        let instructions =
+            build_workspace_instructions(main_prompt_path, &project_prompts, synthesis_path, false);
+
+        assert!(!instructions.contains("subagent"));
+        assert!(instructions.contains("onboarding-project-backend.md"));
+        assert!(instructions.contains("read_markdown"));
     }
 
     use std::path::PathBuf;
