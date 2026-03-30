@@ -3,7 +3,7 @@
 
 [[anchors]]
 path = "CLAUDE.md"
-hash = "15250c4921a4a5605a97723011126ec74a0d7b1af6a2c5456718f4ba8cef52c3"
+hash = "7b8a0e43bb3999a9d77def4210f07d659056f775d4113278702dba041db59b7e"
 
 [[anchors]]
 path = "src/lsp/mock.rs"
@@ -18,6 +18,10 @@ path = "src/prompts/server_instructions.md"
 hash = "ab7ba9ff96d62ef840d5d2859b190c29db667ecee9ac80279b27693d30fa2fed"
 
 [[anchors]]
+path = ".codescout/tmp/onboarding-workspace-synthesis.md"
+hash = "778669530a32bb1a8b5f67ce321c56e2bbc42d63e6bf345d3e802c68835f572b"
+
+[[anchors]]
 path = "docs/PROGRESSIVE_DISCOVERABILITY.md"
 hash = "c7b155b764d3154e145d819c9b0b38d50ffe168ec37eb1f24c3c6c6273bc7b9f"
 
@@ -27,8 +31,8 @@ hash = "c8a520ca89b95465e9c474029b884082dd79550c677e83d7e6537467ad756220"
 
 [[anchors]]
 path = "src/prompts/onboarding_prompt.md"
-hash = "af676c78936e2d0b7d6a90538be2addc0d1d84fcd2821b3063730214a6f3fe00"
+hash = "05544a88fd421123911e3cbe48f05a283fdca501420c0f254ca45199d6d10e7d"
 
 [[anchors]]
 path = "src/tools/workflow.rs"
-hash = "e685306015a85b8754f4cc47376d3b8bb930539824cc8e3f2f77ffac57033419"
+hash = "bd6b3c7c25cf7bfb5fe8165c6a6905acbbb8af9d3d7130c4a647ea10a297465d"

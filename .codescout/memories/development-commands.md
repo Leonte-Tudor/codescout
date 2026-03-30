@@ -1,57 +1,53 @@
 # Development Commands
 
-See `CLAUDE.md § Development Commands` for the primary list. Supplements below.
+See codescout memory `development-commands` (project="code-explorer") for the full command reference.
 
-## Extra Commands
+## Workspace-Level Commands (run from repo root)
 
+### Build & Verify
 ```bash
-# Run a specific test by name
-cargo test test_name_substring
-
-# Run tests with output visible
-cargo test -- --nocapture
-
-# Run integration tests only
-cargo test --test integration
-
-# Run bug regression tests (requires real LSP servers)
-cargo test --test bug_regression -- --ignored
-
-# Run LSP e2e tests (requires real LSP servers installed)
-cargo test --features e2e-rust --test symbol_lsp
-cargo test --features e2e-rust --test rename_symbol
-
-# Run with local embedding backend (no Ollama needed)
-cargo build --features local-embed --no-default-features
-
-# Run with no optional features (minimal build)
-cargo build --no-default-features
-
-# Run with HTTP transport (multi-session MCP)
-cargo build --features http
-
-# Check MSRV compatibility (Rust 1.75)
-rustup run 1.75 cargo check
-
-# Build and launch the dashboard (separate from MCP server)
-cargo run -- dashboard --project . --port 8099
-
-# Index the project (build embedding index)
-cargo run -- index --project .
+cargo build --release          # production binary (required before MCP server picks up changes)
+cargo build                    # dev build (faster, not used by MCP server)
 ```
 
-## Before Completing Work
+### Test
+```bash
+cargo test                     # all unit + integration tests
+cargo test --test integration  # integration tests only (exercises all fixture libraries)
+cargo test --test symbol_lsp   # LSP symbol tests (exercises fixture LSPs)
+cargo test --test bug_regression -- --ignored  # real-LSP regression tests
+```
 
-1. `cargo fmt` — format all files
-2. `cargo clippy -- -D warnings` — no warnings allowed
-3. `cargo test` — all tests pass
-4. If changes affect tool dispatch or MCP behavior:
-   `cargo build --release && /mcp` (restart server in Claude Code)
-5. If tools were renamed: update all 3 prompt surfaces
-   (`server_instructions.md`, `onboarding_prompt.md`, `build_system_prompt_draft()`)
+### Quality
+```bash
+cargo fmt                      # format (required before commit)
+cargo clippy -- -D warnings    # lint (required before commit; -D warnings is CI standard)
+```
 
-## CI Matrix
+### Before Completing Work
+```bash
+cargo fmt && cargo clippy -- -D warnings && cargo test
+cargo build --release          # then restart MCP server with /mcp to test live
+```
 
-- ubuntu-latest / macos-latest / windows-latest
-- 3 feature variants: default, `local-embed --no-default-features`, `--no-default-features`
-- Plus: `cargo fmt --check`, `cargo clippy -- -D warnings`, MSRV 1.75, tool-docs-sync
+### Semantic Index
+```bash
+codescout index --project .    # rebuild semantic index from CLI
+# OR via MCP: index_project(force=true)
+```
+
+## Fixture-Specific Commands (for fixture development, rarely needed)
+
+### java-library / kotlin-library
+```bash
+cd tests/fixtures/java-library && ./gradlew build
+cd tests/fixtures/kotlin-library && ./gradlew build
+```
+
+### typescript-library
+```bash
+cd tests/fixtures/typescript-library && npm run build  # tsc
+```
+
+### python-library / rust-library
+No build step needed — Python is interpreted, rust-library is compiled by codescout's own Cargo workspace during `cargo test`.
