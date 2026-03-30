@@ -1231,6 +1231,91 @@ fn build_per_project_prompt(
     prompt
 }
 
+/// Build the workspace synthesis prompt that runs after all per-project subagents complete.
+///
+/// The main agent (or a synthesis subagent) reads this to:
+/// 1. Read back all per-project memories
+/// 2. Write 5 workspace-level memories
+/// 3. Generate the system prompt
+/// 4. Offer to refresh CLAUDE.md with memory references
+#[allow(dead_code)]
+fn build_synthesis_prompt(projects: &[(String, Vec<String>)]) -> String {
+    let mut prompt = String::new();
+
+    // Step 1: Read back per-project memories
+    prompt.push_str("## Read Per-Project Memories\n\n");
+    prompt.push_str("Read these memories to understand what each subagent discovered:\n\n");
+    for (id, _langs) in projects {
+        prompt.push_str(&format!(
+            "- `memory(action=\"read\", project=\"{id}\", topic=\"project-overview\")`\n\
+             - `memory(action=\"read\", project=\"{id}\", topic=\"architecture\")`\n\
+             - `memory(action=\"read\", project=\"{id}\", topic=\"conventions\")`\n"
+        ));
+    }
+    prompt.push_str("\n---\n\n");
+
+    // Step 2: Write workspace-level memories
+    prompt.push_str("## Write Workspace Memories\n\n");
+    prompt.push_str(
+        "Write these 5 workspace-level memories (no `project:` parameter = workspace-level):\n\n",
+    );
+    prompt.push_str(
+        "### 1. `architecture`\n\
+         Workspace-level architecture:\n\
+         - Project map: each project's purpose (1 sentence each)\n\
+         - Cross-project dependencies (which imports from which)\n\
+         - Shared infrastructure (CI, deployment, tooling)\n\
+         15-30 lines.\n\n\
+         ### 2. `conventions`\n\
+         Shared patterns across projects: commit style, PR process, CI rules.\n\
+         Per-project: reference `memory(project=\"{id}\", topic=\"conventions\")`.\n\
+         15-30 lines.\n\n\
+         ### 3. `development-commands`\n\
+         Workspace-level build/test/lint commands. Per-project commands go in per-project memories.\n\
+         10-20 lines.\n\n\
+         ### 4. `domain-glossary`\n\
+         Terms used across multiple projects. Project-specific terms go in per-project memories.\n\
+         10-20 lines.\n\n\
+         ### 5. `gotchas`\n\
+         Cross-project pitfalls, version mismatches, integration gotchas.\n\
+         10-20 lines.\n\n",
+    );
+
+    // Step 3: System prompt
+    prompt.push_str("---\n\n## Generate System Prompt\n\n");
+    prompt.push_str(
+        "Write `system-prompt.md` using `memory(action=\"write\", topic=\"system-prompt\", content=\"...\")`.\n\
+         Include: entry points per project, key abstractions, search tips scoped by project,\n\
+         navigation strategy for the workspace.\n\n",
+    );
+
+    // Step 4: CLAUDE.md refresh
+    prompt.push_str("---\n\n## Refresh CLAUDE.md\n\n");
+    prompt.push_str(
+        "Read `read_markdown(\"CLAUDE.md\")` to see its heading structure.\n\n\
+         Compare each section with the memories you just wrote. For sections that\n\
+         overlap with memory content, offer to replace the body with a memory reference:\n\
+         `See codescout memory 'architecture' (Key Patterns section).`\n\n\
+         **preserve user-specific content:** personal preferences, code style rules,\n\
+         iron rules, git workflow specifics, private notes — anything not derivable\n\
+         from the codebase. Do NOT touch sections the user wrote for their own use.\n\n\
+         **Add memory discovery hints** if CLAUDE.md doesn't already list available memories.\n\n\
+         Present a summary of proposed changes and ask for approval before modifying.\n\n",
+    );
+
+    // Return contract
+    prompt.push_str("---\n\n## Return Contract\n\n");
+    prompt.push_str(
+        "Return a summary with:\n\
+         - Workspace-level memories written (list topics)\n\
+         - Cross-project patterns discovered\n\
+         - CLAUDE.md changes proposed/applied\n\
+         - Any issues or gaps\n",
+    );
+
+    prompt
+}
+
 /// Gather staleness state for protected memory topics.
 /// Returns a JSON object keyed by topic name, suitable for inclusion
 /// in the onboarding result.
@@ -3291,6 +3376,39 @@ mod tests {
             !prompt.contains("Workspace Memory Synthesis"),
             "must NOT contain workspace synthesis"
         );
+    }
+
+    #[test]
+    fn build_synthesis_prompt_contains_readback_and_claude_md() {
+        let projects = vec![
+            ("backend".to_string(), vec!["kotlin".to_string()]),
+            ("mcp-server".to_string(), vec!["rust".to_string()]),
+        ];
+        let prompt = build_synthesis_prompt(&projects);
+
+        // Must contain memory readback commands for each project
+        assert!(prompt.contains("memory(action=\"read\", project=\"backend\""));
+        assert!(prompt.contains("memory(action=\"read\", project=\"mcp-server\""));
+
+        // Must contain workspace memory topics
+        assert!(prompt.contains("architecture"));
+        assert!(prompt.contains("conventions"));
+        assert!(prompt.contains("development-commands"));
+        assert!(prompt.contains("domain-glossary"));
+        assert!(prompt.contains("gotchas"));
+
+        // Must contain CLAUDE.md refresh instructions
+        assert!(
+            prompt.contains("CLAUDE.md"),
+            "must include CLAUDE.md refresh"
+        );
+        assert!(
+            prompt.contains("preserve"),
+            "must mention preserving user content"
+        );
+
+        // Must contain system prompt generation
+        assert!(prompt.contains("system-prompt"));
     }
 
     use std::path::PathBuf;
