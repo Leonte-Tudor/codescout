@@ -2875,19 +2875,32 @@ fn find_symbol_by_name_path<'a>(
     None
 }
 
-/// Find the parent symbol for a nested symbol identified by its `name_path`.
+/// Find the direct parent symbol that contains `child_name_path` in its children.
 ///
-/// If `child_name_path` is `"tests/first_test"`, this returns the `SymbolInfo`
-/// for `"tests"`. Returns `None` for top-level symbols (no `/` in path).
+/// Walks the symbol tree structurally rather than matching by name, so it finds
+/// the correct parent even when multiple symbols share the same name_path prefix
+/// (e.g. a struct `Bar` and an `impl Bar` both have name_path `"inner/Bar"`).
+///
+/// Returns `None` for top-level symbols (no `/` in path) or if the tree doesn't
+/// contain the child as a direct descendant.
 fn find_parent_symbol<'a>(
     symbols: &'a [SymbolInfo],
     child_name_path: &str,
 ) -> Option<&'a SymbolInfo> {
-    let last_slash = child_name_path.rfind('/')?;
-    let parent_path = &child_name_path[..last_slash];
-    collect_matching_symbols(symbols, parent_path)
-        .into_iter()
-        .next()
+    if !child_name_path.contains('/') {
+        return None;
+    }
+    for sym in symbols {
+        for child in &sym.children {
+            if child.name_path == child_name_path {
+                return Some(sym);
+            }
+        }
+        if let Some(parent) = find_parent_symbol(&sym.children, child_name_path) {
+            return Some(parent);
+        }
+    }
+    None
 }
 
 /// Like [`find_symbol_by_name_path`] but errors on ambiguous matches.

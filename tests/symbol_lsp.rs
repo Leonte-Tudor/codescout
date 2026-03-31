@@ -1834,3 +1834,637 @@ mod tests {
         "BUG-034: replaced_lines should start at or after #[test] (line 3), got: {replaced}"
     );
 }
+
+// ── BUG-034 guard: cross-language integration tests ──────────────────────────
+
+/// BUG-034 guard: Rust child in `impl` block with stale range_start_line.
+/// The guard must prevent eating `impl Foo {` when the child's range is stale.
+#[tokio::test]
+async fn bug034_guard_rust_child_in_impl_block_stale_range() {
+    let src = "\
+impl Foo {
+    /// Does something.
+    fn method(&self) {
+        old_body();
+    }
+
+    fn other(&self) {}
+}
+";
+    let (dir, ctx) = ctx_with_mock(&[("src/lib.rs", src)], |root| {
+        let file = root.join("src/lib.rs");
+        let mut parent = SymbolInfo {
+            name: "Foo".to_string(),
+            name_path: "Foo".to_string(),
+            kind: SymbolKind::Object,
+            file: file.clone(),
+            start_line: 0,
+            end_line: 7,
+            start_col: 0,
+            children: vec![],
+            range_start_line: Some(0),
+            detail: None,
+        };
+        // Stale: range_start_line=0 (impl Foo line) instead of correct 1 (/// doc)
+        let child1 = SymbolInfo {
+            name: "method".to_string(),
+            name_path: "Foo/method".to_string(),
+            kind: SymbolKind::Function,
+            file: file.clone(),
+            start_line: 2,
+            end_line: 4,
+            start_col: 4,
+            children: vec![],
+            range_start_line: Some(0), // stale — points to parent's impl line
+            detail: None,
+        };
+        let child2 = SymbolInfo {
+            name: "other".to_string(),
+            name_path: "Foo/other".to_string(),
+            kind: SymbolKind::Function,
+            file: file.clone(),
+            start_line: 6,
+            end_line: 6,
+            start_col: 4,
+            children: vec![],
+            range_start_line: Some(6),
+            detail: None,
+        };
+        parent.children = vec![child1, child2];
+        MockLspClient::new().with_symbols(file, vec![parent])
+    })
+    .await;
+
+    ReplaceSymbol
+        .call(
+            json!({
+                "path": "src/lib.rs",
+                "symbol": "Foo/method",
+                "new_body": "    /// Does something.\n    fn method(&self) {\n        new_body();\n    }",
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    let content = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+    assert!(
+        content.contains("impl Foo {"),
+        "impl Foo {{ must be preserved; got:\n{content}"
+    );
+    assert!(
+        content.contains("new_body()"),
+        "new body must be applied; got:\n{content}"
+    );
+    assert!(
+        content.contains("fn other"),
+        "sibling must be preserved; got:\n{content}"
+    );
+}
+
+/// BUG-034 guard: Rust child in `impl` with CORRECT range — verify no over-clamping.
+#[tokio::test]
+async fn bug034_guard_rust_impl_correct_range_no_overclamping() {
+    let src = "\
+impl Foo {
+    /// A doc comment.
+    #[inline]
+    fn method(&self) {
+        old_body();
+    }
+}
+";
+    let (dir, ctx) = ctx_with_mock(&[("src/lib.rs", src)], |root| {
+        let file = root.join("src/lib.rs");
+        let mut parent = SymbolInfo {
+            name: "Foo".to_string(),
+            name_path: "Foo".to_string(),
+            kind: SymbolKind::Object,
+            file: file.clone(),
+            start_line: 0,
+            end_line: 6,
+            start_col: 0,
+            children: vec![],
+            range_start_line: Some(0),
+            detail: None,
+        };
+        // Correct range: points to doc comment
+        let child = SymbolInfo {
+            name: "method".to_string(),
+            name_path: "Foo/method".to_string(),
+            kind: SymbolKind::Function,
+            file: file.clone(),
+            start_line: 3,
+            end_line: 5,
+            start_col: 4,
+            children: vec![],
+            range_start_line: Some(1), // correct — points to `/// A doc comment.`
+            detail: None,
+        };
+        parent.children = vec![child];
+        MockLspClient::new().with_symbols(file, vec![parent])
+    })
+    .await;
+
+    ReplaceSymbol
+        .call(
+            json!({
+                "path": "src/lib.rs",
+                "symbol": "Foo/method",
+                "new_body": "    /// Updated doc.\n    #[inline]\n    fn method(&self) {\n        new_body();\n    }",
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    let content = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+    assert!(
+        content.contains("impl Foo {"),
+        "impl header must be preserved; got:\n{content}"
+    );
+    assert!(
+        content.contains("Updated doc"),
+        "new doc comment must be present; got:\n{content}"
+    );
+    assert!(
+        !content.contains("A doc comment"),
+        "old doc comment must be replaced; got:\n{content}"
+    );
+}
+
+/// BUG-034 guard: Python decorated method in class with stale range.
+#[tokio::test]
+async fn bug034_guard_python_decorated_method_stale_range() {
+    let src = "\
+class MyService:
+    @staticmethod
+    def handle(request):
+        return old_response()
+
+    def other(self):
+        pass
+";
+    let (dir, ctx) = ctx_with_mock(&[("service.py", src)], |root| {
+        let file = root.join("service.py");
+        let mut parent = SymbolInfo {
+            name: "MyService".to_string(),
+            name_path: "MyService".to_string(),
+            kind: SymbolKind::Class,
+            file: file.clone(),
+            start_line: 0,
+            end_line: 6,
+            start_col: 0,
+            children: vec![],
+            range_start_line: Some(0),
+            detail: None,
+        };
+        // Stale: range_start_line=0 (class line) instead of correct 1 (@staticmethod)
+        let child1 = SymbolInfo {
+            name: "handle".to_string(),
+            name_path: "MyService/handle".to_string(),
+            kind: SymbolKind::Function,
+            file: file.clone(),
+            start_line: 2,
+            end_line: 3,
+            start_col: 4,
+            children: vec![],
+            range_start_line: Some(0), // stale
+            detail: None,
+        };
+        let child2 = SymbolInfo {
+            name: "other".to_string(),
+            name_path: "MyService/other".to_string(),
+            kind: SymbolKind::Function,
+            file: file.clone(),
+            start_line: 5,
+            end_line: 6,
+            start_col: 4,
+            children: vec![],
+            range_start_line: Some(5),
+            detail: None,
+        };
+        parent.children = vec![child1, child2];
+        MockLspClient::new().with_symbols(file, vec![parent])
+    })
+    .await;
+
+    ReplaceSymbol
+        .call(
+            json!({
+                "path": "service.py",
+                "symbol": "MyService/handle",
+                "new_body": "    @staticmethod\n    def handle(request):\n        return new_response()",
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    let content = std::fs::read_to_string(dir.path().join("service.py")).unwrap();
+    assert!(
+        content.contains("class MyService:"),
+        "class header must be preserved; got:\n{content}"
+    );
+    assert!(
+        content.contains("new_response()"),
+        "new body must be applied; got:\n{content}"
+    );
+    assert!(
+        content.contains("def other"),
+        "sibling must be preserved; got:\n{content}"
+    );
+}
+
+/// BUG-034 guard: TypeScript method in class with stale range.
+#[tokio::test]
+async fn bug034_guard_typescript_method_stale_range() {
+    let src = "\
+export class UserService {
+    private validate(input: string): boolean {
+        return false;
+    }
+
+    public greet(): string {
+        return 'hello';
+    }
+}
+";
+    let (dir, ctx) = ctx_with_mock(&[("service.ts", src)], |root| {
+        let file = root.join("service.ts");
+        let mut parent = SymbolInfo {
+            name: "UserService".to_string(),
+            name_path: "UserService".to_string(),
+            kind: SymbolKind::Class,
+            file: file.clone(),
+            start_line: 0,
+            end_line: 8,
+            start_col: 0,
+            children: vec![],
+            range_start_line: Some(0),
+            detail: None,
+        };
+        let child1 = SymbolInfo {
+            name: "validate".to_string(),
+            name_path: "UserService/validate".to_string(),
+            kind: SymbolKind::Function,
+            file: file.clone(),
+            start_line: 1,
+            end_line: 3,
+            start_col: 4,
+            children: vec![],
+            range_start_line: Some(0), // stale — points to class declaration
+            detail: None,
+        };
+        let child2 = SymbolInfo {
+            name: "greet".to_string(),
+            name_path: "UserService/greet".to_string(),
+            kind: SymbolKind::Function,
+            file: file.clone(),
+            start_line: 5,
+            end_line: 7,
+            start_col: 4,
+            children: vec![],
+            range_start_line: Some(5),
+            detail: None,
+        };
+        parent.children = vec![child1, child2];
+        MockLspClient::new().with_symbols(file, vec![parent])
+    })
+    .await;
+
+    ReplaceSymbol
+        .call(
+            json!({
+                "path": "service.ts",
+                "symbol": "UserService/validate",
+                "new_body": "    private validate(input: string): boolean {\n        return true;\n    }",
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    let content = std::fs::read_to_string(dir.path().join("service.ts")).unwrap();
+    assert!(
+        content.contains("export class UserService {"),
+        "class header must be preserved; got:\n{content}"
+    );
+    assert!(
+        content.contains("return true"),
+        "new body must be applied; got:\n{content}"
+    );
+    assert!(
+        content.contains("public greet"),
+        "sibling must be preserved; got:\n{content}"
+    );
+}
+
+/// BUG-034 guard: Java annotated method in class with stale range.
+#[tokio::test]
+async fn bug034_guard_java_annotated_method_stale_range() {
+    let src = "\
+public class Handler {
+    @Override
+    public void process(Request req) {
+        oldLogic();
+    }
+
+    public void other() {}
+}
+";
+    let (dir, ctx) = ctx_with_mock(&[("Handler.java", src)], |root| {
+        let file = root.join("Handler.java");
+        let mut parent = SymbolInfo {
+            name: "Handler".to_string(),
+            name_path: "Handler".to_string(),
+            kind: SymbolKind::Class,
+            file: file.clone(),
+            start_line: 0,
+            end_line: 7,
+            start_col: 0,
+            children: vec![],
+            range_start_line: Some(0),
+            detail: None,
+        };
+        let child1 = SymbolInfo {
+            name: "process".to_string(),
+            name_path: "Handler/process".to_string(),
+            kind: SymbolKind::Function,
+            file: file.clone(),
+            start_line: 2,
+            end_line: 4,
+            start_col: 4,
+            children: vec![],
+            range_start_line: Some(0), // stale — points to class declaration
+            detail: None,
+        };
+        let child2 = SymbolInfo {
+            name: "other".to_string(),
+            name_path: "Handler/other".to_string(),
+            kind: SymbolKind::Function,
+            file: file.clone(),
+            start_line: 6,
+            end_line: 6,
+            start_col: 4,
+            children: vec![],
+            range_start_line: Some(6),
+            detail: None,
+        };
+        parent.children = vec![child1, child2];
+        MockLspClient::new().with_symbols(file, vec![parent])
+    })
+    .await;
+
+    ReplaceSymbol
+        .call(
+            json!({
+                "path": "Handler.java",
+                "symbol": "Handler/process",
+                "new_body": "    @Override\n    public void process(Request req) {\n        newLogic();\n    }",
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    let content = std::fs::read_to_string(dir.path().join("Handler.java")).unwrap();
+    assert!(
+        content.contains("public class Handler {"),
+        "class header must be preserved; got:\n{content}"
+    );
+    assert!(
+        content.contains("newLogic()"),
+        "new body must be applied; got:\n{content}"
+    );
+    assert!(
+        content.contains("public void other"),
+        "sibling must be preserved; got:\n{content}"
+    );
+}
+
+/// BUG-034 guard: Kotlin annotated method in class with stale range.
+#[tokio::test]
+async fn bug034_guard_kotlin_annotated_method_stale_range() {
+    let src = "\
+class Repository {
+    @Throws(IOException::class)
+    fun load(id: String): Data {
+        return oldLoad(id)
+    }
+
+    fun save(data: Data) {}
+}
+";
+    let (dir, ctx) = ctx_with_mock(&[("Repository.kt", src)], |root| {
+        let file = root.join("Repository.kt");
+        let mut parent = SymbolInfo {
+            name: "Repository".to_string(),
+            name_path: "Repository".to_string(),
+            kind: SymbolKind::Class,
+            file: file.clone(),
+            start_line: 0,
+            end_line: 7,
+            start_col: 0,
+            children: vec![],
+            range_start_line: Some(0),
+            detail: None,
+        };
+        let child1 = SymbolInfo {
+            name: "load".to_string(),
+            name_path: "Repository/load".to_string(),
+            kind: SymbolKind::Function,
+            file: file.clone(),
+            start_line: 2,
+            end_line: 4,
+            start_col: 4,
+            children: vec![],
+            range_start_line: Some(0), // stale
+            detail: None,
+        };
+        let child2 = SymbolInfo {
+            name: "save".to_string(),
+            name_path: "Repository/save".to_string(),
+            kind: SymbolKind::Function,
+            file: file.clone(),
+            start_line: 6,
+            end_line: 6,
+            start_col: 4,
+            children: vec![],
+            range_start_line: Some(6),
+            detail: None,
+        };
+        parent.children = vec![child1, child2];
+        MockLspClient::new().with_symbols(file, vec![parent])
+    })
+    .await;
+
+    ReplaceSymbol
+        .call(
+            json!({
+                "path": "Repository.kt",
+                "symbol": "Repository/load",
+                "new_body": "    @Throws(IOException::class)\n    fun load(id: String): Data {\n        return newLoad(id)\n    }",
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    let content = std::fs::read_to_string(dir.path().join("Repository.kt")).unwrap();
+    assert!(
+        content.contains("class Repository {"),
+        "class header must be preserved; got:\n{content}"
+    );
+    assert!(
+        content.contains("newLoad(id)"),
+        "new body must be applied; got:\n{content}"
+    );
+    assert!(
+        content.contains("fun save"),
+        "sibling must be preserved; got:\n{content}"
+    );
+}
+
+/// BUG-034 guard: deeply nested Rust — fn inside impl inside mod.
+/// The guard should find the IMMEDIATE parent (impl), not the grandparent (mod).
+#[tokio::test]
+async fn bug034_guard_rust_deeply_nested_fn_in_impl_in_mod() {
+    let src = "\
+mod inner {
+    pub struct Bar;
+
+    impl Bar {
+        pub fn do_thing(&self) {
+            old();
+        }
+    }
+}
+";
+    let (dir, ctx) = ctx_with_mock(&[("src/lib.rs", src)], |root| {
+        let file = root.join("src/lib.rs");
+        let method = SymbolInfo {
+            name: "do_thing".to_string(),
+            name_path: "inner/Bar/do_thing".to_string(),
+            kind: SymbolKind::Function,
+            file: file.clone(),
+            start_line: 4,
+            end_line: 6,
+            start_col: 8,
+            children: vec![],
+            range_start_line: Some(0), // extremely stale — points to `mod inner`
+            detail: None,
+        };
+        let impl_block = SymbolInfo {
+            name: "Bar".to_string(),
+            name_path: "inner/Bar".to_string(),
+            kind: SymbolKind::Object,
+            file: file.clone(),
+            start_line: 3,
+            end_line: 7,
+            start_col: 4,
+            children: vec![method],
+            range_start_line: Some(3),
+            detail: None,
+        };
+        let struct_sym = SymbolInfo {
+            name: "Bar".to_string(),
+            name_path: "inner/Bar".to_string(),
+            kind: SymbolKind::Struct,
+            file: file.clone(),
+            start_line: 1,
+            end_line: 1,
+            start_col: 4,
+            children: vec![],
+            range_start_line: Some(1),
+            detail: None,
+        };
+        let module = SymbolInfo {
+            name: "inner".to_string(),
+            name_path: "inner".to_string(),
+            kind: SymbolKind::Module,
+            file: file.clone(),
+            start_line: 0,
+            end_line: 8,
+            start_col: 0,
+            children: vec![struct_sym, impl_block],
+            range_start_line: Some(0),
+            detail: None,
+        };
+        MockLspClient::new().with_symbols(file, vec![module])
+    })
+    .await;
+
+    ReplaceSymbol
+        .call(
+            json!({
+                "path": "src/lib.rs",
+                "symbol": "inner/Bar/do_thing",
+                "new_body": "        pub fn do_thing(&self) {\n            new();\n        }",
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    let content = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+    assert!(
+        content.contains("mod inner {"),
+        "module header must be preserved; got:\n{content}"
+    );
+    assert!(
+        content.contains("impl Bar {"),
+        "impl header must be preserved; got:\n{content}"
+    );
+    assert!(
+        content.contains("new()"),
+        "new body must be applied; got:\n{content}"
+    );
+}
+
+/// BUG-034 guard: top-level Rust function (no parent) — verify no regression.
+/// find_parent_symbol returns None, guard doesn't fire.
+#[tokio::test]
+async fn bug034_guard_top_level_function_no_parent_no_regression() {
+    let src = "\
+/// Top-level function.
+pub fn standalone() {
+    old_impl();
+}
+
+pub fn other() {}
+";
+    let (dir, ctx) = ctx_with_mock(&[("src/lib.rs", src)], |root| {
+        let file = root.join("src/lib.rs");
+        let sym1 = sym_with_range("standalone", 1, 3, 0, file.clone());
+        let sym2 = sym_with_range("other", 5, 5, 5, file.clone());
+        MockLspClient::new().with_symbols(file, vec![sym1, sym2])
+    })
+    .await;
+
+    ReplaceSymbol
+        .call(
+            json!({
+                "path": "src/lib.rs",
+                "symbol": "standalone",
+                "new_body": "/// Top-level function.\npub fn standalone() {\n    new_impl();\n}",
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    let content = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+    assert!(
+        content.contains("new_impl()"),
+        "new body must be applied; got:\n{content}"
+    );
+    assert!(
+        !content.contains("old_impl()"),
+        "old body must be gone; got:\n{content}"
+    );
+    assert!(
+        content.contains("pub fn other"),
+        "sibling must be preserved; got:\n{content}"
+    );
+}
