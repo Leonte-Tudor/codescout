@@ -1869,8 +1869,19 @@ impl Tool for ReplaceSymbol {
         let lines: Vec<&str> = content.lines().collect();
         validate_symbol_position(sym, &lines)?;
 
-        let start = editing_start_line(sym, &lines);
+        let mut start = editing_start_line(sym, &lines);
         let end = (editing_end_line(sym) as usize + 1).min(lines.len());
+
+        // BUG-034 guard: if this is a nested symbol, don't let the editing range
+        // extend above the parent's body start. Stale LSP data can report the
+        // child's range_start_line as the parent's attribute line, eating the
+        // parent's header (e.g. `#[cfg(test)]\nmod tests {`).
+        if let Some(parent) = find_parent_symbol(&symbols, &sym.name_path) {
+            let parent_body_start = parent.start_line as usize + 1;
+            if start < parent_body_start {
+                start = parent_body_start;
+            }
+        }
 
         if start >= lines.len() {
             return Err(RecoverableError::with_hint(
@@ -1943,8 +1954,16 @@ impl Tool for RemoveSymbol {
         let lines: Vec<&str> = content.lines().collect();
         validate_symbol_position(sym, &lines)?;
 
-        let start = editing_start_line(sym, &lines);
+        let mut start = editing_start_line(sym, &lines);
         let end = (editing_end_line(sym) as usize + 1).min(lines.len());
+
+        // BUG-034 guard: same as replace_symbol — clamp to parent boundary.
+        if let Some(parent) = find_parent_symbol(&symbols, &sym.name_path) {
+            let parent_body_start = parent.start_line as usize + 1;
+            if start < parent_body_start {
+                start = parent_body_start;
+            }
+        }
 
         if start >= lines.len() {
             return Err(RecoverableError::with_hint(
@@ -2854,6 +2873,21 @@ fn find_symbol_by_name_path<'a>(
         }
     }
     None
+}
+
+/// Find the parent symbol for a nested symbol identified by its `name_path`.
+///
+/// If `child_name_path` is `"tests/first_test"`, this returns the `SymbolInfo`
+/// for `"tests"`. Returns `None` for top-level symbols (no `/` in path).
+fn find_parent_symbol<'a>(
+    symbols: &'a [SymbolInfo],
+    child_name_path: &str,
+) -> Option<&'a SymbolInfo> {
+    let last_slash = child_name_path.rfind('/')?;
+    let parent_path = &child_name_path[..last_slash];
+    collect_matching_symbols(symbols, parent_path)
+        .into_iter()
+        .next()
 }
 
 /// Like [`find_symbol_by_name_path`] but errors on ambiguous matches.

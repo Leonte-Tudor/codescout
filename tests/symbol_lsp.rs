@@ -1713,3 +1713,124 @@ async fn replace_symbol_caps_overextended_lsp_end() {
         "fn following() must come after replacement; got:\n{result}"
     );
 }
+
+/// BUG-034 reproduction: replace_symbol on the first child inside `mod tests`
+/// must NOT eat the parent's `#[cfg(test)]\nmod tests {` header, even when the
+/// LSP reports a stale `range_start_line` that points to the parent's attribute.
+#[tokio::test]
+async fn replace_symbol_child_in_mod_tests_preserves_module_header() {
+    // File layout (0-indexed):
+    //  0: "#[cfg(test)]"               <- parent range_start = 0
+    //  1: "mod tests {"                <- parent start_line = 1
+    //  2: "    #[test]"                <- child range_start SHOULD be 2, but stale LSP says 0
+    //  3: "    fn first_test() {"      <- child start_line = 3
+    //  4: "        assert!(true);"
+    //  5: "    }"                      <- child end = 5
+    //  6: ""
+    //  7: "    #[test]"
+    //  8: "    fn second_test() {"
+    //  9: "        assert!(false);"
+    // 10: "    }"
+    // 11: "}"
+    let src = "\
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn first_test() {
+        assert!(true);
+    }
+
+    #[test]
+    fn second_test() {
+        assert!(false);
+    }
+}
+";
+
+    let (dir, ctx) = ctx_with_mock(&[("src/lib.rs", src)], |root| {
+        let file = root.join("src/lib.rs");
+        // Parent: mod tests — range starts at #[cfg(test)] (line 0), keyword at line 1
+        let mut parent = SymbolInfo {
+            name: "tests".to_string(),
+            name_path: "tests".to_string(),
+            kind: SymbolKind::Module,
+            file: file.clone(),
+            start_line: 1,
+            end_line: 11,
+            start_col: 0,
+            children: vec![],
+            range_start_line: Some(0),
+            detail: None,
+        };
+        // Child: first_test — stale LSP reports range_start_line = 0 (#[cfg(test)])
+        // instead of the correct 2 (#[test])
+        let child1 = SymbolInfo {
+            name: "first_test".to_string(),
+            name_path: "tests/first_test".to_string(),
+            kind: SymbolKind::Function,
+            file: file.clone(),
+            start_line: 3,
+            end_line: 5,
+            start_col: 4,
+            children: vec![],
+            range_start_line: Some(0), // BUG: stale, points to parent's #[cfg(test)]
+            detail: None,
+        };
+        let child2 = SymbolInfo {
+            name: "second_test".to_string(),
+            name_path: "tests/second_test".to_string(),
+            kind: SymbolKind::Function,
+            file: file.clone(),
+            start_line: 8,
+            end_line: 10,
+            start_col: 4,
+            children: vec![],
+            range_start_line: Some(7),
+            detail: None,
+        };
+        parent.children = vec![child1, child2];
+        MockLspClient::new().with_symbols(file, vec![parent])
+    })
+    .await;
+
+    // Replace first_test with a new body
+    let new_body = "    #[test]\n    fn first_test() {\n        assert_eq!(1, 1);\n    }";
+    let result = ReplaceSymbol
+        .call(
+            json!({
+                "path": "src/lib.rs",
+                "symbol": "tests/first_test",
+                "new_body": new_body,
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    // Verify the module header is preserved
+    let content = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+    assert!(
+        content.contains("#[cfg(test)]"),
+        "BUG-034: #[cfg(test)] must be preserved; got:\n{content}"
+    );
+    assert!(
+        content.contains("mod tests {"),
+        "BUG-034: mod tests {{ must be preserved; got:\n{content}"
+    );
+    assert!(
+        content.contains("assert_eq!(1, 1)"),
+        "new body must be applied; got:\n{content}"
+    );
+    assert!(
+        content.contains("second_test"),
+        "second_test must be preserved; got:\n{content}"
+    );
+
+    // Verify replaced_lines doesn't extend into module header
+    let replaced = result["replaced_lines"].as_str().unwrap();
+    let start_line: usize = replaced.split('-').next().unwrap().parse().unwrap();
+    assert!(
+        start_line >= 3, // 1-indexed: line 3 = #[test] for first_test
+        "BUG-034: replaced_lines should start at or after #[test] (line 3), got: {replaced}"
+    );
+}

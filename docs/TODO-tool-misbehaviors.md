@@ -155,6 +155,37 @@ transient errors (`WouldBlock`, `Interrupted`) from fatal ones (`BrokenPipe`, EO
 Run two long-running commands via `run_command` that both time out in quick
 succession. The killpg + I/O pressure can trigger `EAGAIN` on stdin.
 
+### BUG-034 — `replace_symbol`: replacing first test in `mod tests` eats the module header
+
+**Date:** 2026-03-31
+**Severity:** Medium — produces broken code, manifests as compile error (caught immediately)
+**Status:** Fixed (2026-03-31)
+
+**What happened:**
+During Task 4 of the unified-embedding-config implementation, called
+`replace_symbol` on the first function inside `#[cfg(test)]\nmod tests { ... }` in
+`src/embed/mod.rs`. The tool matched the symbol body BUT also consumed the
+`#[cfg(test)]\nmod tests {` module header — the replacement output omitted it,
+leaving subsequent test functions floating outside the module. This produced an
+`unexpected token` compile error.
+
+**Root cause:**
+Stale LSP data after a prior edit caused `range_start_line` for the child function
+to point to the parent module's `#[cfg(test)]` attribute (line 0) instead of the
+child's own `#[test]` attribute. `editing_start_line` trusted this value and returned
+line 0, so `lines[..0]` was empty — everything above the replacement body was lost.
+
+**Fix applied:**
+Parent-boundary guard in `replace_symbol` and `remove_symbol`: after computing
+`editing_start_line`, if the symbol is nested (has `/` in `name_path`), find the
+parent symbol and clamp `start` to `max(start, parent.start_line + 1)`. The parent's
+body starts on the line after its keyword — no child edit should extend above that.
+
+New helper: `find_parent_symbol(symbols, child_name_path)` in `src/tools/symbol.rs`.
+
+**Test:** `replace_symbol_child_in_mod_tests_preserves_module_header` in `tests/symbol_lsp.rs`.
+
+---
 ## Template for new entries
 
 ```
