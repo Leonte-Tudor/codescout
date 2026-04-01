@@ -104,6 +104,44 @@ than by name. It requires an embedding backend.
 
 ```bash
 # Install Ollama from https://ollama.com then pull a model
+ollama pull nomic-embed-text
+
+# Or use the install script (checks + installs in one step):
+./scripts/install-ollama.sh --install
+```
+
+Then create `.codescout/project.toml` in your project root:
+
+```toml
+[embeddings]
+model = "ollama:nomic-embed-text"
+```
+
+### Option B — OpenAI
+
+```toml
+[embeddings]
+model = "openai:text-embedding-3-small"
+api_key = "sk-..."
+```
+
+### Build the index
+
+Open a Claude Code session in your project and ask:
+
+```
+Run index_project to build the semantic search index.
+```
+
+Or call it directly:
+
+```json
+{ "name": "index_project", "arguments": {} }
+```
+
+Indexing takes 1–3 minutes for a ~100k line project. It is incremental — subsequent runs only
+re-embed changed files.
+# Install Ollama from https://ollama.com then pull a model
 ollama pull mxbai-embed-large
 ```
 
@@ -148,7 +186,7 @@ The routing plugin automatically steers Claude toward codescout tools and away f
 
 ```
 /plugin marketplace add mareurs/sdd-misc-plugins
-/plugin install code-explorer-routing@sdd-misc-plugins
+/plugin install codescout-companion@sdd-misc-plugins
 ```
 
 Or add to `~/.claude/settings.json`:
@@ -156,7 +194,7 @@ Or add to `~/.claude/settings.json`:
 ```json
 {
   "enabledPlugins": {
-    "code-explorer-routing@sdd-misc-plugins": true
+    "codescout-companion@sdd-misc-plugins": true
   }
 }
 ```
