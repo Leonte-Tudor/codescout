@@ -121,7 +121,7 @@ ensure_daemon() {
             exit 1
         fi
         sleep 1
-        (( i++ ))
+        i=$(( i + 1 ))
     done
     ok "ollama daemon started (pid ${pid})"
 }
