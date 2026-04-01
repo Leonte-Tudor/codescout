@@ -66,10 +66,11 @@ Four targeted edits.
 - **`docs/manual/src/getting-started/installation.md`**: verify all model references say
   `nomic-embed-text` (already correct in main body; check Feature Flags section too).
 
-### 2b. Fix stale plugin name + add README reference
+### 2b. Fix wrong plugin name + add README reference
 
-- **`docs/QUICK-START.md`**: in the "Install the Routing Plugin" block, replace
-  `code-explorer-routing@sdd-misc-plugins` → `codescout-companion@sdd-misc-plugins`.
+- **`docs/QUICK-START.md`**: the "Install the Routing Plugin" block incorrectly references
+  `code-explorer-routing@sdd-misc-plugins` — this plugin does not exist. Replace with the
+  correct name: `codescout-companion@sdd-misc-plugins`.
 - **`README.md`**: the main README has no plugin reference at all. Add a brief mention
   in the Quick Start section (1–2 sentences + link to `docs/manual/src/getting-started/companion-plugin.md`)
   so a reader landing on the repo page knows the companion plugin exists.
@@ -88,6 +89,9 @@ Four targeted edits.
   after `routing-plugin.md`.
 - Add a "See also" link in `routing-plugin.md`'s Further Reading pointing to
   `companion-plugin.md`.
+- Note: `routing-plugin.md` documents an older `code-explorer-routing` plugin that no longer
+  exists. The page should be updated to redirect readers to `companion-plugin.md` and
+  `codescout-companion` as the current replacement.
 
 ---
 
