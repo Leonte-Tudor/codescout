@@ -10,6 +10,7 @@
 - [Installation](getting-started/installation.md)
   - [Your First Project](getting-started/first-project.md)
   - [Routing Plugin](getting-started/routing-plugin.md)
+  - [Companion Plugin](getting-started/companion-plugin.md)
 
 - [Agent Integrations](agents/overview.md)
   - [Claude Code](agents/claude-code.md)
@@ -94,6 +95,7 @@
 - [Installation](getting-started/installation.md)
   - [Your First Project](getting-started/first-project.md)
   - [Routing Plugin](getting-started/routing-plugin.md)
+  - [Companion Plugin](getting-started/companion-plugin.md)
 
 - [Agent Integrations](agents/overview.md)
   - [Claude Code](agents/claude-code.md)

@@ -6,7 +6,7 @@ Claude Code has access to codescout's 28 tools, but it also has built-in tools l
 `cat`, and `Read`. Without guidance, Claude tends to reach for the familiar built-ins — especially
 in subagents, which start each task with a blank slate and have no memory of earlier instructions.
 
-The `code-explorer-routing` plugin solves this with three hooks that run automatically:
+The `codescout-companion` plugin solves this with three hooks that run automatically:
 
 - **SessionStart** — injects a tool selection guide into every new session, explaining when to
   prefer codescout tools over built-ins.
@@ -30,7 +30,7 @@ The difference in practice:
 │                   Claude Code                        │
 │                                                      │
 │  ┌─────────────────────────────────────────────┐    │
-│  │  code-explorer-routing plugin (hooks)        │    │
+│  │  codescout-companion plugin (hooks)        │    │
 │  │                                              │    │
 │  │  SessionStart  → inject tool selection guide │    │
 │  │  SubagentStart → propagate to all subagents  │    │
@@ -55,7 +55,7 @@ job is to steer Claude toward the right tools at the right moment.
 
 ```
 /plugin marketplace add mareurs/sdd-misc-plugins
-/plugin install code-explorer-routing@sdd-misc-plugins
+/plugin install codescout-companion@sdd-misc-plugins
 ```
 
 This downloads and enables the plugin immediately. It persists across sessions.
@@ -67,7 +67,7 @@ Add the plugin to your Claude Code user settings at `~/.claude/settings.json`:
 ```json
 {
   "enabledPlugins": {
-    "code-explorer-routing@sdd-misc-plugins": true
+    "codescout-companion@sdd-misc-plugins": true
   }
 }
 ```
@@ -85,7 +85,7 @@ rather than `grep`. You can also check installed plugins:
 claude /plugin list
 ```
 
-`code-explorer-routing@sdd-misc-plugins` should appear in the output.
+`codescout-companion@sdd-misc-plugins` should appear in the output.
 
 ## What Each Hook Does
 
@@ -137,7 +137,7 @@ To turn off the plugin without uninstalling it, set its value to `false` in sett
 ```json
 {
   "enabledPlugins": {
-    "code-explorer-routing@sdd-misc-plugins": false
+    "codescout-companion@sdd-misc-plugins": false
   }
 }
 ```
@@ -145,9 +145,10 @@ To turn off the plugin without uninstalling it, set its value to `false` in sett
 Or uninstall it entirely:
 
 ```bash
-claude /plugin uninstall code-explorer-routing@sdd-misc-plugins
+claude /plugin uninstall codescout-companion@sdd-misc-plugins
 ```
 
 ## Further Reading
 
 - [Routing Plugin (concepts)](../concepts/routing-plugin.md) — how the plugin works, why hard blocks beat soft warnings, the subagent coverage problem
+- [Companion Plugin (getting started)](companion-plugin.md) — quick install guide for `codescout-companion`
