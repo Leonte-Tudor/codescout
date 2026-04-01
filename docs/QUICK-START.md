@@ -141,41 +141,6 @@ Or call it directly:
 
 Indexing takes 1–3 minutes for a ~100k line project. It is incremental — subsequent runs only
 re-embed changed files.
-# Install Ollama from https://ollama.com then pull a model
-ollama pull mxbai-embed-large
-```
-
-Then create `.codescout/project.toml` in your project root:
-
-```toml
-[embeddings]
-model = "ollama:mxbai-embed-large"
-```
-
-### Option B — OpenAI
-
-```toml
-[embeddings]
-model = "openai:text-embedding-3-small"
-api_key = "sk-..."
-```
-
-### Build the index
-
-Open a Claude Code session in your project and ask:
-
-```
-Run index_project to build the semantic search index.
-```
-
-Or call it directly:
-
-```json
-{ "name": "index_project", "arguments": {} }
-```
-
-Indexing takes 1–3 minutes for a ~100k line project. It is incremental — subsequent runs only
-re-embed changed files.
 
 ---
 
