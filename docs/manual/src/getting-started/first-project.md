@@ -80,7 +80,7 @@ Sample output:
 Embedding index status
   Files indexed : 312
   Chunks        : 4 847
-  Model         : mxbai-embed-large
+  Model         : nomic-embed-text
   Last updated  : 2026-02-26 14:32 UTC
 ```
 
