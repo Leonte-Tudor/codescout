@@ -276,21 +276,38 @@ impl Agent {
     }
 
     /// Get or create a cached embedder for the given model.
-    /// If the cached model matches, returns the existing embedder.
+    /// If the cached model+url matches, returns the existing embedder.
     /// The Mutex deduplicates concurrent creation — second caller waits and reuses.
     pub async fn get_or_create_embedder(
         &self,
         model: &str,
     ) -> anyhow::Result<Arc<dyn crate::embed::Embedder>> {
+        // Read url and api_key from project config
+        let (url, api_key) = self
+            .with_project(|p| {
+                Ok((
+                    p.config.embeddings.url.clone(),
+                    p.config.embeddings.api_key.clone(),
+                ))
+            })
+            .await
+            .unwrap_or((None, None));
+
+        let cache_key = match &url {
+            Some(u) => format!("{}@{}", model, u),
+            None => model.to_string(),
+        };
+
         let mut guard = self.cached_embedder.lock().await;
-        if let Some((cached_model, embedder)) = guard.as_ref() {
-            if cached_model == model {
+        if let Some((cached_key, embedder)) = guard.as_ref() {
+            if *cached_key == cache_key {
                 return Ok(Arc::clone(embedder));
             }
         }
-        let embedder: Arc<dyn crate::embed::Embedder> =
-            Arc::from(crate::embed::create_embedder(model).await?);
-        *guard = Some((model.to_string(), Arc::clone(&embedder)));
+        let embedder: Arc<dyn crate::embed::Embedder> = Arc::from(
+            crate::embed::create_embedder_with_config(model, url.as_deref(), api_key).await?,
+        );
+        *guard = Some((cache_key, Arc::clone(&embedder)));
         Ok(embedder)
     }
 

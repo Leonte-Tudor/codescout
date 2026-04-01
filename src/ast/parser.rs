@@ -38,6 +38,8 @@ fn get_ts_language(lang: &str) -> Option<tree_sitter::Language> {
         "jsx" => Some(tree_sitter_typescript::LANGUAGE_TSX.into()),
         "java" => Some(tree_sitter_java::LANGUAGE.into()),
         "kotlin" => Some(tree_sitter_kotlin_ng::LANGUAGE.into()),
+        "html" => Some(tree_sitter_html::LANGUAGE.into()),
+        "css" | "scss" | "less" => Some(tree_sitter_css::LANGUAGE.into()),
         _ => None,
     }
 }

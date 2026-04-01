@@ -54,71 +54,57 @@ pub struct ModelOption {
     pub recommended: bool,
 }
 
-/// Pure function: derive a ranked 3-option model list from hardware facts.
-/// Always returns exactly 3 entries; the first is the recommended default.
+/// Pure function: derive a ranked model list from hardware facts.
+/// The first entry is always the recommended default (local:NomicEmbedTextV15Q).
 pub fn model_options_for_hardware(ctx: &HardwareContext) -> Vec<ModelOption> {
+    let mut options = vec![ModelOption {
+        id: "local:NomicEmbedTextV15Q".into(),
+        label: "NomicEmbedTextV15Q".into(),
+        dims: 768,
+        context_tokens: 8192,
+        reason: "bundled ONNX, no server needed, good general baseline (quantized)".into(),
+        available: true,
+        recommended: true,
+    }];
+
     if ctx.ollama_available {
-        vec![
-            ModelOption {
-                id: "ollama:nomic-embed-text".into(),
-                label: "nomic-embed-text".into(),
-                dims: 768,
-                context_tokens: 8192,
-                reason: "fast, good general baseline via Ollama (137MB)".into(),
-                available: true,
-                recommended: true,
-            },
-            ModelOption {
-                id: "ollama:bge-m3".into(),
-                label: "bge-m3".into(),
-                dims: 1024,
-                context_tokens: 8192,
-                reason: "best quality, slower indexing (~1.2GB pull)".into(),
-                available: true,
-                recommended: false,
-            },
-            ModelOption {
-                id: "local:JinaEmbeddingsV2BaseCode".into(),
-                label: "JinaEmbeddingsV2BaseCode".into(),
-                dims: 768,
-                context_tokens: 8192,
-                reason: "code-specific, CPU-only, no Ollama needed (~300MB download)".into(),
-                available: true,
-                recommended: false,
-            },
-        ]
-    } else {
-        vec![
-            ModelOption {
-                id: "local:JinaEmbeddingsV2BaseCode".into(),
-                label: "JinaEmbeddingsV2BaseCode".into(),
-                dims: 768,
-                context_tokens: 8192,
-                reason: "code-specific, beats general models on CodeSearchNet (~300MB download)"
-                    .into(),
-                available: true,
-                recommended: true,
-            },
-            ModelOption {
-                id: "local:AllMiniLML6V2Q".into(),
-                label: "AllMiniLML6V2Q".into(),
-                dims: 384,
-                context_tokens: 256,
-                reason: "lightest option, good for constrained machines (~22MB)".into(),
-                available: true,
-                recommended: false,
-            },
-            ModelOption {
-                id: "ollama:nomic-embed-text".into(),
-                label: "nomic-embed-text".into(),
-                dims: 768,
-                context_tokens: 8192,
-                reason: "not available — run `ollama serve` to enable".into(),
-                available: false,
-                recommended: false,
-            },
-        ]
+        options.push(ModelOption {
+            id: "url".into(),
+            label: "Use running Ollama".into(),
+            dims: 768,
+            context_tokens: 8192,
+            reason: format!(
+                "set url = \"{}/v1\" in project.toml to use your running Ollama",
+                ctx.ollama_host.trim_end_matches('/')
+            ),
+            available: true,
+            recommended: false,
+        });
     }
+
+    options.push(ModelOption {
+        id: "local:JinaEmbeddingsV2BaseCode".into(),
+        label: "JinaEmbeddingsV2BaseCode".into(),
+        dims: 768,
+        context_tokens: 8192,
+        reason: "code-specialized ONNX, no server needed (~300MB download)".into(),
+        available: true,
+        recommended: false,
+    });
+
+    if !ctx.ollama_available {
+        options.push(ModelOption {
+            id: "url".into(),
+            label: "External server".into(),
+            dims: 0,
+            context_tokens: 0,
+            reason: "set url in [embeddings] to use any OpenAI-compatible embedding server".into(),
+            available: true,
+            recommended: false,
+        });
+    }
+
+    options
 }
 
 /// Extract a `host:port` string suitable for `TcpStream::connect` from an
@@ -6015,8 +6001,9 @@ mod tests {
             cpu_cores: 8,
         };
         let opts = super::model_options_for_hardware(&ctx);
+        // With Ollama: local:NomicEmbedTextV15Q (recommended) + url hint + Jina = 3 entries
         assert_eq!(opts.len(), 3);
-        assert_eq!(opts[0].id, "ollama:nomic-embed-text");
+        assert_eq!(opts[0].id, "local:NomicEmbedTextV15Q");
         assert!(opts[0].recommended);
         assert!(!opts[1].recommended);
         assert!(!opts[2].recommended);
@@ -6032,11 +6019,11 @@ mod tests {
             cpu_cores: 4,
         };
         let opts = super::model_options_for_hardware(&ctx);
-        assert_eq!(opts[0].id, "local:JinaEmbeddingsV2BaseCode");
+        // Without Ollama: local:NomicEmbedTextV15Q (recommended) + Jina + url hint = 3 entries
+        assert_eq!(opts[0].id, "local:NomicEmbedTextV15Q");
         assert!(opts[0].recommended);
-        // Third option is Ollama but marked unavailable
-        assert_eq!(opts[2].id, "ollama:nomic-embed-text");
-        assert!(!opts[2].available);
+        // url hint is last
+        assert_eq!(opts[opts.len() - 1].id, "url");
     }
 
     #[test]
@@ -6054,6 +6041,46 @@ mod tests {
         let opts = super::model_options_for_hardware(&ctx);
         let recommended_count = opts.iter().filter(|o| o.recommended).count();
         assert_eq!(recommended_count, 1);
+    }
+
+    #[test]
+    fn model_options_default_is_local_nomic() {
+        let hw = super::HardwareContext {
+            ollama_available: false,
+            ollama_host: "http://localhost:11434".into(),
+            gpu: None,
+            ram_gb: 16,
+            cpu_cores: 8,
+        };
+        let options = super::model_options_for_hardware(&hw);
+        assert_eq!(options[0].id, "local:NomicEmbedTextV15Q");
+        assert!(options[0].recommended);
+        // Must have a url hint option
+        assert!(
+            options.iter().any(|o| o.reason.contains("url")),
+            "must mention url as an option"
+        );
+    }
+
+    #[test]
+    fn model_options_with_ollama_still_recommends_local() {
+        let hw = super::HardwareContext {
+            ollama_available: true,
+            ollama_host: "http://localhost:11434".into(),
+            gpu: None,
+            ram_gb: 16,
+            cpu_cores: 8,
+        };
+        let options = super::model_options_for_hardware(&hw);
+        assert_eq!(options[0].id, "local:NomicEmbedTextV15Q");
+        assert!(options[0].recommended);
+        // Ollama option should mention url
+        assert!(
+            options
+                .iter()
+                .any(|o| o.reason.contains("url") || o.reason.contains("Ollama")),
+            "must mention Ollama or url option"
+        );
     }
 
     #[test]

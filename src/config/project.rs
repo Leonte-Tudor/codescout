@@ -55,6 +55,21 @@ pub struct EmbeddingsSection {
     ///   "local:BGESmallENV15"               → 384d, full precision
     #[serde(default = "default_embed_model")]
     pub model: String,
+    /// Base URL for an OpenAI-compatible embedding endpoint.
+    ///
+    /// When set, the `model` field is sent as the model name in the request body.
+    /// The URL should point to the API base (e.g., `http://127.0.0.1:43300/v1`).
+    /// Works with llama.cpp, vLLM, TEI, Ollama, OpenAI, and any server implementing
+    /// `POST /v1/embeddings`.
+    ///
+    /// When absent, the `model` field's prefix determines the backend
+    /// (`local:`, `ollama:`, `openai:`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// API key for the embedding endpoint. Only used when `url` is set.
+    /// Can also be provided via the `EMBED_API_KEY` environment variable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
     /// Ignored — kept for backwards-compatible deserialisation of existing
     /// `project.toml` files that include a `chunk_size` key.
     ///
@@ -254,6 +269,8 @@ impl Default for EmbeddingsSection {
     fn default() -> Self {
         Self {
             model: default_embed_model(),
+            url: None,
+            api_key: None,
             _chunk_size_ignored: None,
             _chunk_overlap_ignored: None,
             drift_detection_enabled: default_drift_detection_enabled(),
@@ -268,7 +285,7 @@ fn default_timeout() -> u64 {
     60
 }
 fn default_embed_model() -> String {
-    "ollama:mxbai-embed-large".into()
+    "local:NomicEmbedTextV15Q".into()
 }
 
 fn default_ignored_patterns() -> Vec<String> {
@@ -340,14 +357,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_model_is_mxbai() {
-        assert_eq!(default_embed_model(), "ollama:mxbai-embed-large");
+    fn default_model_is_local_nomic() {
+        assert_eq!(default_embed_model(), "local:NomicEmbedTextV15Q");
     }
 
     #[test]
-    fn default_config_has_mxbai_model() {
+    fn default_config_has_local_nomic_model() {
         let cfg = ProjectConfig::default_for("my-project".into());
-        assert_eq!(cfg.embeddings.model, "ollama:mxbai-embed-large");
+        assert_eq!(cfg.embeddings.model, "local:NomicEmbedTextV15Q");
     }
 
     #[test]
@@ -523,5 +540,40 @@ fetch_timeout_secs = 120
         "#;
         let section: ProjectSection = toml::from_str(toml_without).unwrap();
         assert_eq!(section.onboarding_version, None);
+    }
+
+    #[test]
+    fn embeddings_section_parses_url_and_api_key() {
+        let toml_str = r#"
+[project]
+name = "test"
+languages = ["rust"]
+
+[embeddings]
+model = "nomic-embed-text-v1.5"
+url = "http://127.0.0.1:43300/v1"
+api_key = "test-key-123"
+"#;
+        let config: ProjectConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.embeddings.url.as_deref(),
+            Some("http://127.0.0.1:43300/v1")
+        );
+        assert_eq!(config.embeddings.api_key.as_deref(), Some("test-key-123"));
+    }
+
+    #[test]
+    fn embeddings_section_url_defaults_to_none() {
+        let toml_str = r#"
+[project]
+name = "test"
+languages = ["rust"]
+
+[embeddings]
+model = "ollama:nomic-embed-text"
+"#;
+        let config: ProjectConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.embeddings.url.is_none());
+        assert!(config.embeddings.api_key.is_none());
     }
 }

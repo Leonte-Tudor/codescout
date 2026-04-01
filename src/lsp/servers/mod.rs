@@ -95,6 +95,22 @@ pub fn default_config(language: &str, workspace_root: &Path) -> Option<LspServer
             mux: false,
             env: vec![],
         }),
+        "html" => Some(LspServerConfig {
+            command: crate::platform::lsp_binary_name("vscode-html-language-server"),
+            args: vec!["--stdio".into()],
+            workspace_root: root,
+            init_timeout: None,
+            mux: false,
+            env: vec![],
+        }),
+        "css" | "scss" | "less" => Some(LspServerConfig {
+            command: crate::platform::lsp_binary_name("vscode-css-language-server"),
+            args: vec!["--stdio".into()],
+            workspace_root: root,
+            init_timeout: None,
+            mux: false,
+            env: vec![],
+        }),
         _ => None,
     }
 }
@@ -118,6 +134,10 @@ pub fn lsp_language_id(lang: &str) -> &str {
         "cpp" => "cpp",
         "csharp" => "csharp",
         "ruby" => "ruby",
+        "html" => "html",
+        "css" => "css",
+        "scss" => "scss",
+        "less" => "less",
         other => other,
     }
 }
@@ -140,6 +160,10 @@ pub fn has_lsp_config(lang: &str) -> bool {
             | "cpp"
             | "csharp"
             | "ruby"
+            | "html"
+            | "css"
+            | "scss"
+            | "less"
     )
 }
 
@@ -162,6 +186,10 @@ mod tests {
         assert!(has_lsp_config("cpp"));
         assert!(has_lsp_config("csharp"));
         assert!(has_lsp_config("ruby"));
+        assert!(has_lsp_config("html"));
+        assert!(has_lsp_config("css"));
+        assert!(has_lsp_config("scss"));
+        assert!(has_lsp_config("less"));
         assert!(!has_lsp_config("php"));
         assert!(!has_lsp_config("swift"));
         assert!(!has_lsp_config("scala"));

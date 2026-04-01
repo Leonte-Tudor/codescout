@@ -8,7 +8,7 @@
 #   ./scripts/install-lsp.sh rust python go   # install specific languages only
 #
 # Supported languages:
-#   rust, python, typescript, go, java, kotlin, c, csharp, ruby
+#   rust, python, typescript, go, java, kotlin, c, csharp, ruby, html, css
 #
 # Platform: Linux (x86_64, aarch64) and macOS (x86_64, arm64).
 
@@ -19,7 +19,7 @@ set -euo pipefail
 INSTALL_DIR="${HOME}/.local/bin"
 DOWNLOAD_DIR="${TMPDIR:-/tmp}/codescout-lsp-install"
 
-ALL_LANGS=(rust python typescript go java kotlin c csharp ruby)
+ALL_LANGS=(rust python typescript go java kotlin c csharp ruby html css)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -92,6 +92,8 @@ binary_for() {
         c)          echo "clangd" ;;
         csharp)     echo "OmniSharp" ;;
         ruby)       echo "solargraph" ;;
+        html)       echo "vscode-html-language-server" ;;
+        css)        echo "vscode-css-language-server" ;;
     esac
 }
 
@@ -325,6 +327,15 @@ install_ruby() {
     ok "solargraph installed"
 }
 
+install_html_css() {
+    if ! check_prereq "Node.js" "npm" "Install Node.js 18+: https://nodejs.org/"; then
+        return 1
+    fi
+    info "Installing vscode-langservers-extracted via npm..."
+    npm install -g vscode-langservers-extracted
+    ok "vscode-html-language-server and vscode-css-language-server installed"
+}
+
 # ── Dispatch ─────────────────────────────────────────────────────────────────
 
 install_lang() {
@@ -344,6 +355,7 @@ install_lang() {
         c)          install_c ;;
         csharp)     install_csharp ;;
         ruby)       install_ruby ;;
+        html|css)   install_html_css ;;
         *)          err "Unknown language: $lang"; return 1 ;;
     esac
 }

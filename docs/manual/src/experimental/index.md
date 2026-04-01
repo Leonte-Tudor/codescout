@@ -6,6 +6,4 @@
 
 ## Available Features
 
-No features are currently in experimental status. All previously experimental features have graduated to stable.
-
-Browse the [full manual](../SUMMARY.md) for current documentation.
+*No experimental features at this time. Browse the [`experiments` branch](https://github.com/mareurs/codescout/tree/experiments) for work in progress.*

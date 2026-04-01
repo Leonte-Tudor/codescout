@@ -31,6 +31,10 @@ available for a given language.
 | C++        | `.cpp`, `.cc`, `.cxx`   | `clangd`                     | LSP only      |
 | C#         | `.cs`                   | `OmniSharp`                  | LSP only      |
 | Ruby       | `.rb`                   | `solargraph`                 | LSP only      |
+| HTML       | `.html`, `.htm`         | `vscode-html-language-server`| LSP only      |
+| CSS        | `.css`                  | `vscode-css-language-server` | LSP only      |
+| SCSS       | `.scss`                 | `vscode-css-language-server` | LSP only      |
+| Less       | `.less`                 | `vscode-css-language-server` | LSP only      |
 
 ### Detection-Only Languages
 
@@ -171,7 +175,14 @@ Binary: `solargraph`, invoked with `stdio` (no leading `--`).
 
 ---
 
-## Known Quirks
+### HTML and CSS
+
+```bash
+npm install -g vscode-langservers-extracted
+```
+
+One package installs both servers. Binaries: `vscode-html-language-server` (HTML)
+and `vscode-css-language-server` (CSS, SCSS, Less), each invoked with `--stdio`.## Known Quirks
 
 **jdtls** requires a data/workspace directory for project indexes. Some wrapper
 scripts accept `--data` to specify this path. If symbol tools return empty

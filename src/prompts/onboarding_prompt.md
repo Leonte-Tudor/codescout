@@ -46,30 +46,29 @@ Present this to the user:
 > {if hardware.gpu: ", {hardware.gpu.name}"}
 > {if hardware.ollama_available: ", Ollama running" else: ", no Ollama detected"}):
 >
-> 1. ★ `{model_options[0].id}` — {model_options[0].dims}d, {model_options[0].context_tokens}-token context
->    {model_options[0].reason} ← **Recommended**
-> 2. `{model_options[1].id}` — {model_options[1].dims}d, {model_options[1].context_tokens}-token context
->    {model_options[1].reason}
-> 3. `{model_options[2].id}` — {model_options[2].dims}d, {model_options[2].context_tokens}-token context
->    {model_options[2].reason}{if not model_options[2].available: " *(not currently available)*"}
+> {for i, opt in model_options:}
+> {i+1}. {if opt.recommended: "★ "}`{opt.id}` — {opt.dims}d, {opt.context_tokens}-token context
+>    {opt.reason}{if opt.recommended: " ← **Recommended**"}{if not opt.available: " *(not currently available)*"}
+> {end}
 >
-> Press Enter to accept [1], or type 2 or 3 to choose a different model.
+> Press Enter to accept [1], or type a number to choose a different option.
+>
+> **Tip:** For multi-project workspaces, running a dedicated embedding server is
+> recommended over the bundled model. Set `url` in `.codescout/project.toml` to
+> point at any OpenAI-compatible endpoint (llama.cpp, Ollama, vLLM, TEI).
+> See the embeddings guide for setup examples.
 
 Wait for the user's response, then:
 
 - **User presses Enter or types 1:** The config is already correct — proceed to Phase 1.
-- **User types 2:** Call `edit_file` on `.codescout/project.toml`.
-  Change the line `model = "{model_options[0].id}"` to `model = "{model_options[1].id}"`.
+- **User types 2, 3, etc.:** Call `edit_file` on `.codescout/project.toml`.
+  Change the `model` line to the selected option's ID. If the option is `url`,
+  ask the user for their server URL and add both `model` and `url` fields.
   Confirm the edit, then proceed to Phase 1.
-- **User types 3:** Same as above but use `model_options[2].id`.
-  If `model_options[2].available` is false, remind the user how to enable it
-  (e.g., "install Ollama and run `ollama serve`") before making the edit.
 - **User types a custom model string:** Use that string directly in the `edit_file` call.
+  If it looks like a URL, suggest adding it as `url` instead.
 
 Then proceed to Phase 1 (Semantic Index Check).
-
----
-
 ## Phase 1: Semantic Index Check
 
 Check the **Semantic index** line in the Gathered Project Data below.

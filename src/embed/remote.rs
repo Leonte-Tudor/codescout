@@ -82,6 +82,32 @@ impl RemoteEmbedder {
             api_key,
         })
     }
+
+    /// Create an embedder from an explicit URL.
+    ///
+    /// Normalizes the URL to always end with `/v1/embeddings`:
+    /// - `http://host:port`               → `http://host:port/v1/embeddings`
+    /// - `http://host:port/v1`            → `http://host:port/v1/embeddings`
+    /// - `http://host:port/v1/embeddings` → `http://host:port/v1/embeddings`
+    pub fn from_url(url: &str, model: &str, api_key: Option<String>) -> Result<Self> {
+        let base = url.trim_end_matches('/');
+        let endpoint = if base.ends_with("/v1/embeddings") {
+            base.to_string()
+        } else if base.ends_with("/v1") {
+            format!("{}/embeddings", base)
+        } else {
+            format!("{}/v1/embeddings", base)
+        };
+
+        let api_key = api_key.or_else(|| std::env::var("EMBED_API_KEY").ok());
+
+        Ok(Self {
+            client: Self::http_client(),
+            endpoint,
+            model: model.to_string(),
+            api_key,
+        })
+    }
 }
 
 #[async_trait::async_trait]
@@ -266,5 +292,48 @@ mod tests {
         let result = RemoteEmbedder::custom("https://api.example.com", "model");
         unsafe { std::env::remove_var("EMBED_API_KEY") };
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn from_url_normalizes_bare_host() {
+        let e = RemoteEmbedder::from_url("http://127.0.0.1:43300", "nomic", None).unwrap();
+        assert_eq!(e.endpoint, "http://127.0.0.1:43300/v1/embeddings");
+        assert_eq!(e.model, "nomic");
+        assert!(e.api_key.is_none());
+    }
+
+    #[test]
+    fn from_url_normalizes_v1_suffix() {
+        let e = RemoteEmbedder::from_url("http://127.0.0.1:43300/v1", "nomic", None).unwrap();
+        assert_eq!(e.endpoint, "http://127.0.0.1:43300/v1/embeddings");
+    }
+
+    #[test]
+    fn from_url_normalizes_v1_embeddings_suffix() {
+        let e = RemoteEmbedder::from_url("http://127.0.0.1:43300/v1/embeddings", "nomic", None)
+            .unwrap();
+        assert_eq!(e.endpoint, "http://127.0.0.1:43300/v1/embeddings");
+    }
+
+    #[test]
+    fn from_url_normalizes_trailing_slash() {
+        let e = RemoteEmbedder::from_url("http://127.0.0.1:43300/v1/", "nomic", None).unwrap();
+        assert_eq!(e.endpoint, "http://127.0.0.1:43300/v1/embeddings");
+    }
+
+    #[test]
+    fn from_url_passes_api_key() {
+        let e =
+            RemoteEmbedder::from_url("http://host:8080", "model", Some("sk-123".into())).unwrap();
+        assert_eq!(e.api_key.as_deref(), Some("sk-123"));
+    }
+
+    #[test]
+    fn from_url_falls_back_to_env_api_key() {
+        // When api_key param is None, from_url checks EMBED_API_KEY env var.
+        // We don't set it here, so it should be None.
+        unsafe { std::env::remove_var("EMBED_API_KEY") };
+        let e = RemoteEmbedder::from_url("http://host:8080", "model", None).unwrap();
+        assert!(e.api_key.is_none());
     }
 }

@@ -37,6 +37,8 @@ impl LocalEmbedder {
 
 fn parse_model(name: &str) -> Result<fastembed::EmbeddingModel> {
     match name {
+        "NomicEmbedTextV15" => Ok(fastembed::EmbeddingModel::NomicEmbedTextV15),
+        "NomicEmbedTextV15Q" => Ok(fastembed::EmbeddingModel::NomicEmbedTextV15Q),
         "JinaEmbeddingsV2BaseCode" => Ok(fastembed::EmbeddingModel::JinaEmbeddingsV2BaseCode),
         "BGESmallENV15Q" => Ok(fastembed::EmbeddingModel::BGESmallENV15Q),
         "AllMiniLML6V2Q" => Ok(fastembed::EmbeddingModel::AllMiniLML6V2Q),
@@ -45,11 +47,13 @@ fn parse_model(name: &str) -> Result<fastembed::EmbeddingModel> {
         "AllMiniLML6V2" => Ok(fastembed::EmbeddingModel::AllMiniLML6V2),
         other => anyhow::bail!(
             "Unknown local model '{other}'. Supported variants:\n\
-             • local:JinaEmbeddingsV2BaseCode   (768d, code-specific, ~300MB, recommended)\n\
-             • local:BGESmallENV15Q             (384d, GPU-optimized export; may fail on CPU)\n\
-             • local:AllMiniLML6V2Q             (384d, quantized, ~22MB, lightest)\n\
-             • local:BGESmallENV15              (384d, full precision)\n\
-             • local:AllMiniLML6V2              (384d, full precision)"
+             • local:NomicEmbedTextV15Q          (768d, quantized, ~158MB, recommended)\n\
+             • local:NomicEmbedTextV15            (768d, full precision, ~547MB)\n\
+             • local:JinaEmbeddingsV2BaseCode     (768d, code-specific, ~300MB)\n\
+             • local:AllMiniLML6V2Q               (384d, quantized, ~22MB, lightest)\n\
+             • local:BGESmallENV15Q               (384d, deprecated — GPU-only, crashes on CPU)\n\
+             • local:BGESmallENV15                (384d, full precision)\n\
+             • local:AllMiniLML6V2                (384d, full precision)"
         ),
     }
 }
@@ -69,7 +73,6 @@ impl crate::embed::Embedder for LocalEmbedder {
                 .lock()
                 .map_err(|e| anyhow::anyhow!("fastembed model lock poisoned: {e}"))?
                 .embed(owned, None)
-                .map_err(anyhow::Error::from)
         })
         .await?
     }
@@ -91,10 +94,18 @@ mod tests {
 
     #[test]
     fn parse_model_known_names_return_ok() {
+        assert!(parse_model("NomicEmbedTextV15").is_ok());
+        assert!(parse_model("NomicEmbedTextV15Q").is_ok());
         assert!(parse_model("JinaEmbeddingsV2BaseCode").is_ok());
         assert!(parse_model("BGESmallENV15Q").is_ok());
         assert!(parse_model("AllMiniLML6V2Q").is_ok());
         assert!(parse_model("BGESmallENV15").is_ok());
         assert!(parse_model("AllMiniLML6V2").is_ok());
+    }
+
+    #[test]
+    fn parse_model_nomic_v15_variants() {
+        assert!(parse_model("NomicEmbedTextV15").is_ok());
+        assert!(parse_model("NomicEmbedTextV15Q").is_ok());
     }
 }

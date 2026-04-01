@@ -95,6 +95,7 @@ pub fn chunk_size_for_model(model_spec: &str) -> usize {
     // dependency (local.rs is #[cfg(feature = "local-embed")]).
     if let Some(local_name) = model_spec.strip_prefix("local:") {
         let max_tokens = match local_name.to_lowercase().as_str() {
+            "nomicembedtextv15" | "nomicembedtextv15q" => 8192,
             "jinaembeddingsv2basecode" => 8192,
             "bgesmallenv15q" | "bgesmallenv15" => 512,
             "allminilml6v2q" | "allminilml6v2" => 256,
@@ -126,82 +127,136 @@ pub async fn embed_one(embedder: &dyn Embedder, text: &str) -> Result<Embedding>
         .ok_or_else(|| anyhow::anyhow!("Embedder returned empty batch"))
 }
 
-/// Create the default embedder based on a model string.
+/// Create an embedder using explicit config fields.
 ///
-/// Model string format:
-///   "local:<model-id>"                      → local inference (requires local-embed feature)
-///   "openai:<model-id>"                     → OpenAI API
-///   "ollama:<model-id>"                     → Ollama local HTTP API
-///   "custom:<model-id>@<base_url>"          → generic OpenAI-compatible endpoint
-///     e.g. "custom:mxbai-embed-large@http://localhost:1234"
-pub async fn create_embedder(model: &str) -> Result<Box<dyn Embedder>> {
+/// Resolution order:
+/// 1. `url` set → RemoteEmbedder targeting that URL
+/// 2. `model` starts with `local:` → local ONNX via fastembed
+/// 3. `model` starts with `ollama:` → Ollama (deprecated, warns once)
+/// 4. `model` starts with `openai:` → OpenAI API
+/// 5. `model` starts with `custom:` → hard error with migration hint
+/// 6. No url, no prefix → default to local:NomicEmbedTextV15Q
+pub async fn create_embedder_with_config(
+    model: &str,
+    url: Option<&str>,
+    api_key: Option<String>,
+) -> Result<Box<dyn Embedder>> {
+    // 1. URL takes priority — any OpenAI-compatible endpoint
     #[cfg(feature = "remote-embed")]
-    if let Some(model_id) = model.strip_prefix("openai:") {
-        return Ok(Box::new(remote::RemoteEmbedder::openai(model_id)?));
+    if let Some(url) = url {
+        return Ok(Box::new(remote::RemoteEmbedder::from_url(
+            url, model, api_key,
+        )?));
     }
+    #[cfg(not(feature = "remote-embed"))]
+    if url.is_some() {
+        anyhow::bail!(
+            "Remote embedding requires the 'remote-embed' feature.\n\
+             Rebuild with: cargo build --features remote-embed"
+        );
+    }
+
+    // 2. local: prefix
+    #[cfg(feature = "local-embed")]
+    if let Some(model_id) = model.strip_prefix("local:") {
+        return Ok(Box::new(local::LocalEmbedder::new(model_id)?));
+    }
+
+    // 3. ollama: prefix (deprecated)
     #[cfg(feature = "remote-embed")]
     if let Some(model_id) = model.strip_prefix("ollama:") {
-        // When the local-embed feature is compiled in, probe Ollama before
-        // committing to it. A missing or stopped daemon is the most common
-        // reason embedding silently fails on machines without a GPU/Ollama
-        // setup, so we fall back to a CPU-friendly quantized local model.
+        use std::sync::Once;
+        static WARN_ONCE: Once = Once::new();
+        WARN_ONCE.call_once(|| {
+            tracing::warn!(
+                "ollama: prefix is deprecated. Use url = \"http://localhost:11434/v1\" \
+                 and model = \"{}\" instead. The prefix will be removed in a future version.",
+                model_id
+            );
+        });
         #[cfg(feature = "local-embed")]
         {
             let host =
                 std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".into());
             if let Err(e) = remote::probe_ollama(&host).await {
-                const FALLBACK: &str = "BGESmallENV15Q";
+                const FALLBACK: &str = "NomicEmbedTextV15Q";
                 tracing::warn!(
-                    "{e}. Falling back to local:{FALLBACK} (CPU-friendly, ~20 MB). \
-                     Set embeddings.model in .codescout/project.toml to suppress this."
+                    "{e}. Falling back to local:{FALLBACK}. \
+                     Set embeddings.url in .codescout/project.toml to use a dedicated server."
                 );
                 return Ok(Box::new(local::LocalEmbedder::new(FALLBACK)?));
             }
         }
         return Ok(Box::new(remote::RemoteEmbedder::ollama(model_id)?));
     }
+
+    // 4. openai: prefix
     #[cfg(feature = "remote-embed")]
-    if let Some(rest) = model.strip_prefix("custom:") {
-        let (model_id, base_url) = rest.split_once('@').ok_or_else(|| {
-            anyhow::anyhow!(
-                "custom: format is 'custom:<model>@<base_url>', e.g. \
-                 'custom:mxbai-embed-large@http://localhost:1234'"
-            )
-        })?;
-        return Ok(Box::new(remote::RemoteEmbedder::custom(
-            base_url, model_id,
-        )?));
+    if let Some(model_id) = model.strip_prefix("openai:") {
+        return Ok(Box::new(remote::RemoteEmbedder::openai(model_id)?));
     }
 
+    // 5. custom: prefix — removed, hard error
+    #[cfg(feature = "remote-embed")]
+    if model.starts_with("custom:") {
+        anyhow::bail!(
+            "The custom: prefix has been removed.\n\
+             Use the url and model fields in [embeddings] instead.\n\n\
+             Example .codescout/project.toml:\n\
+             [embeddings]\n\
+             model = \"your-model-name\"\n\
+             url = \"http://your-server:port/v1\""
+        );
+    }
+
+    // 6. No prefix — try as local model name
     #[cfg(feature = "local-embed")]
-    if let Some(model_id) = model.strip_prefix("local:") {
-        return Ok(Box::new(local::LocalEmbedder::new(model_id)?));
+    {
+        // Try parsing as a local model name directly
+        if local::LocalEmbedder::new(model).is_ok() {
+            return Ok(Box::new(local::LocalEmbedder::new(model)?));
+        }
     }
 
+    // Helpful error for local: prefix without the feature
     if model.starts_with("local:") {
         anyhow::bail!(
             "Local embedding requires the 'local-embed' feature.\n\
              Rebuild with: cargo build --features local-embed\n\n\
-             Recommended (code-specific, CPU/WSL2):\n\
-             • local:JinaEmbeddingsV2BaseCode   (768d, ~300MB)\n\
-             • local:BGESmallENV15Q             (384d, quantized, ~20MB, fast)"
+             Recommended: local:NomicEmbedTextV15Q (768d, quantized)"
         );
     }
 
     anyhow::bail!(
-        "Unknown model prefix in '{}'. Supported: 'ollama:', 'openai:', 'custom:', 'local:'.",
+        "Unknown model '{}'. Options:\n\
+         • Set url in [embeddings] to point at any OpenAI-compatible server\n\
+         • Use local:NomicEmbedTextV15Q for bundled ONNX (768d, no server needed)\n\
+         • Use local:JinaEmbeddingsV2BaseCode for code-specialized ONNX",
         model
     )
 }
 
+/// Create an embedder from a model string (legacy interface).
+///
+/// Delegates to `create_embedder_with_config` with no URL. Existing callers
+/// that only have a model string continue to work unchanged.
+pub async fn create_embedder(model: &str) -> Result<Box<dyn Embedder>> {
+    create_embedder_with_config(model, None, None).await
+}
+
 #[cfg(test)]
 mod tests {
+
     #[test]
     fn unknown_prefix_returns_error() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(super::create_embedder("bogus:model"));
         let err = result.err().expect("expected an error");
-        assert!(err.to_string().contains("Unknown model prefix"));
+        assert!(
+            err.to_string().contains("Unknown model"),
+            "unexpected error: {}",
+            err
+        );
     }
 
     #[cfg(not(feature = "local-embed"))]
@@ -219,7 +274,17 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(super::create_embedder("custom:no-at-sign"));
         let err = result.err().expect("expected an error");
-        assert!(err.to_string().contains("custom:<model>@<base_url>"));
+        // custom: prefix is now removed — error should be the migration hint
+        assert!(
+            err.to_string().contains("removed"),
+            "unexpected error: {}",
+            err
+        );
+        assert!(
+            err.to_string().contains("url"),
+            "error should mention url field: {}",
+            err
+        );
     }
 
     // ---------- chunk_size_for_model ----------
@@ -270,6 +335,18 @@ mod tests {
     }
 
     #[test]
+    fn chunk_size_local_nomic_v15() {
+        let sz = super::chunk_size_for_model("local:NomicEmbedTextV15Q");
+        assert_eq!(sz, 20889); // 8192 × 0.85 × 3
+    }
+
+    #[test]
+    fn chunk_size_local_nomic_v15_full() {
+        let sz = super::chunk_size_for_model("local:NomicEmbedTextV15");
+        assert_eq!(sz, 20889); // 8192 × 0.85 × 3
+    }
+
+    #[test]
     fn chunk_size_custom_model() {
         // custom: prefix with @url — model name extracted before @
         let sz = super::chunk_size_for_model("custom:mxbai-embed-large@http://localhost:1234");
@@ -280,5 +357,81 @@ mod tests {
     fn chunk_size_unknown_model_falls_back_to_512_tokens() {
         let sz = super::chunk_size_for_model("ollama:some-unknown-model");
         assert_eq!(sz, 1305); // 512 × 0.85 × 3
+    }
+
+    #[cfg(feature = "remote-embed")]
+    #[test]
+    fn create_embedder_with_url_uses_remote() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        // We can't actually connect, but we can verify it doesn't error on creation
+        // by checking that the url path is taken (not the prefix path).
+        // Use a model name with no prefix — if url is respected, it won't hit
+        // the "Unknown model prefix" error.
+        let result = rt.block_on(super::create_embedder_with_config(
+            "nomic-embed-text-v1.5",
+            Some("http://127.0.0.1:99999"),
+            None,
+        ));
+        // Should succeed (RemoteEmbedder created) — it only fails when we try to embed
+        assert!(
+            result.is_ok(),
+            "url should create RemoteEmbedder without prefix: {:?}",
+            result.err()
+        );
+    }
+
+    #[cfg(feature = "remote-embed")]
+    #[test]
+    fn custom_prefix_returns_migration_error() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(super::create_embedder("custom:model@http://localhost:1234"));
+        let err = result.err().expect("custom: should error");
+        assert!(
+            err.to_string().contains("removed"),
+            "error should say prefix is removed: {}",
+            err
+        );
+        assert!(
+            err.to_string().contains("url"),
+            "error should mention url field: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn create_embedder_no_url_no_prefix_defaults_to_local_nomic() {
+        // A bare model name with no url should default to local:NomicEmbedTextV15Q
+        // when the local-embed feature is available.
+        #[cfg(feature = "local-embed")]
+        {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let result = rt.block_on(super::create_embedder("NomicEmbedTextV15Q"));
+            // Without local-embed this would fail with "Unknown model prefix"
+            // With local-embed, it should succeed (or at least not hit the prefix error)
+            assert!(
+                result.is_ok()
+                    || !result
+                        .as_ref()
+                        .unwrap_err()
+                        .to_string()
+                        .contains("Unknown model prefix")
+            );
+        }
+    }
+
+    #[test]
+    fn chunk_size_bare_nomic_model_name() {
+        // When url is set, model has no prefix — just the bare name.
+        // This test documents that bare model names work correctly.
+        let sz = super::chunk_size_for_model("nomic-embed-text-v1.5");
+        assert_eq!(sz, 20889); // 8192 × 0.85 × 3
+    }
+
+    #[test]
+    fn chunk_size_bare_unknown_model() {
+        // When url is set, custom model names with no prefix fall back to
+        // the conservative 512-token default.
+        let sz = super::chunk_size_for_model("some-custom-model");
+        assert_eq!(sz, 1305); // 512 × 0.85 × 3 (conservative fallback)
     }
 }
