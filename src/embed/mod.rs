@@ -144,8 +144,15 @@ pub async fn create_embedder_with_config(
     // 1. URL takes priority — any OpenAI-compatible endpoint
     #[cfg(feature = "remote-embed")]
     if let Some(url) = url {
+        // Strip known routing prefixes so "ollama:nomic-embed-text" + url
+        // sends "nomic-embed-text" as the model name in the HTTP request.
+        let bare_model = model
+            .strip_prefix("ollama:")
+            .or_else(|| model.strip_prefix("openai:"))
+            .or_else(|| model.strip_prefix("local:"))
+            .unwrap_or(model);
         return Ok(Box::new(remote::RemoteEmbedder::from_url(
-            url, model, api_key,
+            url, bare_model, api_key,
         )?));
     }
     #[cfg(not(feature = "remote-embed"))]

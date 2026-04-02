@@ -1465,7 +1465,7 @@ pub async fn build_index(
     progress_cb: Option<ProgressCb>,
 ) -> Result<IndexReport> {
     use crate::config::ProjectConfig;
-    use crate::embed::{create_embedder, Embedding};
+    use crate::embed::{create_embedder_with_config, Embedding};
     use std::sync::Arc;
     use tokio::sync::Semaphore;
     use tokio::task::JoinSet;
@@ -1475,8 +1475,14 @@ pub async fn build_index(
     if !force {
         check_model_mismatch(&conn, &config.embeddings.model)?;
     }
-    let embedder: Arc<dyn crate::embed::Embedder> =
-        Arc::from(create_embedder(&config.embeddings.model).await?);
+    let embedder: Arc<dyn crate::embed::Embedder> = Arc::from(
+        create_embedder_with_config(
+            &config.embeddings.model,
+            config.embeddings.url.as_deref(),
+            config.embeddings.api_key.clone(),
+        )
+        .await?,
+    );
 
     // ── Phase 1: Detect changed files ─────────────────────────────────────────
     let change_set = find_changed_files(&conn, project_root, force)?;
@@ -1524,7 +1530,7 @@ pub async fn build_index(
         });
     }
 
-    // ── Phase 2: Concurrent embedding ─────────────────────────────────────────
+    // ── Phase 2: Flat concurrent embedding pipeline ─────────────────────────
     struct FileResult {
         rel: String,
         hash: String,
@@ -1534,16 +1540,28 @@ pub async fn build_index(
         embeddings: Vec<Embedding>,
     }
 
-    // Limit concurrent in-flight requests so we don't overwhelm Ollama
-    const MAX_CONCURRENT: usize = 4;
-    let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
-    let mut tasks: JoinSet<Result<FileResult>> = JoinSet::new();
+    // Flatten chunks: collect all texts and track per-file counts.
+    let mut flat_texts: Vec<String> = Vec::new();
+    let mut file_chunk_counts: Vec<usize> = Vec::new();
+    for work in &works {
+        file_chunk_counts.push(work.chunks.len());
+        for chunk in &work.chunks {
+            flat_texts.push(chunk.content.clone());
+        }
+    }
+    let total_chunks = flat_texts.len();
 
-    let total_to_embed = works.len();
+    // Each task sends one HTTP request (BATCH_SIZE texts).
+    // MAX_INFLIGHT keeps the server saturated without overwhelming it.
+    const BATCH_SIZE: usize = 32;
+    const MAX_INFLIGHT: usize = 8;
+    let sem = Arc::new(Semaphore::new(MAX_INFLIGHT));
+    let mut tasks: JoinSet<Result<(usize, Vec<Embedding>)>> = JoinSet::new();
+    let total_batches = total_chunks.div_ceil(BATCH_SIZE);
     let embed_start = std::time::Instant::now();
-    let mut embed_done = 0usize;
 
-    for work in works {
+    for (batch_idx, chunk) in flat_texts.chunks(BATCH_SIZE).enumerate() {
+        let batch: Vec<String> = chunk.to_vec();
         let embedder = Arc::clone(&embedder);
         let sem = Arc::clone(&sem);
         tasks.spawn(async move {
@@ -1551,32 +1569,60 @@ pub async fn build_index(
                 .acquire()
                 .await
                 .map_err(|_| anyhow::anyhow!("semaphore unexpectedly closed"))?;
-            let texts: Vec<&str> = work.chunks.iter().map(|c| c.content.as_str()).collect();
-            let embeddings = embedder.embed(&texts).await?;
-            Ok(FileResult {
-                rel: work.rel,
-                hash: work.hash,
-                mtime: work.mtime,
-                lang: work.lang,
-                chunks: work.chunks,
-                embeddings,
-            })
+            let refs: Vec<&str> = batch.iter().map(|s| s.as_str()).collect();
+            let embeddings = embedder.embed(&refs).await?;
+            Ok((batch_idx, embeddings))
         });
     }
 
-    let mut results: Vec<FileResult> = Vec::new();
+    // Collect results in batch order
+    let mut batch_results: Vec<Option<Vec<Embedding>>> = vec![None; total_batches];
+    let mut batches_done = 0usize;
+    // Cumulative chunk boundaries for progress reporting
+    let mut boundaries: Vec<usize> = Vec::with_capacity(file_chunk_counts.len());
+    let mut cumul = 0;
+    for &count in &file_chunk_counts {
+        cumul += count;
+        boundaries.push(cumul);
+    }
+
     while let Some(res) = tasks.join_next().await {
-        results.push(res.map_err(|e| anyhow::anyhow!(e))??);
-        embed_done += 1;
+        let (idx, embs) = res.map_err(|e| anyhow::anyhow!(e))??;
+        batch_results[idx] = Some(embs);
+        batches_done += 1;
+
         if let Some(cb) = &progress_cb {
-            let remaining = total_to_embed - embed_done;
-            // embed_done >= 1 here by construction; guard is kept for self-documentation.
-            let eta_secs = (embed_done > 0 && remaining > 0).then(|| {
+            let chunks_done = batches_done * BATCH_SIZE;
+            let files_done = boundaries.iter().filter(|&&b| b <= chunks_done).count();
+            let remaining = works.len().saturating_sub(files_done);
+            let eta = (files_done > 0 && remaining > 0).then(|| {
                 let elapsed = embed_start.elapsed().as_secs_f64();
-                (elapsed / embed_done as f64 * remaining as f64) as u64
+                (elapsed / files_done as f64 * remaining as f64) as u64
             });
-            cb(embed_done, total_to_embed, eta_secs);
+            cb(files_done, works.len(), eta);
         }
+    }
+
+    // Flatten embeddings in batch order, scatter back to per-file results.
+    let flat_embeddings: Vec<Embedding> = batch_results
+        .into_iter()
+        .flat_map(|b| b.unwrap_or_default())
+        .collect();
+
+    let mut results: Vec<FileResult> = Vec::new();
+    let mut offset = 0;
+    for work in works {
+        let n = work.chunks.len();
+        let embeddings = flat_embeddings[offset..offset + n].to_vec();
+        offset += n;
+        results.push(FileResult {
+            rel: work.rel,
+            hash: work.hash,
+            mtime: work.mtime,
+            lang: work.lang,
+            chunks: work.chunks,
+            embeddings,
+        });
     }
 
     // ── Phase 3: Single transaction for all DB writes ─────────────────────────
@@ -1708,7 +1754,7 @@ pub async fn build_library_index(
 ) -> Result<()> {
     use crate::ast::detect_language;
     use crate::config::ProjectConfig;
-    use crate::embed::{create_embedder, Embedding};
+    use crate::embed::{create_embedder_with_config, Embedding};
     use std::sync::Arc;
     use tokio::sync::Semaphore;
     use tokio::task::JoinSet;
@@ -1719,8 +1765,14 @@ pub async fn build_library_index(
     if !force {
         check_model_mismatch(&conn, &config.embeddings.model)?;
     }
-    let embedder: Arc<dyn crate::embed::Embedder> =
-        Arc::from(create_embedder(&config.embeddings.model).await?);
+    let embedder: Arc<dyn crate::embed::Embedder> = Arc::from(
+        create_embedder_with_config(
+            &config.embeddings.model,
+            config.embeddings.url.as_deref(),
+            config.embeddings.api_key.clone(),
+        )
+        .await?,
+    );
 
     // ── Phase 1: Walk library path, hash, chunk ───────────────────────────────
     struct FileWork {
@@ -1787,7 +1839,7 @@ pub async fn build_library_index(
         });
     }
 
-    // ── Phase 2: Concurrent embedding ─────────────────────────────────────────
+    // ── Phase 2: Flat concurrent embedding pipeline ─────────────────────────
     struct FileResult {
         rel: String,
         hash: String,

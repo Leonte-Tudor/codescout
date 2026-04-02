@@ -600,6 +600,18 @@ fn sub_split_node(
         .collect()
 }
 
+/// Target chunk size for AST-aware splitting (~60-80 lines of code).
+///
+/// This caps the AST chunker independently of the model's context window.
+/// The model limit (`chunk_size_for_model`) governs what the embedding API can
+/// accept; this constant governs what produces *good* embeddings for retrieval.
+/// Smaller chunks → sharper semantic signal → more precise search results.
+///
+/// 3000 chars ≈ 1000 tokens — fits comfortably in any embedding model context,
+/// covers most single functions without splitting, and forces impl/class blocks
+/// to decompose into per-method chunks via recursive inner-node extraction.
+const AST_CHUNK_TARGET: usize = 3000;
+
 /// Split a source file into chunks, using language-aware strategies where possible.
 ///
 /// - Returns empty for empty source.
@@ -615,8 +627,12 @@ pub fn split_file(source: &str, lang: &str, path: &Path, chunk_size: usize) -> V
         return vec![];
     }
 
+    // Cap all paths at AST_CHUNK_TARGET — smaller chunks produce sharper
+    // embeddings for retrieval regardless of file type.
+    let target = chunk_size.min(AST_CHUNK_TARGET);
+
     if is_markdown(path) {
-        return super::chunker::split_markdown(source, chunk_size, 0);
+        return super::chunker::split_markdown(source, target, 0);
     }
 
     // Try AST-based splitting
@@ -625,20 +641,13 @@ pub fn split_file(source: &str, lang: &str, path: &Path, chunk_size: usize) -> V
         if let Ok(nodes) = extract_ast_nodes(source, &ts_lang, spec) {
             if !nodes.is_empty() {
                 let doc_prefixes = spec.map(|s| s.doc_prefixes).unwrap_or(&["//"] as &[&str]);
-                return nodes_to_chunks(
-                    source,
-                    &nodes,
-                    chunk_size,
-                    doc_prefixes,
-                    Some(&ts_lang),
-                    spec,
-                );
+                return nodes_to_chunks(source, &nodes, target, doc_prefixes, Some(&ts_lang), spec);
             }
         }
     }
 
     // Fallback to line-based splitting
-    super::chunker::split(source, chunk_size, 0)
+    super::chunker::split(source, target, 0)
 }
 
 /// Returns `true` if the given line is a doc comment line.
