@@ -119,10 +119,27 @@ impl Embedder for RemoteEmbedder {
     }
 
     async fn embed(&self, texts: &[&str]) -> Result<Vec<Embedding>> {
-        // Send in small batches to avoid HTTP 400 from servers with payload limits (e.g. Ollama).
-        const BATCH_SIZE: usize = 8;
-        let mut all = Vec::with_capacity(texts.len());
-        for batch in texts.chunks(BATCH_SIZE) {
+        // Filter empty/whitespace-only strings — most embedding servers reject them
+        // with HTTP 400. Map original indices so callers get vectors in the right order.
+        let indexed: Vec<(usize, &str)> = texts
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| !t.trim().is_empty())
+            .map(|(i, t)| (i, *t))
+            .collect();
+        if indexed.is_empty() {
+            // All inputs were empty — return zero vectors
+            let dim = self.dimensions().max(1);
+            return Ok(vec![vec![0.0; dim]; texts.len()]);
+        }
+        let filtered_texts: Vec<&str> = indexed.iter().map(|(_, t)| *t).collect();
+
+        // Send in batches sized to match the server's parallel slot count.
+        // Our llama-server runs with --parallel 8, so 32 texts → 4 sequential
+        // server-side passes but still just one HTTP round-trip per embed() call.
+        const BATCH_SIZE: usize = 32;
+        let mut embedded = Vec::with_capacity(filtered_texts.len());
+        for batch in filtered_texts.chunks(BATCH_SIZE) {
             let mut req = self
                 .client
                 .post(&self.endpoint)
@@ -137,7 +154,15 @@ impl Embedder for RemoteEmbedder {
             let resp: EmbedResponse = req.send().await?.error_for_status()?.json().await?;
             let mut data = resp.data;
             data.sort_by_key(|d| d.index);
-            all.extend(data.into_iter().map(|d| d.embedding));
+            embedded.extend(data.into_iter().map(|d| d.embedding));
+        }
+
+        // Reconstruct full result: filtered embeddings in original positions,
+        // zero vectors for empty inputs.
+        let dim = embedded.first().map_or(1, |e| e.len());
+        let mut all = vec![vec![0.0; dim]; texts.len()];
+        for (slot, (orig_idx, _)) in indexed.iter().enumerate() {
+            all[*orig_idx] = std::mem::take(&mut embedded[slot]);
         }
         Ok(all)
     }
@@ -243,7 +268,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires running Ollama"]
     async fn ollama_large_batch_exceeding_batch_size() {
-        // BATCH_SIZE is 8; send 20 texts to exercise the chunking logic
+        // BATCH_SIZE is 32; send 40 texts to exercise the chunking logic
         let embedder = make_embedder();
         let texts: Vec<String> = (0..20)
             .map(|i| format!("fn function_{i}() -> i32 {{ {i} }}"))
