@@ -8,14 +8,25 @@ use std::time::Instant;
 
 pub struct UsageRecorder {
     agent: Agent,
+    debug: bool,
+    session_id: String,
 }
 
 impl UsageRecorder {
-    pub fn new(agent: Agent) -> Self {
-        Self { agent }
+    pub fn new(agent: Agent, debug: bool, session_id: String) -> Self {
+        Self {
+            agent,
+            debug,
+            session_id,
+        }
     }
 
-    pub async fn record_content<F, Fut>(&self, tool_name: &str, f: F) -> Result<Vec<Content>>
+    pub async fn record_content<F, Fut>(
+        &self,
+        tool_name: &str,
+        input: &Value,
+        f: F,
+    ) -> Result<Vec<Content>>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<Vec<Content>>>,
@@ -24,7 +35,9 @@ impl UsageRecorder {
         let result = f().await;
         let latency_ms = start.elapsed().as_millis() as i64;
         // Best-effort — never let recording fail the tool call
-        let _ = self.write_content(tool_name, latency_ms, &result).await;
+        let _ = self
+            .write_content(tool_name, latency_ms, input, &result)
+            .await;
         result
     }
 
@@ -32,11 +45,39 @@ impl UsageRecorder {
         &self,
         tool_name: &str,
         latency_ms: i64,
+        input: &Value,
         result: &Result<Vec<Content>>,
     ) -> Result<()> {
         let project_root = self.agent.with_project(|p| Ok(p.root.clone())).await?;
+        let head_sha = self
+            .agent
+            .with_project(|p| Ok(p.head_sha.clone()))
+            .await
+            .unwrap_or(None);
         let conn = db::open_db(&project_root)?;
         let (outcome, overflowed, error_msg) = classify_content_result(result);
+
+        let input_json = if self.debug {
+            serde_json::to_string(input).ok()
+        } else {
+            None
+        };
+
+        let output_json = if self.debug && outcome != "success" {
+            result
+                .as_ref()
+                .ok()
+                .and_then(|blocks| serde_json::to_string(blocks).ok())
+                .or_else(|| {
+                    result
+                        .as_ref()
+                        .err()
+                        .map(|e| format!("{{\"error\":\"{}\"}}", e))
+                })
+        } else {
+            None
+        };
+
         db::write_record(
             &conn,
             tool_name,
@@ -44,6 +85,11 @@ impl UsageRecorder {
             outcome,
             overflowed,
             error_msg.as_deref(),
+            env!("CODESCOUT_GIT_SHA"),
+            head_sha.as_deref(),
+            &self.session_id,
+            input_json.as_deref(),
+            output_json.as_deref(),
         )?;
         Ok(())
     }

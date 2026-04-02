@@ -94,6 +94,7 @@ axum = { version = "0.8", features = ["json"], optional = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
 open = { version = "5", optional = true }
 tokio-util = { version = "0.7", optional = true }
+uuid = { version = "1.20.0", features = ["v4"] }
 
 [features]
 default = ["remote-embed", "dashboard", "http"]
