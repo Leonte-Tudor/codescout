@@ -524,7 +524,11 @@ pub async fn run(
 
             let ct = tokio_util::sync::CancellationToken::new();
             let service = StreamableHttpService::new(
-                move || Ok(server.clone()),
+                move || {
+                    let mut s = server.clone();
+                    s.session_id = uuid::Uuid::new_v4().to_string();
+                    Ok(s)
+                },
                 LocalSessionManager::default().into(),
                 StreamableHttpServerConfig::default().with_cancellation_token(ct.child_token()),
             );

@@ -48,12 +48,10 @@ impl UsageRecorder {
         input: &Value,
         result: &Result<Vec<Content>>,
     ) -> Result<()> {
-        let project_root = self.agent.with_project(|p| Ok(p.root.clone())).await?;
-        let head_sha = self
+        let (project_root, head_sha) = self
             .agent
-            .with_project(|p| Ok(p.head_sha.clone()))
-            .await
-            .unwrap_or(None);
+            .with_project(|p| Ok((p.root.clone(), p.head_sha.clone())))
+            .await?;
         let conn = db::open_db(&project_root)?;
         let (outcome, overflowed, error_msg) = classify_content_result(result);
 
@@ -63,17 +61,11 @@ impl UsageRecorder {
             None
         };
 
-        let output_json = if self.debug && outcome != "success" {
-            result
-                .as_ref()
-                .ok()
-                .and_then(|blocks| serde_json::to_string(blocks).ok())
-                .or_else(|| {
-                    result
-                        .as_ref()
-                        .err()
-                        .map(|e| format!("{{\"error\":\"{}\"}}", e))
-                })
+        let output_json = if self.debug {
+            match result {
+                Ok(blocks) => serde_json::to_string(blocks).ok(),
+                Err(e) => Some(serde_json::json!({"error": e.to_string()}).to_string()),
+            }
         } else {
             None
         };
@@ -203,7 +195,11 @@ mod content_tests {
             "input_json should be populated in debug mode"
         );
         assert!(inp.unwrap().contains("test_symbol"));
-        assert!(out.is_none(), "output_json should be None for success");
+        assert!(
+            out.is_some(),
+            "output_json should be populated in debug mode for all outcomes"
+        );
+        assert!(out.unwrap().contains("found it"));
         assert_eq!(sid, "test-session");
         assert!(!cs.is_empty(), "codescout_sha should be set");
     }
