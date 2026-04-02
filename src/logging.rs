@@ -73,12 +73,12 @@ pub struct LoggingGuards {
 
 /// Initialise tracing.
 ///
-/// - `debug`: enables DEBUG-level file logging to `.codescout/debug.log` (verbose)
-/// - `diagnostic`: enables INFO-level file logging to `.codescout/diagnostic-<hash>.log`
+/// - `debug`: enables both DEBUG-level file logging to `.codescout/debug.log`
+///   and INFO-level diagnostic logging to `.codescout/diagnostic-<hash>.log`.
 ///
 /// Returns guards that MUST be held for the lifetime of `main`, plus the
 /// diagnostic instance ID (if active) for root span injection.
-pub fn init(debug: bool, diagnostic: bool) -> LoggingGuards {
+pub fn init(debug: bool) -> LoggingGuards {
     let mut guards = Vec::new();
 
     let stderr_layer = tracing_subscriber::fmt::layer()
@@ -89,7 +89,7 @@ pub fn init(debug: bool, diagnostic: bool) -> LoggingGuards {
         .unwrap_or_else(|_| std::path::PathBuf::from("."))
         .join(".codescout");
 
-    if debug || diagnostic {
+    if debug {
         if let Err(e) = std::fs::create_dir_all(&log_dir) {
             eprintln!("codescout: could not create log directory: {e}");
         }
@@ -125,7 +125,7 @@ pub fn init(debug: bool, diagnostic: bool) -> LoggingGuards {
 
     // --- Diagnostic file layer (INFO level) ---
     let mut instance_id = None;
-    let diagnostic_layer = if diagnostic {
+    let diagnostic_layer = if debug {
         rotate_diagnostic_logs(&log_dir);
         let id = generate_instance_id();
         let filename = format!("diagnostic-{id}.log");

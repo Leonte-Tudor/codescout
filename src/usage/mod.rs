@@ -198,7 +198,10 @@ mod content_tests {
             )
             .unwrap();
 
-        assert!(inp.is_some(), "input_json should be populated in debug mode");
+        assert!(
+            inp.is_some(),
+            "input_json should be populated in debug mode"
+        );
         assert!(inp.unwrap().contains("test_symbol"));
         assert!(out.is_none(), "output_json should be None for success");
         assert_eq!(sid, "test-session");
@@ -225,11 +228,9 @@ mod content_tests {
 
         let conn = crate::usage::db::open_db(dir.path()).unwrap();
         let (inp, out): (Option<String>, Option<String>) = conn
-            .query_row(
-                "SELECT input_json, output_json FROM tool_calls",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
+            .query_row("SELECT input_json, output_json FROM tool_calls", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
             .unwrap();
 
         assert!(inp.is_some(), "input_json should be populated");
@@ -268,5 +269,4 @@ mod content_tests {
         assert_eq!(sid, "test-session", "session_id should always be set");
         assert!(!cs.is_empty(), "codescout_sha should always be set");
     }
-
 }
