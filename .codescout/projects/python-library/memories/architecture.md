@@ -1,47 +1,55 @@
 # python-library — Architecture
 
-## Package Structure
-
-Single-package layout under `library/`. No external dependencies beyond the Python
-standard library (`abc`, `dataclasses`, `enum`, `typing`).
+## Module Structure
 
 ```
-library/interfaces/   — Abstract contracts (Searchable ABC, HasISBN Protocol)
-library/models/       — Core domain types (Book dataclass, Genre enum)
-library/services/     — Business logic (Catalog generic class)
-library/extensions/   — Advanced patterns (AudioBook, mixins, type aliases, closures)
+library/
+  __init__.py          — package root, re-exports Book, Genre, Searchable, Catalog
+  models/
+    genre.py           — Genre(Enum) with 5 variants + label() method
+    book.py            — @dataclass Book with isbn equality, is_available property
+  interfaces/
+    searchable.py      — Searchable(ABC) interface + HasISBN(Protocol) structural type
+  services/
+    catalog.py         — Catalog(Generic[T]) collection with search + nested Stats class
+  extensions/
+    advanced.py        — AudioBook (multiple inheritance), type alias, nested function
 ```
+
+## Key Abstractions
+
+| Type | Role | File |
+|------|------|------|
+| `Searchable` | ABC interface — `search_text()` + `relevance()` | interfaces/searchable.py |
+| `HasISBN` | Protocol — structural typing check | interfaces/searchable.py |
+| `Genre` | Enum — 5 book categories | models/genre.py |
+| `Book` | @dataclass — core domain entity, isbn-based equality | models/book.py |
+| `Catalog[T]` | Generic collection bound to Searchable | services/catalog.py |
+| `AudioBook` | Book + Playable mixin (MRO) | extensions/advanced.py |
 
 ## Dependency Graph
 
 ```
-extensions/advanced.py
-  → models/book.py (Book, for AudioBook and BookList)
-  → interfaces/searchable.py (Searchable, for AudioBook)
-
-services/catalog.py
-  → interfaces/searchable.py (Searchable, for TypeVar bound)
-
-models/book.py
-  → models/genre.py (Genre)
-
-interfaces/searchable.py
-  → (no internal deps; uses abc, typing)
+interfaces/searchable.py  (no deps — leaf)
+models/genre.py           (no deps — leaf)
+models/book.py            → models/genre.py
+services/catalog.py       → interfaces/searchable.py
+extensions/advanced.py    → models/book.py, interfaces/searchable.py
 ```
 
-## Python Patterns Exercised
+## Data Flow: Search
 
-| Pattern | Location |
-|---------|----------|
-| `@dataclass` with `@property` and dunders | `Book` |
-| `Enum` subclass with instance method | `Genre` |
-| `ABC` + `@abstractmethod` | `Searchable` |
-| `@runtime_checkable Protocol` | `HasISBN` |
-| `Generic[T]` + `TypeVar(bound=...)` | `Catalog` |
-| Nested class | `Catalog.Stats` |
-| Multiple inheritance + MRO | `AudioBook(Book, Playable)` |
-| Mixin class | `Playable` |
-| Type alias | `BookList = list[Book]` |
-| `*args` / `**kwargs` | `search_books` |
-| Nested function / closure | `_score` inside `rank_results` |
-| Free factory function | `create_default_catalog` |
+1. `Catalog(name)` creates an empty generic collection
+2. `catalog.add(item)` appends to `_items: list[T]`
+3. `catalog.search(query)` filters items where `query in item.search_text()`
+4. Items must implement `Searchable` (ABC bound on TypeVar `T`)
+
+## Semantic Search Examples
+
+```
+semantic_search("abstract interface for searching", project_id="python-library")
+semantic_search("dataclass book model", project_id="python-library")
+semantic_search("generic catalog collection", project_id="python-library")
+semantic_search("multiple inheritance mixin", project_id="python-library")
+semantic_search("nested class statistics", project_id="python-library")
+```

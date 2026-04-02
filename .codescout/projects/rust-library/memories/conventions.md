@@ -1,41 +1,31 @@
-# rust-library — Conventions
-
 ## Language Patterns
 
-### Naming
-- Structs/Enums: PascalCase (Book, Genre, Catalog, SearchResult, BookRef, BookIterator)
-- Traits: PascalCase (Searchable)
-- Functions/methods: snake_case (search_text, is_available, create_default_catalog)
-- Constants: SCREAMING_SNAKE_CASE (MAX_RESULTS = 100)
-- Type aliases via re-export: `Genre as BookGenre`
+- **Rust 2021 edition**, no external dependencies
+- `snake_case` for functions/methods/fields, `PascalCase` for types/traits/enums
+- All public items have `///` doc comments
+- Extension features annotated with `/// Extension: <what it demonstrates>` comments
 
-### Struct Design
-- Fields are private by default; accessor methods expose them
-- Constructor always named `new(...)` returning `Self`
-- Availability/state checked via predicate methods (`is_available()`)
+## Naming
 
-### Trait Pattern
-- Traits define the minimal required interface (`search_text`)
-- Default method implementations provided where sensible (`relevance() -> 0.0`)
-- Trait impl placed in the traits module (not alongside the struct)
+- Accessor methods named after the field: `title()`, `isbn()`, `genre()`, `is_available()`
+- Constructors: `new()` (associated function), `create_default_catalog()` (free function)
+- Trait methods: `search_text()`, `relevance()`
 
-### Enum Usage
-- Pure enum for categories: `Genre` with 5 unit variants + `label()` method
-- Rich enum for results: `SearchResult` mixes struct variants (`Found { book, score }`),
-  tuple variants (`NotFound(String)`), and struct variants (`Error { message, code }`)
-- `matches!` macro used for variant checking in `is_match()`
+## Code Organization
 
-### Advanced Rust Features Demonstrated
-- Lifetime annotations: `borrow_title<'a>(book: &'a Book) -> &'a str`
-- `impl Trait` return: `available_titles() -> impl Iterator<Item = &str>`
-- Custom Iterator: `BookIterator` implements `Iterator` with associated type `Item = Book`
-- `#[derive(Debug, Clone, PartialEq)]` on data types
+- One type per file (book.rs, genre.rs, searchable.rs, catalog.rs)
+- `mod.rs` files only contain `pub mod` declarations
+- `lib.rs` declares modules and re-exports core public types
+- Extensions module groups advanced Rust features (lifetimes, iterators, derive, re-exports)
 
-### Module Organization
-- Each concept in its own file; `mod.rs` is a thin re-exporter
-- Crate root (`lib.rs`) re-exports the 4 core public types for ergonomic imports
-- `extensions/` module exists specifically to demonstrate advanced Rust constructs
+## Code Quality
 
-### Testing
-- No embedded `#[cfg(test)]` blocks — this is a pure fixture for external test harnesses
-- No integration tests in the fixture itself
+- `#[derive(Debug, Clone, PartialEq)]` on all value types
+- Private fields with public accessor methods (encapsulation)
+- Generic types with explicit trait bounds
+
+## Testing
+
+- **No tests in this project.** This is a test fixture for codescout -- the tests that exercise
+  this code live in the parent `code-explorer` project (e2e-rust feature flag).
+- The fixture is built/checked as part of codescout's CI to verify Rust LSP and tree-sitter integration.

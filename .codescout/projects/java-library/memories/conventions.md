@@ -1,42 +1,38 @@
-# java-library Conventions
+## Conventions
 
-## Language Patterns
+### Language Patterns (Java 21)
+- **Records over classes** for data carriers (`Book`, `Found`, `NotFound`, `Error`)
+- **Sealed interfaces** for closed type hierarchies (`SearchResult permits ...`)
+- **Default methods** on interfaces for optional behavior (`relevance()`, `isMatch()`)
+- **Pattern matching** with `instanceof` (no explicit cast needed)
+- **Streams API** for collection operations (`stream().filter().toList()`)
 
-### Java 21 Modern Features (by design)
-This fixture explicitly exercises modern Java language features for LSP/AST testing:
-- **Records** — `Book`, `Found`, `NotFound`, `Error` are Java records (immutable, auto-generated equals/hashCode/toString)
-- **Sealed interfaces** — `SearchResult` uses `sealed ... permits` to restrict subtypes
-- **Pattern matching** — `instanceof Found` used in `isMatch()` default method
-- **Default interface methods** — `Searchable.relevance()` returns 0.0; overridable
-- **Text blocks / Streams** — `items.stream().filter(...).toList()` in Catalog.search()
-- **Custom annotations** — `@Indexed` with `@Retention(RUNTIME)` in Advanced.java
-
-### Naming Conventions
-- Classes: PascalCase (`Book`, `Catalog`, `BookProcessor`)
-- Interfaces: PascalCase, descriptive (`Searchable`, `SearchResult`, `Indexed`)
-- Enum values: UPPER_SNAKE_CASE (`FICTION`, `NON_FICTION`)
-- Methods: camelCase, verb-first (`isAvailable`, `searchText`, `createDefault`, `processAll`)
-- Fields: camelCase (`copiesAvailable`, `totalItems`)
-- Constants: UPPER_SNAKE_CASE (`MAX_RESULTS`)
-- Packages: lowercase dot-separated (`library.models`, `library.services`)
-
-### Access Modifiers
-- Public API: `public` class/interface/method
-- Implementation detail: `private final` for fields (Catalog.items, Catalog.name)
-- Nested utility: `public static class` for standalone nested types (CatalogStats, BatchResult)
-- Instance-bound nested: non-static inner class (ProcessingContext)
+### Naming
+- Package: `library.<layer>` (models, interfaces, services, extensions)
+- Classes: PascalCase, singular nouns (`Book`, `Catalog`, `BookProcessor`)
+- Interfaces: adjective or noun describing capability (`Searchable`, `Indexed`)
+- Enums: PascalCase type, SCREAMING_SNAKE members (`Genre.NON_FICTION`)
+- Methods: camelCase verbs (`searchText`, `isAvailable`, `createDefault`)
+- Constants: SCREAMING_SNAKE (`MAX_RESULTS`)
 
 ### Documentation
-- Every public type and method has a Javadoc comment (`/** ... */`)
-- "Extension:" prefix in comments marks advanced-feature demonstrations
+- Javadoc `/** ... */` on all public types, constructors, and methods
+- Comments prefixed with "Extension:" mark features exercising specific Java constructs
+  (e.g., "Extension: sealed interface hierarchy", "Extension: anonymous class")
 
-### Testing Approach
-- No test files in this fixture — it exists solely to exercise codescout's LSP/AST tools
-- Tests for this library are in the codescout Rust test suite (integration/symbol_lsp tests)
-- Expected test patterns: `list_symbols`, `find_symbol(include_body=true)`, `goto_definition`, `find_references`
+### Build
+- Gradle Groovy DSL (`build.gradle`)
+- Group: `library`, version: `0.1.0`
+- Java 21 source and target compatibility
+- No external dependencies — stdlib only
 
-### Build Convention
-- Gradle Groovy DSL (`build.gradle`, not `build.gradle.kts`)
-- Single module, no subprojects
-- No dependency declarations — stdlib only
-- Java 21 source and target compatibility set explicitly
+### Project Role
+- This is a **codescout test fixture**, not a production codebase
+- Each file is designed to exercise specific tree-sitter / LSP parsing scenarios:
+  - `Book.java` — records, compact constructors, constants
+  - `Genre.java` — enums with methods
+  - `Searchable.java` — interfaces, default methods
+  - `Catalog.java` — generics with bounds, nested classes, static factories, streams
+  - `Advanced.java` — annotations, anonymous classes, wildcards, inner classes
+  - `Results.java` — sealed interfaces, record variants, pattern matching
+- No tests exist — the fixture is tested by codescout's own test suite

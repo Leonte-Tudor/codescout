@@ -3,8 +3,8 @@
 
 [[anchors]]
 path = "CLAUDE.md"
-hash = "7b8a0e43bb3999a9d77def4210f07d659056f775d4113278702dba041db59b7e"
+hash = "4a21890ae00f3e7b2b0a7691d3a38f338d3672d855bfddd2afbbb13c382dbcfe"
 
 [[anchors]]
 path = "src/tools/workflow.rs"
-hash = "bd6b3c7c25cf7bfb5fe8165c6a6905acbbb8af9d3d7130c4a647ea10a297465d"
+hash = "fc330b73f8f26c947b422d1911e9594ccb45a8e7aca9249931fcd0e1ab08a73c"

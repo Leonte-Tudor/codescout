@@ -1,28 +1,34 @@
-# rust-library — Project Overview
-
 ## Purpose
-A Rust fixture library used as a test target for codescout's symbol navigation, LSP,
-and semantic search features. It models a book catalog system with realistic Rust
-patterns: traits, generics, enums, lifetimes, and re-exports.
+
+Test fixture library for the codescout workspace. Provides a representative Rust codebase
+that codescout's integration tests, LSP navigation, AST parsing, and semantic search tools
+exercise. Models a library catalog domain (books, genres, search).
+
+**Not a standalone application** -- no binary, no main.rs, no tests, no external dependencies.
 
 ## Tech Stack
-- Language: Rust (edition 2021)
-- No external dependencies (Cargo.toml has empty [dependencies])
-- Crate type: library (src/lib.rs)
 
-## Module Layout
-- `src/lib.rs` — root; declares 4 modules and re-exports core types
-- `src/models/` — domain data types (Book, Genre)
-- `src/traits/` — trait definitions (Searchable)
-- `src/services/` — business logic (Catalog<T>, CatalogStats)
-- `src/extensions/` — advanced Rust feature demos (SearchResult enum, BookIterator, BookRef, lifetimes)
+- Rust 2021 edition
+- Pure `std` library -- zero external crates
+- Library crate only (`[lib]` in Cargo.toml, no `[[bin]]`)
 
-## Key Public API (re-exported from lib.rs)
-- `Book` — core entity with title, isbn, genre, copies_available
-- `Genre` — enum (Fiction, NonFiction, Science, History, Biography)
-- `Searchable` — trait for search text + relevance scoring
-- `Catalog<T: Searchable>` — generic catalog service
+## Key Dependencies
+
+None. The `Cargo.toml` declares only `[package]` metadata.
 
 ## Runtime Requirements
-- No runtime dependencies; pure library
-- No tests embedded in source (fixture purpose only)
+
+None -- this is a compile-time-only fixture. Built by codescout's CI
+(`cargo build` / `cargo check`) to validate Rust LSP and tree-sitter parsing.
+
+## Source Layout
+
+```
+src/
+  lib.rs              -- crate root, 4 pub modules + re-exports
+  models/             -- domain types: Book (struct), Genre (enum)
+  traits/             -- Searchable trait + impl for Book
+  services/           -- Catalog<T: Searchable> generic service + CatalogStats
+  extensions/         -- advanced Rust features: SearchResult enum (struct/tuple variants),
+                         BookIterator (Iterator impl), lifetime fns, impl Trait returns, re-exports
+```

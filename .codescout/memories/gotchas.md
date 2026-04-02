@@ -1,51 +1,29 @@
-# Cross-Project Gotchas
+## Cross-Project Gotchas
 
-## Fixture Activation Race (MCP Shared State)
+### Active Project Switching Bug
+Multiple onboarding agents reported that `activate_project` does not reliably persist between
+consecutive MCP calls — the active project silently switches to a different fixture project.
+Workaround: use explicit `project_id` parameters or full paths from the workspace root.
+Tracked: needs investigation in `src/agent.rs` project focus logic.
 
-The MCP server has a single active project. During parallel workspace onboarding, subagents
-calling `activate_project` to their fixture project may overwrite each other's active state.
-Symptoms: `glob`, `list_dir`, and `list_symbols` return results from the wrong project.
+### Fixture Path Resolution
+When activated on a fixture project, `read_file` and `run_command` may resolve relative paths
+against the workspace root (code-explorer) instead of the fixture root. Use full relative paths
+from workspace root: `tests/fixtures/<lang>-library/src/...`
 
-**Mitigation:** Subagents should read files immediately after `activate_project` before
-other subagents can steal the state, or work from the code-explorer root using explicit paths.
-`find_symbol` and `search_pattern` always resolve against the indexed project, not active project.
+### find_symbol Cross-Project Leakage
+`find_symbol` without a `path` constraint returns results from ALL workspace projects, not just
+the activated one. Always scope with `path="tests/fixtures/<lang>-library"` or use `project_id`.
 
-## kotlin-library Memory Scoping
+### Tree-Sitter Gaps
+- Kotlin: top-level functions at end of file (after class definitions) may be missed by tree-sitter
+- TypeScript: `find_symbol` can return "suspicious range" errors for globally-scoped searches
 
-During onboarding (2026-03-30), the kotlin-library subagent's memories ended up inaccessible
-under `project_id="kotlin-library"`. The content appeared in the code-explorer project's
-`project-overview` slot instead. Root cause: likely `activate_project` was called but
-`memory(action="write")` used the wrong active project as scope.
+### Parallel Write Safety (BUG-021)
+NEVER dispatch parallel write tool calls (`edit_file`, `replace_symbol`, `insert_code`, `create_file`).
+See MEMORY.md "Parallel Write Safety" for full details.
 
-**Mitigation:** When writing fixture-project memories, always explicitly pass `project_id`
-to `memory()`. Verify with `memory(action="list", project_id="<id>")` after writing.
-
-## Semantic Index — Fixture Coverage
-
-The semantic index at `.codescout/embeddings/project.db` covers all 6 workspace projects.
-To scope semantic search to a specific fixture: `semantic_search(query, project_id="rust-library")`.
-Without `project_id`, results may mix code-explorer and fixture content.
-
-## Fixture Libraries Have No Tests
-
-None of the 5 fixture libraries (`java-library`, `kotlin-library`, `python-library`,
-`rust-library`, `typescript-library`) have their own test suites. All correctness
-validation comes from codescout's `tests/integration.rs` and `tests/symbol_lsp.rs`.
-Do not be surprised by the absence of test files in fixtures — it is intentional.
-
-## Book Does Not Implement Searchable in typescript-library
-
-In `typescript-library`, `Book` class does NOT implement the `Searchable` interface.
-`Catalog<T extends Searchable>` is therefore not directly usable with `Book` without a wrapper.
-This is intentional fixture behavior to demonstrate the constraint without wiring it end-to-end.
-
-## Parallel Write Safety (BUG-021)
-
-Never dispatch parallel `edit_file`, `replace_symbol`, `insert_code`, or `create_file` calls.
-rmcp has a cancellation race that can kill the MCP server process. Always sequence writes.
-See `MEMORY.md § Parallel Write Safety` for full details.
-
-## Kotlin LSP Multi-Instance Conflict
-
-Multiple concurrent Kotlin LSP instances on the same git repo fight over `.app.lock`.
-Use `--system-path` per instance if conflicts arise. See `memory(topic="gotchas", sections=["LSP"])`.
+### Kotlin LSP Multi-Instance
+Kotlin LSP (kotlin-language-server) cannot run multiple instances on the same project.
+The LSP mux (`src/lsp/mux/`) shares a single JVM instance across sessions via Unix sockets.
+See `docs/issues/2026-03-24-kotlin-lsp-concurrent-instances.md`.

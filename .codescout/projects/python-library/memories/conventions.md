@@ -1,29 +1,40 @@
 # python-library — Conventions
 
-## Language & Tooling
+## Language Patterns
 
-- Python 3.10+ (uses `list[T]` built-in generics, union syntax)
-- No runtime dependencies; stdlib only
-- `pyproject.toml` for project metadata (no build backend configured)
+- **`from __future__ import annotations`** — used in all modules except interfaces and genre
+  (enables PEP 604 union syntax and forward refs)
+- **Type annotations everywhere** — all function params, return types, and class fields are annotated
+- **Docstrings on all public classes/methods** — triple-quoted, single-line for simple descriptions
+- **Module-level constants** — typed with `: int = 100` style (not bare assignment)
+- **No error handling** — fixture code has no try/except/raise; all paths are happy paths
 
-## Naming
+## Naming Conventions
 
-- Classes: PascalCase (`Book`, `AudioBook`, `Catalog`)
-- Private attributes: leading underscore (`_items`, `_name`)
-- Private helper functions: leading underscore (`_score`)
-- Constants: SCREAMING_SNAKE_CASE (`MAX_RESULTS`)
+- Classes: PascalCase (`Book`, `Catalog`, `AudioBook`)
+- Functions: snake_case (`search_books`, `rank_results`, `create_default_catalog`)
+- Constants: UPPER_SNAKE (`MAX_RESULTS`, `FICTION`, `NON_FICTION`)
+- Private members: single underscore prefix (`_items`, `_name`, `_score`)
 - Type aliases: PascalCase (`BookList`)
 - TypeVars: single uppercase letter (`T`)
 
-## Code Style
+## Design Patterns
 
-- All public functions and methods have docstrings
-- `@property` used for computed boolean attributes (`is_available`)
-- Dunder methods (`__repr__`, `__eq__`, `__hash__`) defined together at end of class
-- `@abstractmethod` always paired with `...` as body (not `pass`)
+- **Interface segregation**: `Searchable` (ABC) for behavior, `HasISBN` (Protocol) for structure
+- **Generics with bounds**: `Catalog[T]` where `T: Searchable` — ensures search_text() exists
+- **Mixin pattern**: `Playable` is a mixin added to `AudioBook` via multiple inheritance
+- **Factory function**: `create_default_catalog()` — free function returning configured Catalog
+- **Nested class**: `Catalog.Stats` for grouping related data
+- **Closure**: `rank_results._score` as sorting key function
 
-## Testing Note
+## Testing
 
-This is a **fixture**, not a tested library. There are no test files in this project.
-All correctness validation is done by codescout's integration tests operating on this
-fixture from the outside (symbol extraction, LSP, semantic search).
+No test files exist within this project. It IS a test fixture — codescout's Rust
+test suite in `src/` and `tests/` exercises this project's symbols, structure,
+and cross-file relationships.
+
+## File Organization
+
+- One primary class per file (book.py has Book, genre.py has Genre)
+- `__init__.py` re-exports key types from subpackages
+- `extensions/` isolates advanced/edge-case constructs from the core domain model

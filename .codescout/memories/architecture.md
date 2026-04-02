@@ -1,47 +1,28 @@
-# Workspace Architecture
-
 ## Project Map
 
-| Project | Role | Language |
-|---------|------|----------|
-| `code-explorer` | Rust MCP server providing IDE-grade code intelligence to LLMs | Rust |
-| `java-library` | Test fixture for Java 21 LSP/AST testing | Java 21 |
-| `kotlin-library` | Test fixture for Kotlin 2.1.0 LSP/AST testing | Kotlin/JVM |
-| `python-library` | Test fixture for Python 3.10+ symbol extraction | Python |
-| `rust-library` | Test fixture for Rust 2021 LSP/AST testing | Rust |
-| `typescript-library` | Test fixture for TypeScript strict LSP/AST testing | TypeScript |
+| Project | Language | Purpose |
+|---------|----------|---------|
+| **code-explorer** | Rust | The core MCP server — 29 tools for symbol navigation, semantic search, file ops, memory, shell |
+| **java-library** | Java 21 | Test fixture exercising records, sealed interfaces, pattern matching for AST/LSP validation |
+| **kotlin-library** | Kotlin 2.1 | Test fixture exercising data classes, sealed classes, coroutines, value classes for AST/LSP validation |
+| **python-library** | Python 3.10+ | Test fixture exercising dataclasses, ABC, Protocol, generics, MRO for AST/LSP validation |
+| **rust-library** | Rust 2021 | Test fixture exercising structs, enums, traits, lifetimes, generics for AST/LSP validation |
+| **typescript-library** | TypeScript ES2022 | Test fixture exercising discriminated unions, decorators, overloads, mapped types for AST/LSP validation |
 
 ## Cross-Project Dependencies
 
-```
-code-explorer
-  ├── tests/fixtures/java-library      (integration + symbol_lsp tests)
-  ├── tests/fixtures/kotlin-library    (integration + symbol_lsp tests)
-  ├── tests/fixtures/python-library    (integration + symbol_lsp tests)
-  ├── tests/fixtures/rust-library      (integration + symbol_lsp tests)
-  └── tests/fixtures/typescript-library (integration + symbol_lsp tests)
-```
-
-The 5 fixture libraries have **no dependency on each other** and **no dependency on code-explorer**.
-code-explorer's Rust test suite (`tests/integration.rs`, `tests/symbol_lsp.rs`) exercises all
-5 fixtures to validate LSP, AST, and semantic search behavior across languages.
-
-## Shared Domain Model
-
-All 5 fixture projects implement the **same book-catalog domain** deliberately:
-- `Book` — core entity (title, isbn, genre, availability)
-- `Genre` — category enum (Fiction, NonFiction, Science, History, Biography)
-- `Catalog<T>` — generic service bounded to Searchable
-- `Searchable` — interface/trait/ABC defining `search_text()` + default `relevance()`
-- `SearchResult` — sum type (Found, NotFound, Error)
-
-This lets codescout tests verify cross-language symbol navigation on equivalent concepts.
+The 5 fixture libraries have **no code dependencies** on each other or on code-explorer.
+code-explorer depends on the fixtures only at test time:
+- `tests/integration.rs` — uses fixture projects via `project_with_files()` temp copies
+- `tests/symbol_lsp.rs` — feature-gated (`e2e-rust`, `e2e-python`, `e2e-kotlin`, `e2e-java`, `e2e-typescript`) tests that start real LSP servers against the fixture source trees at `tests/fixtures/<lang>-library/`
 
 ## Shared Infrastructure
 
-- **CI**: GitHub Actions — runs `cargo build --release`, `cargo test`, `cargo clippy -- -D warnings`
-  on ubuntu/macos/windows matrix from the code-explorer root
-- **Fixture builds**: Fixture build files (Cargo.toml, build.gradle, pyproject.toml, tsconfig.json)
-  are not invoked by CI directly — they are parsed/analyzed by codescout's LSP integration tests
-- **Semantic index**: Single embeddings DB at `.codescout/embeddings/project.db` covers all 6 projects
-- **Memory store**: Per-project memories scoped via `project_id` parameter
+- **Workspace root:** `Cargo.toml` (Rust workspace) + fixture projects under `tests/fixtures/`
+- **CI:** `cargo fmt && cargo clippy -- -D warnings && cargo test` on code-explorer; fixtures are built/checked as part of this
+- **Embedding index:** single `project.db` at `.codescout/embeddings/` covers all workspace files
+- **Memory:** per-project memories in `.codescout/memory/<project-id>/`, workspace memories in `.codescout/memory/`
+
+## Shared Domain Model
+
+All 5 fixtures implement the **same domain**: a library catalog with Book, Genre, Searchable, Catalog, and SearchResult types. This enables cross-language comparison of how codescout handles equivalent constructs in different languages.

@@ -1,49 +1,33 @@
 # python-library — Project Overview
 
-A Python fixture project used by codescout's integration tests. It demonstrates a
-library catalog domain implemented in idiomatic Python 3.10+, covering the full
-range of Python symbol kinds that codescout's tree-sitter parser must handle.
-
 ## Purpose
 
-This fixture is a **test target**, not a production library. Its code is crafted to
-exercise symbol extraction, LSP navigation, and semantic search across:
+Test fixture for the codescout workspace. Provides a small but well-structured
+Python library that exercises Python-specific language features for codescout's
+AST parser, symbol navigation, and LSP integration tests.
 
-- Abstract base classes (`Searchable`)
-- Runtime-checkable protocols (`HasISBN`)
-- Dataclasses with properties and dunder methods (`Book`)
-- Enums with methods (`Genre`)
-- Generic classes with TypeVar (`Catalog[T]`)
-- Nested classes (`Catalog.Stats`)
-- Mixins and multiple inheritance (`AudioBook(Book, Playable)`)
+## Tech Stack
+
+- **Language:** Python 3.10+
+- **Build:** pyproject.toml (minimal, no external dependencies)
+- **Type system:** dataclasses, Enum, ABC, Protocol, Generic, TypeVar
+- **No runtime dependencies** — stdlib only
+
+## What It Exercises
+
+This fixture is designed to test codescout's handling of Python-specific constructs:
+- `@dataclass` with `@property` methods
+- `Enum` subclasses with methods
+- Abstract base classes (`ABC` + `@abstractmethod`)
+- Structural typing (`Protocol` with `@runtime_checkable`)
+- Generics (`Generic[T]` with bounded `TypeVar`)
+- Multiple inheritance / MRO (`AudioBook(Book, Playable)`)
 - Type aliases (`BookList = list[Book]`)
-- Free functions, *args/**kwargs, nested functions/closures (`search_books`, `rank_results`)
+- Nested classes (`Catalog.Stats`)
+- Nested functions / closures (`rank_results._score`)
+- `*args` / `**kwargs` signatures (`search_books`)
+- Module-level constants with type annotations (`MAX_RESULTS: int = 100`)
 
-## Layout
+## Key Exports (library/__init__.py)
 
-```
-library/
-  __init__.py
-  interfaces/
-    searchable.py       — Searchable (ABC), HasISBN (Protocol)
-  models/
-    book.py             — Book (dataclass), MAX_RESULTS constant
-    genre.py            — Genre (Enum)
-  services/
-    catalog.py          — Catalog[T] (Generic), Catalog.Stats (nested), create_default_catalog()
-  extensions/
-    advanced.py         — BookList (type alias), Playable (mixin), AudioBook, search_books, rank_results
-pyproject.toml          — name="library", version="0.1.0", requires-python=">=3.10"
-```
-
-## Key Types
-
-| Symbol | Kind | File | Notes |
-|--------|------|------|-------|
-| `Book` | dataclass | `models/book.py` | isbn-keyed equality, `is_available` property |
-| `Genre` | Enum | `models/genre.py` | 5 values, `label()` method |
-| `Searchable` | ABC | `interfaces/searchable.py` | abstract `search_text()`, default `relevance()` |
-| `HasISBN` | Protocol | `interfaces/searchable.py` | `@runtime_checkable`, structural typing |
-| `Catalog[T]` | Generic class | `services/catalog.py` | TypeVar `T bound=Searchable`, nested `Stats` |
-| `AudioBook` | class | `extensions/advanced.py` | Multiple inheritance: `Book + Playable` |
-| `BookList` | type alias | `extensions/advanced.py` | `list[Book]` |
+`Book`, `Genre`, `Searchable`, `Catalog` — the four public types.

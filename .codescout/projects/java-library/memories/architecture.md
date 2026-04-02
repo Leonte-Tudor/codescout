@@ -1,75 +1,59 @@
-# java-library Architecture
+## Architecture
 
-## Module Structure
+### Module Structure
 
 ```
 src/main/java/library/
-├── models/
-│   ├── Book.java          — record (immutable data carrier)
-│   └── Genre.java         — enum with label() method
-├── interfaces/
-│   └── Searchable.java    — search contract (searchText + default relevance)
-├── services/
-│   └── Catalog.java       — generic catalog with nested CatalogStats
-└── extensions/
-    ├── Advanced.java      — annotation + BookProcessor (wildcards, anonymous class)
-    └── Results.java       — SearchResult sealed interface hierarchy
+  models/
+    Book.java          — record: title, isbn, genre, copiesAvailable; compact constructor; isAvailable()
+    Genre.java         — enum: FICTION, NON_FICTION, SCIENCE, HISTORY, BIOGRAPHY; label() formatter
+  interfaces/
+    Searchable.java    — interface: searchText() + default relevance()
+  services/
+    Catalog.java       — generic service: Catalog<T extends Searchable>; add/search/stats/createDefault
+  extensions/
+    Advanced.java      — Indexed annotation + BookProcessor (annotations, anon classes, wildcards, inner classes)
+    Results.java       — sealed SearchResult interface with Found/NotFound/Error record variants
 ```
 
-## Key Abstractions
+### Key Abstractions
 
-### Searchable (interface)
-Core search contract. Any catalog item must implement `searchText() : String`.
-Default `relevance() : double` returns 0.0 — override for custom ranking.
+1. **Searchable** — Core contract. Anything in the catalog implements `searchText()`.
+   Default `relevance()` returns 0.0; implementors override for ranking.
 
-### Book (record)
-Immutable value type. Fields: title, isbn, genre, copiesAvailable.
-Compact constructor defaults copiesAvailable=1.
-`isAvailable()` returns `copiesAvailable > 0`.
-`MAX_RESULTS = 100` class constant.
+2. **Catalog<T extends Searchable>** — Generic container. Holds items in `ArrayList<T>`,
+   searches via Java streams (`filter` + `contains`), exposes `CatalogStats` nested class.
+   Static factory `createDefault()` creates a `Catalog<Book>`.
 
-### Catalog<T extends Searchable> (generic class)
-Generic service bounded to Searchable. Internally holds `List<T> items`.
-- `add(T)` — appends to list
-- `search(String)` — streams items, filters by `item.searchText().contains(query)`
-- `stats()` — returns nested `CatalogStats` (totalItems, name)
-- `createDefault()` — static factory returning `Catalog<Book>` named "Main Library"
+3. **SearchResult** — Sealed interface modeling search outcomes as an algebraic type:
+   `Found(Book, score)`, `NotFound(query)`, `Error(message, code)`. Default method
+   `isMatch()` uses `instanceof` pattern matching.
 
-### SearchResult (sealed interface)
-Exhaustive sum type with 3 record variants:
-- `Found(Book book, double score)` — match found
-- `NotFound(String query)` — no results
-- `Error(String message, int code)` — failure
-Default `isMatch()` uses `instanceof Found` pattern matching.
+4. **Book** — Record with 4 components. Compact constructor defaults `copiesAvailable=1`.
+   The primary data entity in the domain.
 
-### Indexed (@interface)
-Custom runtime annotation (`@Retention(RUNTIME)`) with `value()` element defaulting to "".
-Used on `BookProcessor.process(Book)` to mark field indexing (isbn).
+5. **BookProcessor** — Demonstrates advanced patterns: custom `@Indexed` annotation,
+   anonymous `Searchable` implementation, wildcard generics, static vs non-static inner classes.
 
-## Design Patterns
-- **Record-based value types** — Book, Found, NotFound, Error are all records (immutable, auto-toString/equals)
-- **Sealed interface hierarchy** — SearchResult restricts subtypes for exhaustive switch
-- **Generic bounded types** — Catalog<T extends Searchable> enforces the search contract at compile time
-- **Static factory** — Catalog.createDefault() as named constructor
-- **Static nested class** — CatalogStats (no outer reference needed); non-static ProcessingContext (bound to BookProcessor instance)
-- **Anonymous class** — BookProcessor.createAnonymousSearchable() returns inline Searchable impl
-- **Wildcard generics** — processAll(List<? extends Searchable>) accepts any Searchable subtype list
+### Data Flows
 
-## Data Flow: Add and Search
-1. `Catalog.createDefault()` → `new Catalog<>("Main Library")`
-2. `new Book(title, isbn, genre)` → compact ctor → `this(title, isbn, genre, 1)`
-3. `catalog.add(book)` → `items.add(book)`
-4. `catalog.search(query)` → stream → filter `searchText().contains(query)` → toList()
+**Search flow:** `Catalog.add(item)` populates the internal list. `Catalog.search(query)`
+streams all items, filters by `item.searchText().contains(query)`, collects to list.
+Result typing is decoupled — `SearchResult.Found` wraps a `Book` + score.
 
-## Data Flow: Search Result Handling
-1. Search operation returns `SearchResult` (Found/NotFound/Error)
-2. `result.isMatch()` → `this instanceof Found`
-3. Pattern match: `if (result instanceof SearchResult.Found(var book, var score)) {...}`
-4. Error: `SearchResult.Error(var msg, var code)` for graceful failure reporting
+**Processing flow:** `BookProcessor.processAll(List<? extends Searchable>)` iterates
+over any Searchable subtype, calling `searchText()` on each. Demonstrates wildcard
+bounds enabling polymorphic processing.
 
-## Good semantic_search Queries
-- `semantic_search("generic catalog search filtering", project_id="java-library")`
-- `semantic_search("sealed interface search result variants", project_id="java-library")`
-- `semantic_search("custom annotation retention runtime", project_id="java-library")`
-- `semantic_search("book record immutable availability", project_id="java-library")`
-- `semantic_search("searchable interface default relevance method", project_id="java-library")`
+### Design Patterns
+- Algebraic data types via sealed interface + records (SearchResult)
+- Strategy pattern via Searchable interface (pluggable search text)
+- Factory method (Catalog.createDefault)
+- Bounded generics for type-safe containers (Catalog<T extends Searchable>)
+
+### Useful Queries
+- `find_symbol("Catalog", project_id="java-library")` — main service class
+- `find_symbol("SearchResult", project_id="java-library")` — sealed type hierarchy
+- `find_symbol("Searchable", project_id="java-library")` — core interface
+- `grep("sealed|record|permits", path="tests/fixtures/java-library")` — Java 21 features
+- `grep("stream|filter|toList", path="tests/fixtures/java-library")` — functional data flow
