@@ -170,4 +170,103 @@ mod content_tests {
         assert!(!overflowed);
         assert!(msg.is_none());
     }
+
+    #[tokio::test]
+    async fn record_content_stores_input_in_debug_mode() {
+        use serde_json::json;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+        let agent = crate::agent::Agent::new(Some(dir.path().to_path_buf()))
+            .await
+            .unwrap();
+        let recorder = UsageRecorder::new(agent.clone(), true, "test-session".to_string());
+        let input = json!({"query": "test_symbol", "path": "src/lib.rs"});
+
+        let _ = recorder
+            .record_content("find_symbol", &input, || async {
+                Ok(vec![Content::text("found it")])
+            })
+            .await;
+
+        let conn = crate::usage::db::open_db(dir.path()).unwrap();
+        let (inp, out, sid, cs): (Option<String>, Option<String>, String, String) = conn
+            .query_row(
+                "SELECT input_json, output_json, session_id, codescout_sha FROM tool_calls",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+
+        assert!(inp.is_some(), "input_json should be populated in debug mode");
+        assert!(inp.unwrap().contains("test_symbol"));
+        assert!(out.is_none(), "output_json should be None for success");
+        assert_eq!(sid, "test-session");
+        assert!(!cs.is_empty(), "codescout_sha should be set");
+    }
+
+    #[tokio::test]
+    async fn record_content_stores_output_for_errors_in_debug_mode() {
+        use serde_json::json;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+        let agent = crate::agent::Agent::new(Some(dir.path().to_path_buf()))
+            .await
+            .unwrap();
+        let recorder = UsageRecorder::new(agent.clone(), true, "test-session".to_string());
+        let input = json!({"path": "/bad/path"});
+
+        let _ = recorder
+            .record_content("read_file", &input, || async {
+                Err(anyhow::anyhow!("file not found"))
+            })
+            .await;
+
+        let conn = crate::usage::db::open_db(dir.path()).unwrap();
+        let (inp, out): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT input_json, output_json FROM tool_calls",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+
+        assert!(inp.is_some(), "input_json should be populated");
+        assert!(out.is_some(), "output_json should be populated for errors");
+        assert!(out.unwrap().contains("file not found"));
+    }
+
+    #[tokio::test]
+    async fn record_content_no_input_in_normal_mode() {
+        use serde_json::json;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+        let agent = crate::agent::Agent::new(Some(dir.path().to_path_buf()))
+            .await
+            .unwrap();
+        let recorder = UsageRecorder::new(agent.clone(), false, "test-session".to_string());
+        let input = json!({"query": "test_symbol"});
+
+        let _ = recorder
+            .record_content("find_symbol", &input, || async {
+                Ok(vec![Content::text("found it")])
+            })
+            .await;
+
+        let conn = crate::usage::db::open_db(dir.path()).unwrap();
+        let (inp, sid, cs): (Option<String>, String, String) = conn
+            .query_row(
+                "SELECT input_json, session_id, codescout_sha FROM tool_calls",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+
+        assert!(inp.is_none(), "input_json should be None in normal mode");
+        assert_eq!(sid, "test-session", "session_id should always be set");
+        assert!(!cs.is_empty(), "codescout_sha should always be set");
+    }
+
 }
