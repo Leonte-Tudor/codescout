@@ -177,6 +177,15 @@ These work with the `local:` prefix (no server needed):
 
 4. **Bundled model lifecycle** — the ONNX model is loaded lazily on first `semantic_search` or `index_project`, cached for 5 minutes, then unloaded to free memory.
 
+## Choosing a Model
+
+Not sure which model to use? See the [Embedding Model Comparison](embedding-model-comparison.md)
+for benchmark results across three models, real-world usage data, and recommendations.
+
+**TL;DR:** The default (`local:AllMiniLML6V2Q`) is within 2 points of the best model on a
+60-point benchmark, indexes 21x faster, and requires zero setup. Keep it unless you have
+a specific reason to change.
+
 ## Troubleshooting
 
 ### Model mismatch after changing config

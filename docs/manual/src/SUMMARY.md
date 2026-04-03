@@ -53,6 +53,7 @@
 - [Project Configuration](configuration/project-toml.md)
   - [Embedding Backends](configuration/embedding-backends.md)
   - [Embeddings](configuration/embeddings.md)
+    - [Model Comparison](configuration/embedding-model-comparison.md)
 
 - [Language Support](language-support.md)
   - [Kotlin LSP Multiplexer](concepts/kotlin-lsp-multiplexer.md)
