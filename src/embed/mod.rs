@@ -188,7 +188,7 @@ pub async fn create_embedder_with_config(
     // 4. openai: prefix
     #[cfg(feature = "remote-embed")]
     if let Some(model_id) = model.strip_prefix("openai:") {
-        return Ok(Box::new(remote::RemoteEmbedder::openai(model_id)?));
+        return Ok(Box::new(remote::RemoteEmbedder::openai(model_id, api_key)?));
     }
 
     // 5. custom: prefix — removed, hard error
@@ -443,5 +443,17 @@ mod tests {
             err.contains("not reachable") || err.contains("Ollama"),
             "should mention Ollama is unreachable: {err}"
         );
+    }
+
+    #[test]
+    fn url_with_ollama_prefix_strips_prefix() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(super::create_embedder_with_config(
+            "ollama:nomic-embed-text",
+            Some("http://localhost:11434/v1"),
+            None,
+        ));
+        // Should succeed via URL path, not the ollama: branch
+        assert!(result.is_ok(), "url+ollama: prefix should use URL path");
     }
 }
