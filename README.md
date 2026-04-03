@@ -7,7 +7,7 @@ Works with Claude Code, GitHub Copilot, Cursor, and any MCP-capable agent.
 ## What it does
 
 - **Symbol navigation** — `find_symbol`, `list_symbols`, `find_references`, `goto_definition`, `replace_symbol`, backed by LSP across 9 languages
-- **Semantic search** — find code by concept using embeddings, not grep
+- **Semantic search** — find code by concept using a bundled ONNX embedding model (22 MB, zero setup), not grep
 - **Library navigation** — explore dependency source code with scoped search, version tracking, and auto-discovery
 - **Multi-project workspaces** — register related projects in `workspace.toml` for cross-project navigation with per-project memory and indexing
 - **Token efficiency** — compact by default, details on demand, never dumps full files
@@ -88,13 +88,25 @@ process per workspace.
 
 → [Kotlin LSP Multiplexer docs](docs/manual/src/concepts/kotlin-lsp-multiplexer.md)
 
-## Tools (29)
+## Tools (25)
 
-`Symbol navigation (9)` · `File operations (6)` · `Semantic search (3)` · `Memory (1)` · `Library navigation (1)` · `Workflow (2)` · `Config (2)` · `GitHub (5)`
+`Symbol navigation (9)` · `File operations (6)` · `Semantic search (3)` · `Memory (1)` · `Library navigation (2)` · `Workflow & Config (4)`
 
 Supported languages: Rust, Python, TypeScript/JavaScript, Go, Java, Kotlin, C/C++, C#, Ruby.
 
 → [Tool reference](docs/manual/src/tools/overview.md)
+
+## Semantic Search & Embeddings
+
+codescout bundles **all-MiniLM-L6-v2** (quantized, 22 MB) as its default embedding model.
+It runs locally via ONNX — no external server, no API key, no GPU needed. On first
+`index_project`, the model is downloaded once to `~/.cache/huggingface/hub/`.
+
+For users with Ollama or a GPU, codescout also supports external embedding servers
+(Ollama, OpenAI, llama.cpp, vLLM, TEI) via the standard `/v1/embeddings` API.
+
+→ [Embedding configuration](docs/manual/src/configuration/embeddings.md)
+→ [Model comparison & benchmark](docs/manual/src/configuration/embedding-model-comparison.md)
 
 ## Experimental Features
 
