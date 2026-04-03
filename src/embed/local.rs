@@ -47,13 +47,13 @@ fn parse_model(name: &str) -> Result<fastembed::EmbeddingModel> {
         "AllMiniLML6V2" => Ok(fastembed::EmbeddingModel::AllMiniLML6V2),
         other => anyhow::bail!(
             "Unknown local model '{other}'. Supported variants:\n\
-             • local:NomicEmbedTextV15Q          (768d, quantized, ~158MB, recommended)\n\
+             • local:AllMiniLML6V2Q               (384d, quantized, ~22MB, recommended default)\n\
+             • local:NomicEmbedTextV15Q           (768d, quantized, ~158MB, higher quality)\n\
              • local:NomicEmbedTextV15            (768d, full precision, ~547MB)\n\
              • local:JinaEmbeddingsV2BaseCode     (768d, code-specific, ~300MB)\n\
-             • local:AllMiniLML6V2Q               (384d, quantized, ~22MB, lightest)\n\
+             • local:AllMiniLML6V2                (384d, full precision)\n\
              • local:BGESmallENV15Q               (384d, deprecated — GPU-only, crashes on CPU)\n\
-             • local:BGESmallENV15                (384d, full precision)\n\
-             • local:AllMiniLML6V2                (384d, full precision)"
+             • local:BGESmallENV15                (384d, full precision)"
         ),
     }
 }
