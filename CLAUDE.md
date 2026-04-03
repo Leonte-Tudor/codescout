@@ -152,8 +152,7 @@ clean — git detects the cherry-pick and skips the duplicate commit automatical
 
 ## Project Structure
 
-See codescout memory `architecture` (Source Tree section).
-
+See codescout memory `architecture` (Source Tree section) and workspace-level memory `architecture` for the full 6-project workspace map.
 ## Design Principles
 
 **Progressive Disclosure & Discoverability** — Every tool defaults to the most

@@ -24,3 +24,6 @@ tests/fixtures/*/.codescout/
 .codescout/private-memories/
 /temp-docs/
 /.env
+/.claude/
+/.fastembed_cache/
+/.codescout/tmp/

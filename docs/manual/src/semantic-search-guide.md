@@ -21,10 +21,9 @@ codescout supports four embedding backends. The model string prefix in
 | `custom:` | `custom:my-model@http://host:8080` | Any OpenAI-compatible endpoint |
 | `local:` | `local:AllMiniLML6V2Q` | Offline / air-gapped, no daemon required |
 
-**Recommended starting point:** Ollama with `mxbai-embed-large`. It runs
-entirely on your machine, requires no API key, and produces good results on
-code. For more detail on all backends including OpenAI and local models, see
-[Embedding Backends](configuration/embedding-backends.md).
+**Recommended starting point:** The bundled `local:AllMiniLML6V2Q` model — no setup
+required, works offline, and downloads only ~22 MB on first use. For higher search
+quality or multi-project setups, see [Embedding Backends](configuration/embedding-backends.md).
 
 ## Setting Up Ollama
 
@@ -72,7 +71,7 @@ projects:
 
 ```toml
 [embeddings]
-model = "ollama:mxbai-embed-large"
+model = "local:AllMiniLML6V2Q"
 ```
 
 `model` is the only setting you need to change. Chunk size is derived
@@ -91,7 +90,7 @@ export OPENAI_API_KEY=sk-...
 
 ## Building the Index
 
-Once Ollama is running and `project.toml` is configured, build the index:
+Once `project.toml` is configured (or using the default), build the index:
 
 ```json
 { "name": "index_project", "arguments": {} }
@@ -218,7 +217,7 @@ conservative lower bound for mixed code and prose. Representative values:
 
 | Model | Context | Chunk budget |
 |---|---|---|
-| `ollama:mxbai-embed-large` (default) | 512 tokens | ~1 300 chars |
+| `ollama:mxbai-embed-large` | 512 tokens | ~1 300 chars |
 | `ollama:nomic-embed-text` | 8 192 tokens | ~20 900 chars |
 | `openai:text-embedding-3-small` | 8 191 tokens | ~20 900 chars |
 | `local:JinaEmbeddingsV2BaseCode` | 8 192 tokens | ~20 900 chars |
@@ -235,7 +234,7 @@ into inner methods.
 The embedding model has the largest effect on search quality. General-purpose
 text models (`nomic-embed-text`, `text-embedding-3-small`) work well for
 documentation and comments. Code-specific models
-(`mxbai-embed-large`, `local:JinaEmbeddingsV2BaseCode`) tend to perform
+(`local:JinaEmbeddingsV2BaseCode`) tend to perform
 better on function signatures and code identifiers.
 
 After changing the model, always run `index_project` with `force: true`.
@@ -250,13 +249,13 @@ empty, the query may be too generic — try a more specific description.
 
 **"Connection refused" when indexing**
 
-Ollama is not running. Start it with `ollama serve`. If you are using a
-non-default host, ensure `OLLAMA_HOST` is set correctly and matches what
-Ollama is actually listening on.
+An external embedding server (Ollama, llama.cpp, etc.) is not running. Start
+it, or switch to the bundled model by setting `model = "local:AllMiniLML6V2Q"`
+in `.codescout/project.toml`.
 
 **"Model not found" error**
 
-The model has not been pulled. Run `ollama pull mxbai-embed-large` (or
+The model has not been pulled. For Ollama, run `ollama pull <model-name>` (or
 whatever model is configured) and retry.
 
 **Stale results after editing many files**
@@ -273,7 +272,7 @@ differ, a force reindex is required.
 
 **Indexing is very slow**
 
-Check that Ollama is running locally and not routing over a slow network
-connection. If you need faster indexing and have an OpenAI account, switching
-to `openai:text-embedding-3-small` typically reduces indexing time
-significantly for large projects.
+If using an external server (Ollama, llama.cpp), check it is running locally
+and not routing over a slow network connection. The bundled `local:AllMiniLML6V2Q`
+model runs in-process and avoids network overhead. For the fastest throughput on
+large projects, `openai:text-embedding-3-small` batches requests via API.

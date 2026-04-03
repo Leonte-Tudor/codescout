@@ -96,7 +96,7 @@ this to the user:
 >
 > **Options:**
 > 1. **Build now** — I'll call `index_project` and wait for it to finish.
->    Requires an embedding backend (Ollama is the default — see
+>    Requires an embedding backend (bundled ONNX is the default, Ollama/OpenAI optional — see
 >    `docs/manual/src/configuration/embedding-backends.md` for setup).
 >    Takes 1–5 minutes depending on codebase size.
 > 2. **Build from CLI** — Run `codescout index --project .` in another

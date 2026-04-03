@@ -132,10 +132,10 @@ pub async fn embed_one(embedder: &dyn Embedder, text: &str) -> Result<Embedding>
 /// Resolution order:
 /// 1. `url` set → RemoteEmbedder targeting that URL
 /// 2. `model` starts with `local:` → local ONNX via fastembed
-/// 3. `model` starts with `ollama:` → Ollama (deprecated, warns once)
+/// 3. `model` starts with `ollama:` → Ollama (errors loudly if unreachable)
 /// 4. `model` starts with `openai:` → OpenAI API
 /// 5. `model` starts with `custom:` → hard error with migration hint
-/// 6. No url, no prefix → default to local:NomicEmbedTextV15Q
+/// 6. No url, no prefix → default to local:AllMiniLML6V2Q
 pub async fn create_embedder_with_config(
     model: &str,
     url: Option<&str>,
@@ -144,8 +144,15 @@ pub async fn create_embedder_with_config(
     // 1. URL takes priority — any OpenAI-compatible endpoint
     #[cfg(feature = "remote-embed")]
     if let Some(url) = url {
+        // Strip known routing prefixes so "ollama:nomic-embed-text" + url
+        // sends "nomic-embed-text" as the model name in the HTTP request.
+        let bare_model = model
+            .strip_prefix("ollama:")
+            .or_else(|| model.strip_prefix("openai:"))
+            .or_else(|| model.strip_prefix("local:"))
+            .unwrap_or(model);
         return Ok(Box::new(remote::RemoteEmbedder::from_url(
-            url, model, api_key,
+            url, bare_model, api_key,
         )?));
     }
     #[cfg(not(feature = "remote-embed"))]
@@ -162,30 +169,18 @@ pub async fn create_embedder_with_config(
         return Ok(Box::new(local::LocalEmbedder::new(model_id)?));
     }
 
-    // 3. ollama: prefix (deprecated)
+    // 3. ollama: prefix — no fallback, errors if unreachable
     #[cfg(feature = "remote-embed")]
     if let Some(model_id) = model.strip_prefix("ollama:") {
-        use std::sync::Once;
-        static WARN_ONCE: Once = Once::new();
-        WARN_ONCE.call_once(|| {
-            tracing::warn!(
-                "ollama: prefix is deprecated. Use url = \"http://localhost:11434/v1\" \
-                 and model = \"{}\" instead. The prefix will be removed in a future version.",
-                model_id
+        let host = std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".into());
+        if let Err(e) = remote::probe_ollama(&host).await {
+            anyhow::bail!(
+                "Ollama is not reachable at {host}: {e}\n\
+                 Start Ollama or switch to a different embedding backend.\n\n\
+                 Options:\n\
+                 • url = \"http://your-server:port/v1\"    (any OpenAI-compatible endpoint)\n\
+                 • model = \"local:AllMiniLML6V2Q\"        (bundled ONNX, 22MB, no server needed)"
             );
-        });
-        #[cfg(feature = "local-embed")]
-        {
-            let host =
-                std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".into());
-            if let Err(e) = remote::probe_ollama(&host).await {
-                const FALLBACK: &str = "NomicEmbedTextV15Q";
-                tracing::warn!(
-                    "{e}. Falling back to local:{FALLBACK}. \
-                     Set embeddings.url in .codescout/project.toml to use a dedicated server."
-                );
-                return Ok(Box::new(local::LocalEmbedder::new(FALLBACK)?));
-            }
         }
         return Ok(Box::new(remote::RemoteEmbedder::ollama(model_id)?));
     }
@@ -193,7 +188,7 @@ pub async fn create_embedder_with_config(
     // 4. openai: prefix
     #[cfg(feature = "remote-embed")]
     if let Some(model_id) = model.strip_prefix("openai:") {
-        return Ok(Box::new(remote::RemoteEmbedder::openai(model_id)?));
+        return Ok(Box::new(remote::RemoteEmbedder::openai(model_id, api_key)?));
     }
 
     // 5. custom: prefix — removed, hard error
@@ -223,14 +218,14 @@ pub async fn create_embedder_with_config(
         anyhow::bail!(
             "Local embedding requires the 'local-embed' feature.\n\
              Rebuild with: cargo build --features local-embed\n\n\
-             Recommended: local:NomicEmbedTextV15Q (768d, quantized)"
+             Recommended: local:AllMiniLML6V2Q (384d, quantized, 22MB)"
         );
     }
 
     anyhow::bail!(
         "Unknown model '{}'. Options:\n\
          • Set url in [embeddings] to point at any OpenAI-compatible server\n\
-         • Use local:NomicEmbedTextV15Q for bundled ONNX (768d, no server needed)\n\
+         • Use local:AllMiniLML6V2Q for bundled ONNX (384d, 22MB, no server needed)\n\
          • Use local:JinaEmbeddingsV2BaseCode for code-specialized ONNX",
         model
     )
@@ -399,23 +394,14 @@ mod tests {
     }
 
     #[test]
-    fn create_embedder_no_url_no_prefix_defaults_to_local_nomic() {
-        // A bare model name with no url should default to local:NomicEmbedTextV15Q
+    fn create_embedder_no_url_no_prefix_defaults_to_local_allminilm() {
+        // A bare model name with no url should be accepted as a local model
         // when the local-embed feature is available.
         #[cfg(feature = "local-embed")]
         {
             let rt = tokio::runtime::Runtime::new().unwrap();
-            let result = rt.block_on(super::create_embedder("NomicEmbedTextV15Q"));
-            // Without local-embed this would fail with "Unknown model prefix"
-            // With local-embed, it should succeed (or at least not hit the prefix error)
-            assert!(
-                result.is_ok()
-                    || !result
-                        .as_ref()
-                        .unwrap_err()
-                        .to_string()
-                        .contains("Unknown model prefix")
-            );
+            let result = rt.block_on(super::create_embedder("AllMiniLML6V2Q"));
+            assert!(result.is_ok(), "AllMiniLML6V2Q should load as local model");
         }
     }
 
@@ -433,5 +419,41 @@ mod tests {
         // the conservative 512-token default.
         let sz = super::chunk_size_for_model("some-custom-model");
         assert_eq!(sz, 1305); // 512 × 0.85 × 3 (conservative fallback)
+    }
+
+    #[cfg(feature = "remote-embed")]
+    #[test]
+    fn ollama_prefix_without_server_returns_error() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        // Use a port that's definitely not running Ollama
+        unsafe { std::env::set_var("OLLAMA_HOST", "http://127.0.0.1:19999") };
+        let result = rt.block_on(super::create_embedder_with_config(
+            "ollama:nomic-embed-text",
+            None,
+            None,
+        ));
+        unsafe { std::env::remove_var("OLLAMA_HOST") };
+        assert!(result.is_err(), "should error when Ollama is unreachable");
+        let err = result.err().unwrap().to_string();
+        assert!(
+            !err.contains("Falling back"),
+            "should NOT mention fallback: {err}"
+        );
+        assert!(
+            err.contains("not reachable") || err.contains("Ollama"),
+            "should mention Ollama is unreachable: {err}"
+        );
+    }
+
+    #[test]
+    fn url_with_ollama_prefix_strips_prefix() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(super::create_embedder_with_config(
+            "ollama:nomic-embed-text",
+            Some("http://localhost:11434/v1"),
+            None,
+        ));
+        // Should succeed via URL path, not the ollama: branch
+        assert!(result.is_ok(), "url+ollama: prefix should use URL path");
     }
 }

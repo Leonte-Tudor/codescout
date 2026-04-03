@@ -39,14 +39,19 @@ impl RemoteEmbedder {
     /// block `index_project` forever.
     fn http_client() -> Client {
         Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(300))
             .build()
             .expect("failed to build HTTP client")
     }
 
-    pub fn openai(model: &str) -> Result<Self> {
-        let api_key = std::env::var("OPENAI_API_KEY")
-            .map_err(|_| anyhow::anyhow!("OPENAI_API_KEY env var not set"))?;
+    pub fn openai(model: &str, api_key: Option<String>) -> Result<Self> {
+        let api_key = api_key
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "OpenAI API key not found. Set api_key in [embeddings] or OPENAI_API_KEY env var"
+                )
+            })?;
         Ok(Self {
             client: Self::http_client(),
             endpoint: "https://api.openai.com/v1/embeddings".into(),
@@ -119,10 +124,21 @@ impl Embedder for RemoteEmbedder {
     }
 
     async fn embed(&self, texts: &[&str]) -> Result<Vec<Embedding>> {
-        // Send in small batches to avoid HTTP 400 from servers with payload limits (e.g. Ollama).
-        const BATCH_SIZE: usize = 8;
-        let mut all = Vec::with_capacity(texts.len());
-        for batch in texts.chunks(BATCH_SIZE) {
+        // Filter empty/whitespace-only strings — embedding servers reject them with 400.
+        let non_empty: Vec<(usize, &str)> = texts
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| !t.trim().is_empty())
+            .map(|(i, t)| (i, *t))
+            .collect();
+        if non_empty.is_empty() {
+            return Ok(vec![vec![0.0; 1]; texts.len()]);
+        }
+        let filtered: Vec<&str> = non_empty.iter().map(|(_, t)| *t).collect();
+
+        const BATCH_SIZE: usize = 32;
+        let mut embedded = Vec::with_capacity(filtered.len());
+        for batch in filtered.chunks(BATCH_SIZE) {
             let mut req = self
                 .client
                 .post(&self.endpoint)
@@ -134,10 +150,23 @@ impl Embedder for RemoteEmbedder {
             if let Some(key) = &self.api_key {
                 req = req.bearer_auth(key);
             }
-            let resp: EmbedResponse = req.send().await?.error_for_status()?.json().await?;
+            let resp = req.send().await?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                anyhow::bail!("HTTP {status} from embedding server: {body}");
+            }
+            let resp: EmbedResponse = resp.json().await?;
             let mut data = resp.data;
             data.sort_by_key(|d| d.index);
-            all.extend(data.into_iter().map(|d| d.embedding));
+            embedded.extend(data.into_iter().map(|d| d.embedding));
+        }
+
+        // Reconstruct: filtered embeddings in original positions, zeros for empty inputs.
+        let dim = embedded.first().map_or(1, |e| e.len());
+        let mut all = vec![vec![0.0; dim]; texts.len()];
+        for (slot, (orig_idx, _)) in non_empty.iter().enumerate() {
+            all[*orig_idx] = std::mem::take(&mut embedded[slot]);
         }
         Ok(all)
     }
@@ -335,5 +364,12 @@ mod tests {
         unsafe { std::env::remove_var("EMBED_API_KEY") };
         let e = RemoteEmbedder::from_url("http://host:8080", "model", None).unwrap();
         assert!(e.api_key.is_none());
+    }
+
+    #[test]
+    fn openai_uses_explicit_api_key_over_env() {
+        let e = RemoteEmbedder::openai("text-embedding-3-small", Some("sk-from-config".into()))
+            .unwrap();
+        assert_eq!(e.api_key.as_deref(), Some("sk-from-config"));
     }
 }

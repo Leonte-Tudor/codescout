@@ -7,13 +7,13 @@ exact text matches. This guide covers how to configure the embedding backend.
 
 codescout works out of the box with a bundled embedding model. No setup needed.
 
-On first `index_project`, it downloads **nomic-embed-text-v1.5** (~158 MB, quantized)
+On first `index_project`, it downloads **all-MiniLM-L6-v2** (~22 MB, quantized)
 to `~/.cache/huggingface/hub/` and runs it locally via ONNX. This is a one-time download.
 
 ```toml
 # .codescout/project.toml (default — no changes needed)
 [embeddings]
-model = "local:NomicEmbedTextV15Q"
+model = "local:AllMiniLML6V2Q"
 ```
 
 This is fine for single-project use or getting started. For better performance
@@ -22,7 +22,7 @@ with multiple projects, see the next section.
 ## Recommended: External Embedding Server
 
 The bundled model loads into memory per codescout instance. With multiple projects
-open, this duplicates memory (~158 MB each). A dedicated embedding server avoids this:
+open, this duplicates memory (~22 MB each for the default model). A dedicated embedding server avoids this:
 
 - **One process** serves all codescout instances
 - **No memory duplication** — the model loads once
@@ -120,7 +120,7 @@ api_key = "sk-..."  # or set EMBED_API_KEY env var
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `model` | string | `"local:NomicEmbedTextV15Q"` | Model name. With `url`: sent in API body. Without `url`: prefix determines backend. |
+| `model` | string | `"local:AllMiniLML6V2Q"` | Model name. With `url`: sent in API body. Without `url`: prefix determines backend. |
 | `url` | string | *(none)* | Base URL for any OpenAI-compatible `/v1/embeddings` endpoint. |
 | `api_key` | string | *(none)* | API key sent as Bearer token. Also available via `EMBED_API_KEY` env var. |
 | `drift_detection_enabled` | bool | `true` | Track how much code meaning changes between index builds. |
@@ -149,7 +149,7 @@ Minimum recommended: **768 dimensions** for good code search quality.
 
 | Model | Dims | Download | Context | Best For |
 |-------|------|----------|---------|----------|
-| nomic-embed-text-v1.5 | 768 | ~158 MB (Q) / ~547 MB | 8192 | General purpose, **bundled default** |
+| nomic-embed-text-v1.5 | 768 | ~158 MB (Q) / ~547 MB | 8192 | General purpose, good quality |
 | jina-embeddings-v2-base-en | 768 | ~300 MB | 8192 | Code-specialized |
 | bge-m3 | 1024 | ~1.2 GB | 8192 | Best quality, needs external server |
 | CodeSage-small-v2 | 1024 | ~500 MB | — | Purpose-built for code retrieval |
@@ -161,10 +161,10 @@ These work with the `local:` prefix (no server needed):
 
 | Model ID | Dims | Size | Context | Notes |
 |----------|------|------|---------|-------|
-| `NomicEmbedTextV15Q` | 768 | ~158 MB | 8192 | **Recommended default** |
+| `NomicEmbedTextV15Q` | 768 | ~158 MB | 8192 | General purpose, good quality |
 | `NomicEmbedTextV15` | 768 | ~547 MB | 8192 | Full precision variant |
 | `JinaEmbeddingsV2BaseCode` | 768 | ~300 MB | 8192 | Code-specialized |
-| `AllMiniLML6V2Q` | 384 | ~22 MB | 256 | Ultra-lightweight |
+| `AllMiniLML6V2Q` | 384 | ~22 MB | 256 | **Default** — bundled, zero-config |
 | `AllMiniLML6V2` | 384 | ~90 MB | 256 | Full precision lightweight |
 
 ## How It Works
@@ -176,6 +176,15 @@ These work with the `local:` prefix (no server needed):
 3. **Vector storage** — embeddings are stored in sqlite-vec (`vec0` virtual tables) for fast KNN search.
 
 4. **Bundled model lifecycle** — the ONNX model is loaded lazily on first `semantic_search` or `index_project`, cached for 5 minutes, then unloaded to free memory.
+
+## Choosing a Model
+
+Not sure which model to use? See the [Embedding Model Comparison](embedding-model-comparison.md)
+for benchmark results across three models, real-world usage data, and recommendations.
+
+**TL;DR:** The default (`local:AllMiniLML6V2Q`) is within 2 points of the best model on a
+60-point benchmark, indexes 21x faster, and requires zero setup. Keep it unless you have
+a specific reason to change.
 
 ## Troubleshooting
 

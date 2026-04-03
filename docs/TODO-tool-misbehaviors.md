@@ -16,6 +16,15 @@ capture: what you did, what you expected, what actually happened, and a reproduc
 
 ---
 
+### BUG-035 — `edit_markdown`: `compute_section_end` ignores fenced code blocks, splitting sections mid-fence
+
+- **Observed:** 2026-04-03
+- **Tool:** `edit_markdown` (replace, remove, insert_after)
+- **What happened:** Replacing `## Reading the log` whose body contained a bash code block with `# or tail the most recent:` (a shell comment). `compute_section_end` treated it as a level-1 heading, truncating the section boundary mid-code-block. Subsequent `remove` on the phantom heading swallowed the rest of the file. Subsequent heading lookups failed because the orphaned closing ` ``` ` toggled `parse_all_headings`'s `in_code_block` state, hiding all headings below.
+- **Root cause:** `compute_section_end` called `heading_level()` per-line with no fenced-code-block tracking, while `parse_all_headings` (used for heading lookup) correctly tracked `in_code_block`. Inconsistency between the two paths.
+- **Fix:** Added `in_code_block` tracking to `compute_section_end`, matching `parse_all_headings` logic. Updated existing test (`heading_inside_code_block_edit`) whose assertion was wrong (passed for the wrong reason — same-level heading coincidence). Added two regression tests: `code_block_heading_different_level_does_not_split_section` and `insert_after_section_with_code_block_heading`.
+- **Status:** FIXED (commit pending)
+
 ## Observed Bugs
 
 ### BUG-021 — `edit_file`: parallel calls cause partial state + MCP server "crash"

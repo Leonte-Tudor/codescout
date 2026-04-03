@@ -19,10 +19,10 @@ your machine into this field automatically. You rarely need to set it manually �
 
 | Backend | Speed | Quality | Cost | Privacy | Setup |
 |---|---|---|---|---|---|
-| Ollama (default) | Medium | Good | Free | Local | Install Ollama + pull model |
+| Local (fastembed, **default**) | Fast (CPU) | Good–Excellent | Free | Fully local | Bundled — no setup needed |
+| Ollama | Medium | Good | Free | Local | Install Ollama + pull model |
 | OpenAI | Fast (network) | Excellent | Pay-per-token | Data sent to OpenAI | Set `OPENAI_API_KEY` |
 | Custom endpoint | Varies | Varies | Varies | Depends on host | Point at any compatible server |
-| Local (fastembed) | Slow (CPU) | Good–Excellent | Free | Fully local | `--features local-embed` at build time |
 
 ---
 
@@ -33,13 +33,13 @@ for manual overrides or when comparing options.
 
 | Model string                    | Backend  | Dims | Context | Code quality | Notes                                        |
 |---------------------------------|----------|------|---------|--------------|----------------------------------------------|
-| `ollama:nomic-embed-text`       | Ollama   |  768 | 8192 tok | Good       | **Recommended (Ollama).** Fast, 137 MB.      |
-| `ollama:bge-m3`                 | Ollama   | 1024 | 8192 tok | Excellent  | Best Ollama quality; slower, ~1.2 GB.        |
+| `local:AllMiniLML6V2Q`          | fastembed|  384 |  256 tok | Good       | **Default.** 22 MB, zero-config, bundled.    |
 | `local:JinaEmbeddingsV2BaseCode`| fastembed|  768 | 8192 tok | Excellent  | **Recommended (CPU-only).** Code-specific.   |
-| `local:AllMiniLML6V2Q`          | fastembed|  384 |  256 tok | Good       | Lightest local option; constrained machines. |
+| `ollama:nomic-embed-text`       | Ollama   |  768 | 8192 tok | Good       | Recommended if Ollama is already running.    |
+| `ollama:bge-m3`                 | Ollama   | 1024 | 8192 tok | Excellent  | Best Ollama quality; slower, ~1.2 GB.        |
 | `openai:text-embedding-3-small` | OpenAI   | 1536 | —       | Excellent    | Best quality/cost if cloud is acceptable.    |
 | `openai:text-embedding-3-large` | OpenAI   | 3072 | —       | Best         | Overkill for most codebases.                 |
-| `ollama:mxbai-embed-large`      | Ollama   | 1024 |  512 tok | Good       | Legacy default. Short context truncates code.|
+| `ollama:mxbai-embed-large`      | Ollama   | 1024 |  512 tok | Good       | Legacy. Short context truncates most code.   |
 
 **Switching models requires a full reindex** — see
 [Rebuilding After a Model Change](#rebuilding-after-a-model-change) below.
@@ -48,13 +48,11 @@ with different models.
 
 ---
 
-## Ollama (Default)
+## Ollama
 
 Uses a locally running [Ollama](https://ollama.com/) daemon. No API key is required.
 
 **Model string format:** `"ollama:<model-name>"`
-
-**Default:** `"ollama:mxbai-embed-large"`
 
 **Endpoint:** `$OLLAMA_HOST/v1/embeddings` (default: `http://localhost:11434/v1/embeddings`)
 
@@ -89,24 +87,16 @@ export OLLAMA_HOST=http://192.168.1.50:11434
 
 ### Automatic CPU Fallback
 
-When codescout is built with both `remote-embed` and `local-embed` features, it probes
-Ollama before every indexing or search call. If the daemon is not reachable within 2 seconds,
-it automatically falls back to `local:AllMiniLML6V2Q` and emits a warning:
+If Ollama is not running when codescout tries to connect, you'll see a clear error:
 
 ```
-Ollama not reachable at http://localhost:11434: …
-Falling back to local:AllMiniLML6V2Q (CPU-safe, ~22 MB).
-Set embeddings.model in .codescout/project.toml to suppress this.
+Ollama is not reachable at http://localhost:11434
 ```
 
-This means machines without Ollama installed — or without a GPU — still get working semantic
-search out of the box, just with the smaller local model. To silence the warning and make the
-fallback permanent, set the model explicitly:
-
-```toml
-[embeddings]
-model = "local:AllMiniLML6V2Q"
-```
+**Options:**
+- Start Ollama: `ollama serve`
+- Switch to bundled ONNX: set `model = "local:AllMiniLML6V2Q"` in `[embeddings]`
+- Use a different server: set `url = "http://your-server:port/v1"` in `[embeddings]`
 
 ### Recommended Ollama Models
 
@@ -291,16 +281,14 @@ recorded in the existing index.
 the recommended model into `.codescout/project.toml` automatically. The decision tree below
 is for manual overrides.
 
-- **Ollama is running** → `ollama:nomic-embed-text` (fast, 8192-token context, 137 MB).
-  Upgrade to `ollama:bge-m3` for higher retrieval quality at the cost of a 1.2 GB download.
-- **No Ollama, CPU-only machine, can build from source** → `local:JinaEmbeddingsV2BaseCode`
+- **Default / getting started** → `local:AllMiniLML6V2Q` — bundled, 22 MB, no setup.
+  Already active out of the box; no config change needed.
+- **Better code search, can build from source** → `local:JinaEmbeddingsV2BaseCode`
   (code-specific, 8192-token context, ~300 MB). Build with `--features local-embed` from the
-  [repository](https://github.com/mareurs/codescout). Outperforms general GPU models on code.
-- **No Ollama, CPU-only, `cargo install` only** → not currently supported. Install Ollama
-  (it runs on CPU too, just slower) or use `openai:text-embedding-3-small`.
-- **Constrained machine (low RAM or disk), building from source** → `local:AllMiniLML6V2Q`
-  (22 MB, CPU-safe). Build with `--features local-embed`.
+  [repository](https://github.com/mareurs/codescout). Outperforms general-purpose models on code.
+- **Ollama is already running** → `ollama:nomic-embed-text` (fast, 8192-token context, 137 MB).
+  Upgrade to `ollama:bge-m3` for higher retrieval quality at the cost of a 1.2 GB download.
 - **Best search quality, cloud acceptable** → `openai:text-embedding-3-small`.
-- **Air-gapped or full data privacy required** → build from source with `--features local-embed`
-  and use `local:JinaEmbeddingsV2BaseCode` or `local:AllMiniLML6V2Q`.
-- **Self-hosted TEI, vLLM, or similar** → `custom:<model>@<base-url>`.
+- **Air-gapped or full data privacy required** → `local:JinaEmbeddingsV2BaseCode` or
+  `local:AllMiniLML6V2Q` (already the default — no external calls are made).
+- **Self-hosted TEI, vLLM, or similar** → set `url = "http://your-server:port/v1"` in `[embeddings]`.

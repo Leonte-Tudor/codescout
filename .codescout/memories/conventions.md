@@ -1,82 +1,24 @@
-# Conventions
+## Shared Conventions
 
-See `CLAUDE.md § Design Principles` and `CLAUDE.md § Key Patterns` for core rules.
-This supplements with naming tables and testing patterns discovered in code.
+### Commit Style
+- Conventional commits: `feat(scope):`, `fix(scope):`, `test(scope):`, `docs:`, `chore:`, `build:`
+- Scope matches the affected module or project (e.g., `feat(usage):`, `fix(lsp):`)
 
-## Naming
+### Branch Strategy
+- `master` — protected, only cherry-picked tested commits
+- `experiments` — active development branch, iterate freely
+- Cherry-pick to master after: tests pass, clippy clean, MCP verified (`cargo build --release` + `/mcp`)
 
-| Entity | Convention | Example |
-|---|---|---|
-| Tool struct | PascalCase noun | `FindSymbol`, `ListSymbols`, `EditFile`, `EditMarkdown` |
-| Tool name (MCP) | snake_case verb_noun | `"find_symbol"`, `"edit_markdown"`, `"read_markdown"` |
-| Tool file | category noun | `symbol.rs`, `file.rs`, `memory.rs`, `markdown.rs` |
-| LSP ops trait | `*Ops` suffix | `LspClientOps` |
-| LSP provider | `*Provider` suffix | `LspProvider` |
-| Mock types | `Mock*` prefix | `MockLspClient`, `MockLspProvider` |
-| Integration test helpers | `project_with_files` | Creates `TempDir` + `ToolContext` |
-| Config files | `project.toml`, `libraries.json` | Under `.codescout/` |
-| Anchor sidecars | `.anchors.toml` | Alongside memory topic files |
+### Quality Gates
+- `cargo fmt && cargo clippy -- -D warnings && cargo test` before every completion
+- Write tools return `json!("ok")` — never echo content
+- All tool outputs use 1-indexed line numbers
 
-## Error Handling Pattern
-
-```rust
-// Expected / user-fixable → RecoverableError
-return Err(RecoverableError::with_hint("message", "what to do").into());
-
-// Bug or genuine failure → anyhow
-anyhow::bail!("unexpected state: {}", e);
-```
-
-`RecoverableError` has two constructors: `new(msg)` and `with_hint(msg, hint)`.
-The `hint` field appears in the JSON response body — give actionable next steps.
-
-## Testing Patterns
-
-- **Unit tests**: inline `#[cfg(test)] mod tests` at bottom of each file
-- **Integration tests**: `tests/integration.rs` — multi-tool workflows via `project_with_files()`
-  helper that creates a `TempDir` + `ToolContext` with real `Agent` + `LspManager::new_arc()`
-  and `SectionCoverage::new()`. `ToolContext` now requires `section_coverage` field.
-- **Bug regression tests**: `tests/bug_regression.rs` — `#[ignore]` tests requiring real LSP
-  servers; run with `cargo test --test bug_regression -- --ignored`
-- **LSP tests**: `tests/symbol_lsp.rs` and `tests/rename_symbol.rs` — behind `e2e-*` features;
-  use `MockLspClient` with pre-programmed symbol responses via `ctx_with_mock()` helper
-- **Cache-invalidation tests**: three-query sandwich (see `CLAUDE.md § Testing Patterns`)
-- **Async tests**: `#[tokio::test]` throughout; integration tests are async
-- **Mock pattern**: `MockLspClient` / `MockLspProvider` (src/lsp/mock.rs) — injectable
-  via `ToolContext.lsp: Arc<dyn LspProvider>`
-
-## Tool Implementation Checklist
-
-Adding a new tool requires 6 locations (see `MEMORY.md § New Tool Checklist`):
-1. Tool struct + `impl Tool` in `src/tools/*.rs`
-2. `Arc::new(ToolName)` in `server.rs::from_parts`
-3. Tool name in `server_registers_all_tools` test
-4. If write tool: add to `check_tool_access` match arm in `src/util/path_security.rs`
-5. If write tool: add to corresponding `*_disabled_blocks_*` security test
-6. Tool description in `src/prompts/server_instructions.md`
-
-Current write tools gated by `file_write_enabled`:
-`create_file`, `edit_file`, `replace_symbol`, `insert_code`, `rename_symbol`,
-`remove_symbol`, `register_library`, `edit_markdown`
-
-## ToolContext Construction
-
-`ToolContext` now has 6 fields (added `peer` and `section_coverage` since earlier versions):
-```rust
-ToolContext {
-    agent,
-    lsp: LspManager::new_arc(),
-    output_buffer: Arc::new(OutputBuffer::new(20)),
-    progress: None,
-    peer: None,
-    section_coverage: Arc::new(Mutex::new(SectionCoverage::new())),
-}
-```
-Omitting either new field will cause a compile error in tests.
-
-## Code Quality
-
-```bash
-cargo fmt && cargo clippy -- -D warnings && cargo test
-```
-All three must pass before committing. CI enforces on ubuntu/macos/windows.
+### Per-Project Conventions
+For language-specific patterns, see per-project memories:
+- `memory(project="code-explorer", topic="conventions")` — Rust patterns, error handling, testing
+- `memory(project="java-library", topic="conventions")` — Java 21 patterns
+- `memory(project="kotlin-library", topic="conventions")` — Kotlin patterns
+- `memory(project="python-library", topic="conventions")` — Python patterns
+- `memory(project="rust-library", topic="conventions")` — Rust fixture patterns
+- `memory(project="typescript-library", topic="conventions")` — TypeScript patterns

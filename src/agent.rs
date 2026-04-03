@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -98,6 +98,8 @@ pub struct ActiveProject {
     pub dirty_files: Arc<std::sync::Mutex<std::collections::HashSet<PathBuf>>>,
     /// When true, file writes are disabled regardless of security config.
     pub read_only: bool,
+    /// Git HEAD SHA of the project at activation time. None for non-git projects.
+    pub head_sha: Option<String>,
 }
 
 /// Read `workspace.toml` (if present) and return the discovery depth and exclude list.
@@ -110,6 +112,19 @@ fn load_discover_settings(root: &std::path::Path) -> (usize, Vec<String>) {
         }
     }
     (3, vec![])
+}
+
+/// Resolve the short git HEAD SHA for a directory. Returns None if not a git repo.
+fn resolve_head_sha(root: &Path) -> Option<String> {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 impl Agent {
@@ -134,6 +149,7 @@ impl Agent {
                 library_registry,
                 dirty_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
                 read_only: false,
+                head_sha: resolve_head_sha(&root),
             };
 
             // Discover sub-projects; root project is always included.
@@ -224,6 +240,7 @@ impl Agent {
             library_registry,
             dirty_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             read_only: effective_read_only,
+            head_sha: resolve_head_sha(&root),
         };
 
         // Discover sub-projects.
@@ -403,6 +420,7 @@ impl Agent {
         let private_memory = MemoryStore::open_private(&abs_root)?;
         let registry_path = abs_root.join(".codescout").join("libraries.json");
         let library_registry = LibraryRegistry::load(&registry_path).unwrap_or_default();
+        let head_sha = resolve_head_sha(&abs_root);
 
         let active = ActiveProject {
             root: abs_root,
@@ -412,6 +430,7 @@ impl Agent {
             library_registry,
             dirty_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             read_only: effective_read_only,
+            head_sha,
         };
 
         // Promote in-place
@@ -1424,5 +1443,48 @@ mod tests {
         let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
         let result = agent.activate_within_workspace("nonexistent", None).await;
         assert!(result.is_err());
+    }
+
+    async fn activate_populates_head_sha() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+        // Init a git repo so there's a HEAD to read.
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .current_dir(dir.path())
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .unwrap();
+
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        let sha = agent
+            .with_project(|p| Ok(p.head_sha.clone()))
+            .await
+            .unwrap();
+        assert!(sha.is_some(), "head_sha should be set for a git project");
+        assert!(
+            sha.as_ref().unwrap().len() >= 7,
+            "SHA should be at least 7 chars"
+        );
+    }
+
+    #[tokio::test]
+    async fn head_sha_none_for_non_git_project() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codescout")).unwrap();
+        let agent = Agent::new(Some(dir.path().to_path_buf())).await.unwrap();
+        let sha = agent
+            .with_project(|p| Ok(p.head_sha.clone()))
+            .await
+            .unwrap();
+        assert!(sha.is_none(), "head_sha should be None for non-git project");
     }
 }

@@ -49,6 +49,8 @@ pub struct CodeScoutServer {
     /// for HTTP/SSE each connection gets fresh instructions.
     instructions: String,
     section_coverage: Arc<std::sync::Mutex<crate::tools::section_coverage::SectionCoverage>>,
+    session_id: String,
+    debug: bool,
 }
 
 impl CodeScoutServer {
@@ -57,11 +59,11 @@ impl CodeScoutServer {
             Some(root) => LspManager::new_arc_with_root(root),
             None => LspManager::new_arc(),
         };
-        Self::from_parts(agent, lsp).await
+        Self::from_parts(agent, lsp, false).await
     }
 
     /// Create a server with an existing LspManager (used for HTTP multi-session).
-    pub async fn from_parts(agent: Agent, lsp: Arc<dyn LspProvider>) -> Self {
+    pub async fn from_parts(agent: Agent, lsp: Arc<dyn LspProvider>, debug: bool) -> Self {
         let status = agent.project_status().await;
         let instructions = crate::prompts::build_server_instructions(status.as_ref());
         let tools: Vec<Arc<dyn Tool>> = vec![
@@ -111,6 +113,8 @@ impl CodeScoutServer {
             tools,
             instructions,
             section_coverage,
+            session_id: uuid::Uuid::new_v4().to_string(),
+            debug,
         }
     }
 
@@ -170,12 +174,15 @@ impl CodeScoutServer {
                 .ok()
         };
 
-        let recorder = UsageRecorder::new(self.agent.clone());
+        let recorder = UsageRecorder::new(self.agent.clone(), self.debug, self.session_id.clone());
+        let input_for_record = input.clone();
 
         let result = if let Some(secs) = timeout_secs {
             tokio::time::timeout(
                 std::time::Duration::from_secs(secs),
-                recorder.record_content(&req.name, || tool.call_content(input, &ctx)),
+                recorder.record_content(&req.name, &input_for_record, || {
+                    tool.call_content(input, &ctx)
+                }),
             )
             .await
             .unwrap_or_else(|_| {
@@ -188,7 +195,9 @@ impl CodeScoutServer {
             })
         } else {
             recorder
-                .record_content(&req.name, || tool.call_content(input, &ctx))
+                .record_content(&req.name, &input_for_record, || {
+                    tool.call_content(input, &ctx)
+                })
                 .await
         };
 
@@ -405,7 +414,6 @@ pub async fn run(
     port: u16,
     auth_token: Option<String>,
     debug: bool,
-    diagnostic: bool,
     instance_id: Option<String>,
 ) -> Result<()> {
     // If no --project given, auto-detect from CWD (Claude Code launches servers from the project dir).
@@ -424,7 +432,7 @@ pub async fn run(
 
     let instance_tag = instance_id.as_deref().unwrap_or("----");
 
-    if diagnostic {
+    if debug {
         let project_display = agent
             .project_root()
             .await
@@ -440,8 +448,8 @@ pub async fn run(
         );
     }
 
-    // Heartbeat: in debug mode or diagnostic mode — distinguishes idle from hung.
-    if debug || diagnostic {
+    // Heartbeat: distinguishes idle from hung.
+    if debug {
         let agent_hb = agent.clone();
         let lsp_hb = lsp.clone();
         let start = tokio::time::Instant::now();
@@ -475,7 +483,7 @@ pub async fn run(
                 tracing::warn!("--auth-token is ignored for stdio transport");
             }
             tracing::info!("codescout MCP server ready (stdio)");
-            let server = CodeScoutServer::from_parts(agent, lsp.clone()).await;
+            let server = CodeScoutServer::from_parts(agent, lsp.clone(), debug).await;
             let (stdin, stdout) = rmcp::transport::stdio();
             let service = server
                 .serve((ResilientStdin::new(stdin), stdout))
@@ -512,11 +520,15 @@ pub async fn run(
             };
 
             // Build the server once (async), then clone per session.
-            let server = CodeScoutServer::from_parts(agent, lsp.clone()).await;
+            let server = CodeScoutServer::from_parts(agent, lsp.clone(), debug).await;
 
             let ct = tokio_util::sync::CancellationToken::new();
             let service = StreamableHttpService::new(
-                move || Ok(server.clone()),
+                move || {
+                    let mut s = server.clone();
+                    s.session_id = uuid::Uuid::new_v4().to_string();
+                    Ok(s)
+                },
                 LocalSessionManager::default().into(),
                 StreamableHttpServerConfig::default().with_cancellation_token(ct.child_token()),
             );

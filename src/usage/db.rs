@@ -31,9 +31,25 @@ pub fn open_db(project_root: &Path) -> Result<Connection> {
             first_response_ms INTEGER
         );",
     )?;
+
+    // Migration: add traceability columns (v0.9)
+    let has_session_id: bool = conn
+        .prepare("SELECT session_id FROM tool_calls LIMIT 0")
+        .is_ok();
+    if !has_session_id {
+        conn.execute_batch(
+            "ALTER TABLE tool_calls ADD COLUMN codescout_sha TEXT;
+             ALTER TABLE tool_calls ADD COLUMN project_sha TEXT;
+             ALTER TABLE tool_calls ADD COLUMN session_id TEXT;
+             ALTER TABLE tool_calls ADD COLUMN input_json TEXT;
+             ALTER TABLE tool_calls ADD COLUMN output_json TEXT;",
+        )?;
+    }
+
     Ok(conn)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn write_record(
     conn: &Connection,
     tool_name: &str,
@@ -41,11 +57,27 @@ pub fn write_record(
     outcome: &str,
     overflowed: bool,
     error_msg: Option<&str>,
+    codescout_sha: &str,
+    project_sha: Option<&str>,
+    session_id: &str,
+    input_json: Option<&str>,
+    output_json: Option<&str>,
 ) -> Result<()> {
     conn.execute(
-        "INSERT INTO tool_calls (tool_name, called_at, latency_ms, outcome, overflowed, error_msg)
-         VALUES (?1, datetime('now'), ?2, ?3, ?4, ?5)",
-        params![tool_name, latency_ms, outcome, overflowed as i64, error_msg],
+        "INSERT INTO tool_calls (tool_name, called_at, latency_ms, outcome, overflowed, error_msg, codescout_sha, project_sha, session_id, input_json, output_json)
+         VALUES (?1, datetime('now'), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            tool_name,
+            latency_ms,
+            outcome,
+            overflowed as i64,
+            error_msg,
+            codescout_sha,
+            project_sha,
+            session_id,
+            input_json,
+            output_json,
+        ],
     )?;
     conn.execute(
         "DELETE FROM tool_calls WHERE called_at < datetime('now', '-30 days')",
@@ -403,7 +435,20 @@ mod tests {
     #[test]
     fn write_record_roundtrip() {
         let (_dir, conn) = tmp();
-        write_record(&conn, "find_symbol", 42, "success", false, None).unwrap();
+        write_record(
+            &conn,
+            "find_symbol",
+            42,
+            "success",
+            false,
+            None,
+            "unknown",
+            None,
+            "test-session",
+            None,
+            None,
+        )
+        .unwrap();
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM tool_calls", [], |r| r.get(0))
             .unwrap();
@@ -420,6 +465,11 @@ mod tests {
             "recoverable_error",
             false,
             Some("path not found"),
+            "unknown",
+            None,
+            "test-session",
+            None,
+            None,
         )
         .unwrap();
         let (name, latency, outcome, overflowed, msg): (String, i64, String, i64, Option<String>) =
@@ -439,7 +489,20 @@ mod tests {
     #[test]
     fn write_record_overflow_flag() {
         let (_dir, conn) = tmp();
-        write_record(&conn, "list_symbols", 80, "success", true, None).unwrap();
+        write_record(
+            &conn,
+            "list_symbols",
+            80,
+            "success",
+            true,
+            None,
+            "unknown",
+            None,
+            "test-session",
+            None,
+            None,
+        )
+        .unwrap();
         let overflowed: i64 = conn
             .query_row("SELECT overflowed FROM tool_calls", [], |r| r.get(0))
             .unwrap();
@@ -462,7 +525,20 @@ mod tests {
         assert_eq!(before, 1);
 
         // Next write triggers pruning
-        write_record(&conn, "new_tool", 5, "success", false, None).unwrap();
+        write_record(
+            &conn,
+            "new_tool",
+            5,
+            "success",
+            false,
+            None,
+            "unknown",
+            None,
+            "test-session",
+            None,
+            None,
+        )
+        .unwrap();
         let after: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM tool_calls WHERE tool_name = 'old_tool'",
@@ -550,7 +626,20 @@ mod tests {
     #[test]
     fn recent_errors_returns_latest_errors() {
         let (_dir, conn) = tmp();
-        write_record(&conn, "find_symbol", 50, "success", false, None).unwrap();
+        write_record(
+            &conn,
+            "find_symbol",
+            50,
+            "success",
+            false,
+            None,
+            "unknown",
+            None,
+            "test-session",
+            None,
+            None,
+        )
+        .unwrap();
         write_record(
             &conn,
             "semantic_search",
@@ -558,6 +647,11 @@ mod tests {
             "error",
             false,
             Some("index missing"),
+            "unknown",
+            None,
+            "test-session",
+            None,
+            None,
         )
         .unwrap();
         write_record(
@@ -567,6 +661,11 @@ mod tests {
             "recoverable_error",
             false,
             Some("path not found"),
+            "unknown",
+            None,
+            "test-session",
+            None,
+            None,
         )
         .unwrap();
 
@@ -588,6 +687,11 @@ mod tests {
                 "error",
                 false,
                 Some("fail"),
+                "unknown",
+                None,
+                "test-session",
+                None,
+                None,
             )
             .unwrap();
         }
@@ -689,5 +793,95 @@ mod tests {
         }
         let stats = query_lsp_stats(&conn, "30d").unwrap();
         assert_eq!(stats.recent.len(), 20);
+    }
+
+    #[test]
+    fn open_db_migrates_traceability_columns() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_db(dir.path()).unwrap();
+        conn.execute(
+            "INSERT INTO tool_calls (tool_name, called_at, latency_ms, outcome, codescout_sha, project_sha, session_id, input_json, output_json)
+             VALUES ('test', datetime('now'), 10, 'success', 'abc1234', 'def5678', 'sess-1', '{\"q\":\"x\"}', NULL)",
+            [],
+        )
+        .unwrap();
+        let (cs, ps, sid, inp, out): (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT codescout_sha, project_sha, session_id, input_json, output_json FROM tool_calls",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(cs.as_deref(), Some("abc1234"));
+        assert_eq!(ps.as_deref(), Some("def5678"));
+        assert_eq!(sid.as_deref(), Some("sess-1"));
+        assert_eq!(inp.as_deref(), Some("{\"q\":\"x\"}"));
+        assert!(out.is_none());
+    }
+
+    #[test]
+    fn write_record_stores_traceability_fields() {
+        let (_dir, conn) = tmp();
+        write_record(
+            &conn,
+            "find_symbol",
+            42,
+            "error",
+            false,
+            Some("not found"),
+            "abc1234",
+            Some("def5678"),
+            "sess-1",
+            Some("{\"query\":\"foo\"}"),
+            Some("{\"error\":\"not found\"}"),
+        )
+        .unwrap();
+        let (cs, ps, sid, inp, out): (String, String, String, String, String) = conn
+            .query_row(
+                "SELECT codescout_sha, project_sha, session_id, input_json, output_json FROM tool_calls",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(cs, "abc1234");
+        assert_eq!(ps, "def5678");
+        assert_eq!(sid, "sess-1");
+        assert_eq!(inp, "{\"query\":\"foo\"}");
+        assert_eq!(out, "{\"error\":\"not found\"}");
+    }
+
+    #[test]
+    fn write_record_traceability_fields_nullable() {
+        let (_dir, conn) = tmp();
+        write_record(
+            &conn,
+            "find_symbol",
+            42,
+            "success",
+            false,
+            None,
+            "abc1234",
+            None,
+            "sess-1",
+            None,
+            None,
+        )
+        .unwrap();
+        let (ps, inp, out): (Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT project_sha, input_json, output_json FROM tool_calls",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert!(ps.is_none());
+        assert!(inp.is_none());
+        assert!(out.is_none());
     }
 }

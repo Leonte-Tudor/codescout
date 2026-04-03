@@ -43,16 +43,15 @@ pub struct EmbeddingsSection {
     /// Model identifier — prefix determines the backend:
     ///   "ollama:<model>"                    → Ollama local daemon (default)
     ///   "openai:<model>"                    → OpenAI API (requires OPENAI_API_KEY)
-    ///   "custom:<model>@<base_url>"         → Any OpenAI-compatible endpoint
     ///   "local:<EmbeddingModel variant>"    → fastembed-rs, no daemon needed,
     ///                                         CPU/WSL2-friendly. Downloads model
     ///                                         on first use to ~/.cache/huggingface/
     ///
     /// Recommended local models (rebuild with: cargo build --features local-embed):
-    ///   "local:JinaEmbeddingsV2BaseCode"    → 768d, code-specific, ~300MB
-    ///   "local:AllMiniLML6V2Q"              → 384d, INT8-quantized, ~22MB, CPU-safe
-    ///   "local:AllMiniLML6V2Q"              → 384d, quantized, ~22MB, lightest
+    ///   "local:AllMiniLML6V2Q"              → 384d, INT8-quantized, ~22MB, **default**
     ///   "local:BGESmallENV15"               → 384d, full precision
+    ///   "local:NomicEmbedTextV15Q"          → 768d, INT8-quantized, ~158MB
+    ///   "local:JinaEmbeddingsV2BaseCode"    → 768d, code-specific, ~300MB
     #[serde(default = "default_embed_model")]
     pub model: String,
     /// Base URL for an OpenAI-compatible embedding endpoint.
@@ -285,7 +284,7 @@ fn default_timeout() -> u64 {
     60
 }
 fn default_embed_model() -> String {
-    "local:NomicEmbedTextV15Q".into()
+    "local:AllMiniLML6V2Q".into()
 }
 
 fn default_ignored_patterns() -> Vec<String> {
@@ -357,14 +356,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_model_is_local_nomic() {
-        assert_eq!(default_embed_model(), "local:NomicEmbedTextV15Q");
+    fn default_embed_model_is_allminilm() {
+        assert_eq!(default_embed_model(), "local:AllMiniLML6V2Q");
     }
 
     #[test]
-    fn default_config_has_local_nomic_model() {
+    fn default_config_has_expected_embeddings() {
         let cfg = ProjectConfig::default_for("my-project".into());
-        assert_eq!(cfg.embeddings.model, "local:NomicEmbedTextV15Q");
+        assert_eq!(cfg.embeddings.model, "local:AllMiniLML6V2Q");
     }
 
     #[test]
