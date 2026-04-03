@@ -433,8 +433,17 @@ pub fn perform_section_edit(
 
 /// Compute the exclusive-end index (into `split('\n')` lines) for a section
 /// that starts at `start_idx` (0-based) and has heading level `level`.
+/// Skips headings inside fenced code blocks (``` ... ```).
 fn compute_section_end(lines: &[&str], start_idx: usize, level: usize) -> usize {
+    let mut in_code_block = false;
     for (i, &line) in lines[start_idx..].iter().enumerate() {
+        if line.starts_with("```") {
+            in_code_block = !in_code_block;
+            continue;
+        }
+        if in_code_block {
+            continue;
+        }
         if let Some(lvl) = crate::tools::file_summary::heading_level(line) {
             if lvl <= level {
                 return start_idx + i;
@@ -875,12 +884,64 @@ mod tests {
 
     #[test]
     fn heading_inside_code_block_edit() {
+        // A heading inside a fenced code block is part of the section body,
+        // so replacing the section should consume it.
         let content = "# Title\n## Real\ncontent\n```\n## Fake\n```\n";
         let result =
             perform_section_edit(content, "## Real", "replace", Some("new content\n")).unwrap();
         assert!(result.contains("## Real"));
         assert!(result.contains("new content"));
-        assert!(result.contains("## Fake"));
+        // ## Fake is inside a code block — it's part of ## Real's body and gets replaced
+        assert!(
+            !result.contains("## Fake"),
+            "code block content should be replaced as part of the section body"
+        );
+    }
+
+    /// Regression: a level-1 heading inside a fenced code block must NOT split a
+    /// level-2 section boundary. Without code-block tracking in `compute_section_end`,
+    /// the `# comment` line would be treated as a section boundary, leaving a stray
+    /// tail and corrupting the document.
+    #[test]
+    fn code_block_heading_different_level_does_not_split_section() {
+        let content =
+            "# Title\n## Section\ntext\n```bash\n# not a heading\nmore code\n```\n## Next\nstuff\n";
+        let result =
+            perform_section_edit(content, "## Section", "replace", Some("replaced\n")).unwrap();
+        assert!(result.contains("## Section"));
+        assert!(result.contains("replaced"));
+        assert!(result.contains("## Next"));
+        assert!(result.contains("stuff"));
+        // The code block content must be consumed as part of ## Section's body
+        assert!(
+            !result.contains("# not a heading"),
+            "code block content should have been replaced along with the section body"
+        );
+    }
+
+    /// Regression: `insert_after` on a section whose body contains a fenced code
+    /// block with a higher-level heading must insert AFTER the code block, not
+    /// in the middle of it.
+    #[test]
+    fn insert_after_section_with_code_block_heading() {
+        let content = "## Reading\n```bash\n# shell comment\nls -la\n```\n## Next\ntext\n";
+        let result = perform_section_edit(
+            content,
+            "## Reading",
+            "insert_after",
+            Some("## Inserted\nnew section\n"),
+        )
+        .unwrap();
+        // The inserted section should appear between ## Reading and ## Next
+        let reading_pos = result.find("## Reading").unwrap();
+        let inserted_pos = result.find("## Inserted").unwrap();
+        let next_pos = result.find("## Next").unwrap();
+        assert!(
+            reading_pos < inserted_pos && inserted_pos < next_pos,
+            "## Inserted should be between ## Reading and ## Next, got positions: reading={reading_pos}, inserted={inserted_pos}, next={next_pos}"
+        );
+        // The code block should remain intact inside ## Reading
+        assert!(result.contains("# shell comment"));
     }
 
     #[test]
