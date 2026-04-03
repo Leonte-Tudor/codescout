@@ -89,24 +89,16 @@ export OLLAMA_HOST=http://192.168.1.50:11434
 
 ### Automatic CPU Fallback
 
-When codescout is built with both `remote-embed` and `local-embed` features, it probes
-Ollama before every indexing or search call. If the daemon is not reachable within 2 seconds,
-it automatically falls back to `local:AllMiniLML6V2Q` and emits a warning:
+If Ollama is not running when codescout tries to connect, you'll see a clear error:
 
 ```
-Ollama not reachable at http://localhost:11434: …
-Falling back to local:AllMiniLML6V2Q (CPU-safe, ~22 MB).
-Set embeddings.model in .codescout/project.toml to suppress this.
+Ollama is not reachable at http://localhost:11434
 ```
 
-This means machines without Ollama installed — or without a GPU — still get working semantic
-search out of the box, just with the smaller local model. To silence the warning and make the
-fallback permanent, set the model explicitly:
-
-```toml
-[embeddings]
-model = "local:AllMiniLML6V2Q"
-```
+**Options:**
+- Start Ollama: `ollama serve`
+- Switch to bundled ONNX: set `model = "local:AllMiniLML6V2Q"` in `[embeddings]`
+- Use a different server: set `url = "http://your-server:port/v1"` in `[embeddings]`
 
 ### Recommended Ollama Models
 

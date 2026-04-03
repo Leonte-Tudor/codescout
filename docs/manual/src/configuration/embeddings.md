@@ -7,13 +7,13 @@ exact text matches. This guide covers how to configure the embedding backend.
 
 codescout works out of the box with a bundled embedding model. No setup needed.
 
-On first `index_project`, it downloads **nomic-embed-text-v1.5** (~158 MB, quantized)
+On first `index_project`, it downloads **all-MiniLM-L6-v2** (~22 MB, quantized)
 to `~/.cache/huggingface/hub/` and runs it locally via ONNX. This is a one-time download.
 
 ```toml
 # .codescout/project.toml (default — no changes needed)
 [embeddings]
-model = "local:NomicEmbedTextV15Q"
+model = "local:AllMiniLML6V2Q"
 ```
 
 This is fine for single-project use or getting started. For better performance
@@ -120,7 +120,7 @@ api_key = "sk-..."  # or set EMBED_API_KEY env var
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `model` | string | `"local:NomicEmbedTextV15Q"` | Model name. With `url`: sent in API body. Without `url`: prefix determines backend. |
+| `model` | string | `"local:AllMiniLML6V2Q"` | Model name. With `url`: sent in API body. Without `url`: prefix determines backend. |
 | `url` | string | *(none)* | Base URL for any OpenAI-compatible `/v1/embeddings` endpoint. |
 | `api_key` | string | *(none)* | API key sent as Bearer token. Also available via `EMBED_API_KEY` env var. |
 | `drift_detection_enabled` | bool | `true` | Track how much code meaning changes between index builds. |
@@ -161,10 +161,10 @@ These work with the `local:` prefix (no server needed):
 
 | Model ID | Dims | Size | Context | Notes |
 |----------|------|------|---------|-------|
-| `NomicEmbedTextV15Q` | 768 | ~158 MB | 8192 | **Recommended default** |
+| `NomicEmbedTextV15Q` | 768 | ~158 MB | 8192 | General purpose, good quality |
 | `NomicEmbedTextV15` | 768 | ~547 MB | 8192 | Full precision variant |
 | `JinaEmbeddingsV2BaseCode` | 768 | ~300 MB | 8192 | Code-specialized |
-| `AllMiniLML6V2Q` | 384 | ~22 MB | 256 | Ultra-lightweight |
+| `AllMiniLML6V2Q` | 384 | ~22 MB | 256 | **Recommended default** |
 | `AllMiniLML6V2` | 384 | ~90 MB | 256 | Full precision lightweight |
 
 ## How It Works
