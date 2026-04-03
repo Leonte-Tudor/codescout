@@ -406,23 +406,14 @@ mod tests {
     }
 
     #[test]
-    fn create_embedder_no_url_no_prefix_defaults_to_local_nomic() {
-        // A bare model name with no url should default to local:NomicEmbedTextV15Q
+    fn create_embedder_no_url_no_prefix_defaults_to_local_allminilm() {
+        // A bare model name with no url should be accepted as a local model
         // when the local-embed feature is available.
         #[cfg(feature = "local-embed")]
         {
             let rt = tokio::runtime::Runtime::new().unwrap();
-            let result = rt.block_on(super::create_embedder("NomicEmbedTextV15Q"));
-            // Without local-embed this would fail with "Unknown model prefix"
-            // With local-embed, it should succeed (or at least not hit the prefix error)
-            assert!(
-                result.is_ok()
-                    || !result
-                        .as_ref()
-                        .unwrap_err()
-                        .to_string()
-                        .contains("Unknown model prefix")
-            );
+            let result = rt.block_on(super::create_embedder("AllMiniLML6V2Q"));
+            assert!(result.is_ok(), "AllMiniLML6V2Q should load as local model");
         }
     }
 
