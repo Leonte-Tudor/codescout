@@ -300,6 +300,47 @@ Requires understanding design decisions, consistency invariants, and cross-modul
 - Many results are generic closing-brace `}` chunks (TC-01, 02) — large chunk windows include trailing boilerplate
 - Best at cross-cutting queries that have both code and doc matches (TC-13, 18)
 - The 32K context window creates some "kitchen sink" chunks that match broadly but imprecisely
+### Model: nomic-embed-text (F16, via Ollama)
+
+| Field | Value |
+|-------|-------|
+| Dimensions | 768 |
+| Context window | 8,192 tokens |
+| Index time | ~60 seconds |
+| Chunk count | 11,887 |
+| DB size | 55 MB |
+| **Total score** | **32/60** |
+
+| TC | Score | Notes |
+|----|-------|-------|
+| 01 | 3 | All 3: mod.rs #1+#5+#7+#8+#9+#10, server.rs #7, FEATURES.md #6. Best result of all models |
+| 02 | 2 | embed/mod.rs #6, embedding-backends.md #2+#3, config/project.rs #4. embeddings.md missed |
+| 03 | 2 | lsp/client.rs #2+#9, lsp/ops.rs #6 (LspProvider trait). lsp/manager.rs missed |
+| 04 | 2 | shell-integration.md #5, output-buffers.md #8, workflow.rs #10. All in top 10 |
+| 05 | 3 | output.rs #5+#10, PROGRESSIVE_DISC.md #4. Clean |
+| 06 | 1 | traceability-design.md #1, FEATURES.md #2, ARCHITECTURE.md #3. usage/db.rs missed |
+| 07 | 1 | markdown.rs #7 only. file_summary.rs missed. Mostly doc results |
+| 08 | 2 | embed/index.rs #2+#6 (mismatch tests), embed/mod.rs #1. schema.rs missed |
+| 09 | 2 | path_security.rs #1+#2+#4+#6+#7+#8 (dominates). command.rs missed |
+| 10 | 1 | PROGRESSIVE_DISC.md #3+#6+#7, format.rs #9. output.rs and server_instructions.md missed |
+| 11 | 1 | symbol.rs #5 only. Mostly doc results (editing.md #1, tool-workflows #9) |
+| 12 | 2 | embeddings.md #3+#7, embedding-backends.md #2+#8, unified-config specs #6+#9. embed/mod.rs missed |
+| 13 | 0 | No expected files. server.rs #1 (test name match), lsp-idle-ttl docs dominate |
+| 14 | 2 | tools/mod.rs #6, server.rs #7. Both found! research-progressive-disclosure #1, tool-trait.md #9 |
+| 15 | 1 | embed/index.rs #10 (vec0 migration test). vec0-migration docs dominate (#1-#7) |
+| 16 | 0 | No source files. All docs about semantic search |
+| 17 | 3 | companion-plugin.md #1, routing-plugin.md #5+#7+#9, agents/claude-code.md #4 |
+| 18 | 3 | All 3: file_summary.rs #3+#4+#5 (parse_all_headings), markdown.rs #9, BUG-035 #2 |
+| 19 | 0 | No expected source files. workspace-multi-project design dominates |
+| 20 | 1 | CLAUDE.md #1 (Prompt Surface Consistency). All 3 actual files missed |
+
+**Observations:**
+- Best TC-01 score of all models (3) — 768 dims with 8K context balances precision and breadth
+- Struggles on cross-cutting source queries (TC-13, 19: score 0) — same as other models
+- Doc-heavy like nomic-embed-code but without the `}` noise problem
+- Smaller chunks than nomic-embed-code (8K vs 32K) but larger than AllMiniLML6V2Q (256 tok)
+- Best storage efficiency: 55 MB (vs 71 MB mini, 372 MB code)
+
 ### Model: *(template for additional models)*
 
 | Field | Value |
@@ -319,14 +360,14 @@ Requires understanding design decisions, consistency invariants, and cross-modul
 
 ### Score by Tier
 
-| Tier | AllMiniLML6V2Q | nomic-embed-code | Max |
-|------|---------------|------------------|-----|
-| 1 (Direct Concept) | 11/15 | 9/15 | 15 |
-| 2 (Two-Concept) | 12/21 | 17/21 | 21 |
-| 3 (Cross-Cutting) | 6/15 | 7/15 | 15 |
-| 4 (Architectural) | 5/9 | 3/9 | 9 |
-| **Total** | **34/60** | **36/60** | **60** |
 
+| Tier | AllMiniLML6V2Q | nomic-embed-text | nomic-embed-code | Max |
+|------|---------------|-----------------|------------------|-----|
+| 1 (Direct Concept) | 11/15 | **12/15** | 9/15 | 15 |
+| 2 (Two-Concept) | 12/21 | 12/21 | **17/21** | 21 |
+| 3 (Cross-Cutting) | 6/15 | 5/15 | **7/15** | 15 |
+| 4 (Architectural) | **5/9** | 4/9 | 3/9 | 9 |
+| **Total** | **34/60** | **32/60** | **36/60** | **60** |
 ### Where Each Model Wins
 
 | Query | AllMiniLML6V2Q | nomic-embed-code | Winner | Why |
@@ -341,27 +382,29 @@ Requires understanding design decisions, consistency invariants, and cross-modul
 
 ### Key Takeaways
 
-1. **Scores are surprisingly close** (34 vs 36). The 7B code-specialized model with 9x more
-   dimensions and 128x more context barely edges out the 22 MB bundled model.
 
-2. **Different strengths:** AllMiniLML6V2Q wins on *precision* (finding specific functions/types),
-   nomic-embed-code wins on *concept composition* (queries that span multiple ideas).
+1. **All three models are within 4 points** (32-36/60). No model dominates across all tiers.
 
-3. **Both fail on TC-16 and TC-19** — queries about internal pipelines where the relevant code
-   doesn't use the same vocabulary as the query. This is a fundamental embedding limitation,
-   not a model-specific issue.
+2. **Each model wins a tier:**
+   - nomic-embed-text wins Tier 1 (12/15) — 768 dims + 8K context hits the sweet spot for direct lookups
+   - nomic-embed-code wins Tier 2+3 (17+7=24) — 32K context excels at multi-concept composition
+   - AllMiniLML6V2Q wins Tier 4 (5/9) — small, focused chunks find specific functions/patterns
 
-4. **The `}` problem:** nomic-embed-code's 32K context creates chunks that end with boilerplate
-   closing braces, which match too many queries. This is a chunking strategy issue, not a model
-   issue — smaller max-chunk-size could fix it.
+3. **All models fail on TC-16 (search pipeline) and TC-19 (activation wiring)** — queries about
+   internal pipelines where code doesn't use query vocabulary. This is a fundamental embedding
+   limitation, not model-specific.
 
-5. **Cost-effectiveness:** AllMiniLML6V2Q indexes in ~70 seconds (CPU) and uses 71 MB of storage.
-   nomic-embed-code takes ~25 minutes (GPU) and uses 372 MB. For a 2-point score difference,
-   the bundled model is the pragmatic default.
+4. **The `}` problem is model-specific:** nomic-embed-code's 32K context creates chunks ending with
+   boilerplate, which match too broadly. The 8K and 256-token models don't have this issue.
 
-6. **For power users:** nomic-embed-code is worth it when concept-level queries dominate
-   (architecture exploration, onboarding). AllMiniLML6V2Q is better for targeted code navigation.
+5. **Cost-effectiveness ranking:**
+   - AllMiniLML6V2Q: 34/60, 70s index, 71 MB — **best default** (bundled, zero-config)
+   - nomic-embed-text: 32/60, 60s index, 55 MB — needs Ollama but smallest storage
+   - nomic-embed-code: 36/60, 25min index, 372 MB — needs GPU, marginal improvement
 
+6. **Recommendation:** Keep AllMiniLML6V2Q as the default. nomic-embed-code's 2-point advantage
+   doesn't justify 21x slower indexing and 5x storage. If users want better concept-level search
+   and have Ollama running, nomic-embed-text is a balanced upgrade at nearly the same speed.
 ## Notes
 
 - **Chunk count varies by model** — models with larger context windows produce fewer, larger chunks.
