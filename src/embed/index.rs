@@ -1484,6 +1484,29 @@ pub async fn build_index(
         .await?,
     );
 
+    // When force-rebuilding with a different model, the vec0 table may have
+    // the wrong dimensionality. Detect this and recreate it.
+    if force {
+        let new_dims = embedder.dimensions();
+        let old_dims: Option<usize> =
+            get_meta(&conn, "embedding_dims")?.and_then(|s| s.parse().ok());
+        if old_dims.is_some_and(|d| d != new_dims) && is_vec0_active(&conn) {
+            tracing::info!(
+                "Dimension change detected ({} → {}), recreating vec0 table",
+                old_dims.unwrap(),
+                new_dims
+            );
+            conn.execute_batch("DROP TABLE IF EXISTS chunk_embeddings")?;
+            conn.execute_batch(&format!(
+                "CREATE VIRTUAL TABLE chunk_embeddings USING vec0(\
+                 embedding float[{new_dims}] distance_metric=cosine)"
+            ))?;
+            set_meta(&conn, "embedding_dims", &new_dims.to_string())?;
+        }
+        // Update model name early so a crash mid-index doesn't leave stale metadata
+        set_meta(&conn, "embed_model", &config.embeddings.model)?;
+    }
+
     // ── Phase 1: Detect changed files ─────────────────────────────────────────
     let change_set = find_changed_files(&conn, project_root, force)?;
 
