@@ -1073,4 +1073,263 @@ mod tests {
         assert!(result.contains("goodbye world"));
         assert!(result.contains("hi world"));
     }
+
+    // ── fenced code block edge cases ────────────────────────────────────
+
+    /// Multiple code blocks in a single section — all must be part of the section body.
+    #[test]
+    fn multiple_code_blocks_in_section() {
+        let content = concat!(
+            "# Title\n",
+            "## Setup\n",
+            "First block:\n",
+            "```bash\n",
+            "# install deps\n",
+            "apt install foo\n",
+            "```\n",
+            "Second block:\n",
+            "```python\n",
+            "# run script\n",
+            "import sys\n",
+            "```\n",
+            "## Next\n",
+            "other\n",
+        );
+        let result =
+            perform_section_edit(content, "## Setup", "replace", Some("simplified\n")).unwrap();
+        assert!(result.contains("## Setup"));
+        assert!(result.contains("simplified"));
+        assert!(result.contains("## Next"));
+        assert!(!result.contains("# install deps"));
+        assert!(!result.contains("# run script"));
+    }
+
+    /// Code block with language tag — the ``` fence detection must work with ```bash, ```python, etc.
+    #[test]
+    fn code_block_with_language_tag() {
+        let content = "## Sec\n```rust\n// # Not a heading\nfn main() {}\n```\n## Next\ntext\n";
+        let result = perform_section_edit(content, "## Sec", "replace", Some("new\n")).unwrap();
+        assert!(result.contains("## Sec"));
+        assert!(result.contains("## Next"));
+        assert!(!result.contains("fn main"));
+    }
+
+    /// Section whose entire body is a code block.
+    #[test]
+    fn section_body_is_entirely_code_block() {
+        let content = "## Code\n```\n# heading-like\nsome code\n```\n## After\ntext\n";
+        let result =
+            perform_section_edit(content, "## Code", "replace", Some("replaced\n")).unwrap();
+        assert_eq!(result, "## Code\n\nreplaced\n## After\ntext\n");
+    }
+
+    /// Code block at the very end of the file (last section, code block is last content).
+    #[test]
+    fn code_block_at_end_of_file() {
+        let content = "# Title\n## Last\ntext\n```\n# inside fence\ncode\n```\n";
+        let result =
+            perform_section_edit(content, "## Last", "replace", Some("new last\n")).unwrap();
+        assert!(result.contains("new last"));
+        assert!(!result.contains("# inside fence"));
+        assert!(result.ends_with('\n'));
+    }
+
+    /// Unclosed code fence — everything after ``` to EOF is "inside" the code block.
+    /// The section boundary should extend to EOF since no real heading follows.
+    #[test]
+    fn unclosed_code_fence() {
+        let content = "# Title\n## Broken\ntext\n```\n# looks like heading\ncode\n";
+        let result =
+            perform_section_edit(content, "## Broken", "replace", Some("fixed\n")).unwrap();
+        assert!(result.contains("fixed"));
+        // The unclosed fence content is part of the section — gets replaced
+        assert!(!result.contains("# looks like heading"));
+    }
+
+    /// Multiple `#` levels inside a single code block — none should act as boundaries.
+    #[test]
+    fn multiple_heading_levels_inside_code_block() {
+        let content = concat!(
+            "## Section\n",
+            "```markdown\n",
+            "# H1 inside\n",
+            "## H2 inside\n",
+            "### H3 inside\n",
+            "```\n",
+            "## Real Next\n",
+            "content\n",
+        );
+        let result =
+            perform_section_edit(content, "## Section", "replace", Some("clean\n")).unwrap();
+        assert!(result.contains("clean"));
+        assert!(result.contains("## Real Next"));
+        assert!(!result.contains("# H1 inside"));
+        assert!(!result.contains("## H2 inside"));
+        assert!(!result.contains("### H3 inside"));
+    }
+
+    /// Consecutive code fences with no content between them.
+    #[test]
+    fn consecutive_code_fences() {
+        let content = "## Sec\n```\n# a\n```\n```\n# b\n```\n## Next\ntext\n";
+        let result = perform_section_edit(content, "## Sec", "replace", Some("new\n")).unwrap();
+        assert!(result.contains("## Next"));
+        assert!(!result.contains("# a"));
+        assert!(!result.contains("# b"));
+    }
+
+    /// Insert_before a section that is preceded by a code block ending.
+    #[test]
+    fn insert_before_section_after_code_block() {
+        let content = "## First\ntext\n```\n# comment\n```\n## Second\nmore\n";
+        let result = perform_section_edit(
+            content,
+            "## Second",
+            "insert_before",
+            Some("## Middle\ninserted\n"),
+        )
+        .unwrap();
+        let first_pos = result.find("## First").unwrap();
+        let middle_pos = result.find("## Middle").unwrap();
+        let second_pos = result.find("## Second").unwrap();
+        assert!(first_pos < middle_pos && middle_pos < second_pos);
+    }
+
+    /// Remove a section whose body contains code blocks.
+    #[test]
+    fn remove_section_with_code_blocks() {
+        let content =
+            "# Title\n## Keep\nkept\n## Remove\ntext\n```\n# fake\ncode\n```\n## Also Keep\nstuff\n";
+        let result = perform_section_edit(content, "## Remove", "remove", None).unwrap();
+        assert!(result.contains("## Keep"));
+        assert!(result.contains("kept"));
+        assert!(result.contains("## Also Keep"));
+        assert!(result.contains("stuff"));
+        assert!(!result.contains("## Remove"));
+        assert!(!result.contains("# fake"));
+    }
+
+    /// Scoped edit (action="edit") within a section that has code blocks —
+    /// the old_string/new_string should work on the full section body including code blocks.
+    #[test]
+    fn scoped_edit_in_section_with_code_block() {
+        let content =
+            "## Config\nSet `foo=bar` in config.\n```toml\n# main config\nfoo = \"bar\"\n```\n## Next\ntext\n";
+        let result = perform_scoped_edit(content, "## Config", "foo", "baz", true).unwrap();
+        assert!(result.contains("Set `baz=bar`"));
+        assert!(result.contains("baz = \"bar\""));
+        // Should not touch ## Next
+        assert!(result.contains("## Next\ntext"));
+    }
+
+    // ── heading matching edge cases ─────────────────────────────────────
+
+    /// Heading with inline code backticks — the tool should match via stripped formatting.
+    #[test]
+    fn heading_with_backtick_code() {
+        let content = "# Title\n## The `auth` Module\ncontent\n## Other\ntext\n";
+        // Query without backticks should match via strip_inline_formatting
+        let result =
+            perform_section_edit(content, "## The auth Module", "replace", Some("new\n")).unwrap();
+        assert!(result.contains("new"));
+        assert!(result.contains("## Other"));
+    }
+
+    /// Heading with bold formatting — matched via stripping.
+    #[test]
+    fn heading_with_bold_formatting() {
+        let content = "# Title\n## **Important** Notes\ncontent\n";
+        let result =
+            perform_section_edit(content, "## Important Notes", "replace", Some("updated\n"))
+                .unwrap();
+        assert!(result.contains("updated"));
+    }
+
+    /// Prefix match — partial heading should match.
+    #[test]
+    fn heading_prefix_match() {
+        let content = "# Title\n## Installation and Setup Guide\ncontent\n";
+        let result =
+            perform_section_edit(content, "## Installation", "replace", Some("simplified\n"))
+                .unwrap();
+        assert!(result.contains("simplified"));
+    }
+
+    // ── boundary conditions ─────────────────────────────────────────────
+
+    /// Section with only whitespace lines as body.
+    #[test]
+    fn section_with_whitespace_only_body() {
+        let content = "# Title\n## Empty-ish\n\n\n\n## Next\ncontent\n";
+        let result =
+            perform_section_edit(content, "## Empty-ish", "replace", Some("now has stuff\n"))
+                .unwrap();
+        assert!(result.contains("now has stuff"));
+        assert!(result.contains("## Next"));
+    }
+
+    /// Replace the top-level `#` heading — its section spans to EOF (or next `#`),
+    /// so all child sections (##, ###, etc.) are part of its body and get replaced.
+    #[test]
+    fn replace_top_level_heading_consumes_children() {
+        let content = "# Title\nintro text\n## Child\nchild text\n";
+        let result =
+            perform_section_edit(content, "# Title", "replace", Some("new intro\n")).unwrap();
+        assert!(result.contains("new intro"));
+        // ## Child is a subsection of # Title — it gets replaced too
+        assert!(
+            !result.contains("## Child"),
+            "child section should be consumed by parent replace"
+        );
+    }
+
+    /// Insert after the last section in the document.
+    #[test]
+    fn insert_after_last_section() {
+        let content = "# Title\n## Only\ncontent\n";
+        let result = perform_section_edit(
+            content,
+            "## Only",
+            "insert_after",
+            Some("\n## Appended\nnew stuff\n"),
+        )
+        .unwrap();
+        assert!(result.contains("## Only\ncontent"));
+        assert!(result.contains("## Appended\nnew stuff"));
+    }
+
+    /// Deeply nested section (###) inside a ## section — replace ## consumes ### children.
+    #[test]
+    fn replace_consumes_nested_children() {
+        let content =
+            "# Title\n## Parent\ntext\n### Child1\nc1\n### Child2\nc2\n## Sibling\nother\n";
+        let result =
+            perform_section_edit(content, "## Parent", "replace", Some("flat now\n")).unwrap();
+        assert!(result.contains("flat now"));
+        assert!(result.contains("## Sibling"));
+        assert!(!result.contains("### Child1"));
+        assert!(!result.contains("### Child2"));
+    }
+
+    /// Code block inside a nested ### section — replace of parent ## should consume everything.
+    #[test]
+    fn code_block_inside_nested_child_consumed_by_parent_replace() {
+        let content = concat!(
+            "## Parent\n",
+            "intro\n",
+            "### Child\n",
+            "```bash\n",
+            "# shell comment\n",
+            "echo hello\n",
+            "```\n",
+            "## Next\n",
+            "other\n",
+        );
+        let result =
+            perform_section_edit(content, "## Parent", "replace", Some("replaced\n")).unwrap();
+        assert!(result.contains("replaced"));
+        assert!(result.contains("## Next"));
+        assert!(!result.contains("### Child"));
+        assert!(!result.contains("# shell comment"));
+    }
 }
