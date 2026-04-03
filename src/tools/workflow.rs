@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 /// Bump this when system prompt surfaces change significantly.
 /// Missing or lower stored version triggers auto-refresh of the system prompt.
 /// See CLAUDE.md § "Onboarding Version" for when to bump.
-const ONBOARDING_VERSION: u32 = 2;
+const ONBOARDING_VERSION: u32 = 3;
 
 /// Returns true if the stored onboarding version is stale (needs refresh).
 /// `None` means pre-versioning project — always stale.
@@ -55,14 +55,14 @@ pub struct ModelOption {
 }
 
 /// Pure function: derive a ranked model list from hardware facts.
-/// The first entry is always the recommended default (local:NomicEmbedTextV15Q).
+/// The first entry is always the recommended default (local:AllMiniLML6V2Q).
 pub fn model_options_for_hardware(ctx: &HardwareContext) -> Vec<ModelOption> {
     let mut options = vec![ModelOption {
-        id: "local:NomicEmbedTextV15Q".into(),
-        label: "NomicEmbedTextV15Q".into(),
-        dims: 768,
-        context_tokens: 8192,
-        reason: "bundled ONNX, no server needed, good general baseline (quantized)".into(),
+        id: "local:AllMiniLML6V2Q".into(),
+        label: "AllMiniLML6V2Q".into(),
+        dims: 384,
+        context_tokens: 256,
+        reason: "bundled ONNX, no server needed, lightweight default (22MB, quantized)".into(),
         available: true,
         recommended: true,
     }];
@@ -5992,7 +5992,7 @@ mod tests {
     // ---------- hardware detection ----------
 
     #[test]
-    fn model_options_ollama_available_recommends_nomic() {
+    fn model_options_ollama_available_recommends_allminilm() {
         let ctx = super::HardwareContext {
             ollama_available: true,
             ollama_host: "http://localhost:11434".into(),
@@ -6001,9 +6001,9 @@ mod tests {
             cpu_cores: 8,
         };
         let opts = super::model_options_for_hardware(&ctx);
-        // With Ollama: local:NomicEmbedTextV15Q (recommended) + url hint + Jina = 3 entries
+        // With Ollama: local:AllMiniLML6V2Q (recommended) + url hint + Jina = 3 entries
         assert_eq!(opts.len(), 3);
-        assert_eq!(opts[0].id, "local:NomicEmbedTextV15Q");
+        assert_eq!(opts[0].id, "local:AllMiniLML6V2Q");
         assert!(opts[0].recommended);
         assert!(!opts[1].recommended);
         assert!(!opts[2].recommended);
@@ -6019,8 +6019,8 @@ mod tests {
             cpu_cores: 4,
         };
         let opts = super::model_options_for_hardware(&ctx);
-        // Without Ollama: local:NomicEmbedTextV15Q (recommended) + Jina + url hint = 3 entries
-        assert_eq!(opts[0].id, "local:NomicEmbedTextV15Q");
+        // Without Ollama: local:AllMiniLML6V2Q (recommended) + Jina + url hint = 3 entries
+        assert_eq!(opts[0].id, "local:AllMiniLML6V2Q");
         assert!(opts[0].recommended);
         // url hint is last
         assert_eq!(opts[opts.len() - 1].id, "url");
@@ -6044,7 +6044,7 @@ mod tests {
     }
 
     #[test]
-    fn model_options_default_is_local_nomic() {
+    fn model_options_default_is_local_allminilm() {
         let hw = super::HardwareContext {
             ollama_available: false,
             ollama_host: "http://localhost:11434".into(),
@@ -6053,7 +6053,7 @@ mod tests {
             cpu_cores: 8,
         };
         let options = super::model_options_for_hardware(&hw);
-        assert_eq!(options[0].id, "local:NomicEmbedTextV15Q");
+        assert_eq!(options[0].id, "local:AllMiniLML6V2Q");
         assert!(options[0].recommended);
         // Must have a url hint option
         assert!(
@@ -6072,7 +6072,7 @@ mod tests {
             cpu_cores: 8,
         };
         let options = super::model_options_for_hardware(&hw);
-        assert_eq!(options[0].id, "local:NomicEmbedTextV15Q");
+        assert_eq!(options[0].id, "local:AllMiniLML6V2Q");
         assert!(options[0].recommended);
         // Ollama option should mention url
         assert!(
