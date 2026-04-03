@@ -1490,7 +1490,21 @@ pub async fn build_index(
         let new_dims = embedder.dimensions();
         let old_dims: Option<usize> =
             get_meta(&conn, "embedding_dims")?.and_then(|s| s.parse().ok());
-        if old_dims.is_some_and(|d| d != new_dims) && is_vec0_active(&conn) {
+        if new_dims == 0 && old_dims.is_some() && is_vec0_active(&conn) {
+            // Remote embedder: dimensions unknown until first embed response.
+            // Drop vec0 (wrong dims would reject new vectors) and fall back to
+            // regular blob table.  Real dims are derived after Phase 2 and vec0
+            // is recreated via maybe_migrate_to_vec0 at the end of this function.
+            tracing::info!(
+                "Remote model (dims unknown at construction), dropping vec0 for re-derivation"
+            );
+            conn.execute_batch("DROP TABLE IF EXISTS chunk_embeddings")?;
+            conn.execute_batch(
+                "CREATE TABLE chunk_embeddings (rowid INTEGER PRIMARY KEY, embedding BLOB NOT NULL)",
+            )?;
+            conn.execute("DELETE FROM meta WHERE key = 'embedding_dims'", [])?;
+        } else if old_dims.is_some_and(|d| d != new_dims) && new_dims > 0 && is_vec0_active(&conn) {
+            // Local embedder: dimensions known, recreate vec0 with new dims.
             tracing::info!(
                 "Dimension change detected ({} → {}), recreating vec0 table",
                 old_dims.unwrap(),
@@ -1747,6 +1761,14 @@ pub async fn build_index(
     }
 
     conn.execute_batch("COMMIT")?;
+
+    // If vec0 was dropped for a remote embedder (dims unknown at start),
+    // Phase 3 has now stored the real dims — migrate to vec0 so semantic
+    // search works immediately without waiting for next open_db.
+    if !is_vec0_active(&conn) {
+        maybe_migrate_to_vec0(&conn)?;
+    }
+
     tracing::info!(
         "Index complete: {} files indexed, {} deleted",
         indexed,
