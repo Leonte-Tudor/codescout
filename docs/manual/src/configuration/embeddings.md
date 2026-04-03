@@ -22,7 +22,7 @@ with multiple projects, see the next section.
 ## Recommended: External Embedding Server
 
 The bundled model loads into memory per codescout instance. With multiple projects
-open, this duplicates memory (~158 MB each). A dedicated embedding server avoids this:
+open, this duplicates memory (~22 MB each for the default model). A dedicated embedding server avoids this:
 
 - **One process** serves all codescout instances
 - **No memory duplication** — the model loads once
@@ -149,7 +149,7 @@ Minimum recommended: **768 dimensions** for good code search quality.
 
 | Model | Dims | Download | Context | Best For |
 |-------|------|----------|---------|----------|
-| nomic-embed-text-v1.5 | 768 | ~158 MB (Q) / ~547 MB | 8192 | General purpose, **bundled default** |
+| nomic-embed-text-v1.5 | 768 | ~158 MB (Q) / ~547 MB | 8192 | General purpose, good quality |
 | jina-embeddings-v2-base-en | 768 | ~300 MB | 8192 | Code-specialized |
 | bge-m3 | 1024 | ~1.2 GB | 8192 | Best quality, needs external server |
 | CodeSage-small-v2 | 1024 | ~500 MB | — | Purpose-built for code retrieval |
@@ -164,7 +164,7 @@ These work with the `local:` prefix (no server needed):
 | `NomicEmbedTextV15Q` | 768 | ~158 MB | 8192 | General purpose, good quality |
 | `NomicEmbedTextV15` | 768 | ~547 MB | 8192 | Full precision variant |
 | `JinaEmbeddingsV2BaseCode` | 768 | ~300 MB | 8192 | Code-specialized |
-| `AllMiniLML6V2Q` | 384 | ~22 MB | 256 | **Recommended default** |
+| `AllMiniLML6V2Q` | 384 | ~22 MB | 256 | **Default** — bundled, zero-config |
 | `AllMiniLML6V2` | 384 | ~90 MB | 256 | Full precision lightweight |
 
 ## How It Works

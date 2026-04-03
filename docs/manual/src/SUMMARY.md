@@ -86,5 +86,5 @@
   - [Writing Tools](extending/writing-tools.md)
   - [The Tool Trait](extending/tool-trait.md)
 
-- [Diagnostic Logging](concepts/diagnostic-logging.md)
+- [Debug Mode](concepts/diagnostic-logging.md)
 - [Troubleshooting](troubleshooting.md)
